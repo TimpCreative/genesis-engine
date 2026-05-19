@@ -1,13 +1,5 @@
-pub fn hello() -> &'static str {
-    "genesis_core"
-}
+//! Core infrastructure for Genesis Engine: hex grid, world data, time, RNG, persistence.
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+pub mod grid;
 
-    #[test]
-    fn hello_returns_crate_name() {
-        assert_eq!(hello(), "genesis_core");
-    }
-}
+pub use grid::isea3h;
