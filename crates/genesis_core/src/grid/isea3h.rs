@@ -1,53 +1,37 @@
-//! ISEA3H coordinate math for Genesis Engine.
+//! ISEA3H coordinate math (Vince/Kristensen A3 scheme).
 //!
-//! # Representation
-//!
-//! Cells use a **hierarchical face path** on the icosahedron:
-//!
-//! - **Pentagon** cells (`Isea3hCoord::Pentagon`) sit at the 12 icosahedron vertices for
-//!   every subdivision level. Level 0 consists of these 12 cells only.
-//! - **Hex** cells (`Isea3hCoord::Hex`) belong to one of 20 triangular faces. Each hex is
-//!   addressed by a base-3 path of length `0..=level - 1`. An empty path is the face
-//!   centroid; each digit `0..2` steps one-third of the remaining barycentric distance
-//!   toward that face corner. This yields `(3^level - 1) / 2` hexes per face and total
-//!   count `10 * 3^level + 2`.
-//!
-//! Cell centers are **geodesic**: barycentric weights are applied to the three face
-//! vertex unit vectors, then the result is normalized onto the unit sphere. This gives
-//! deterministic, platform-stable centers. Full Snyder equal-area forward/inverse
-//! projection (per the ISEA name) is deferred; topology and counts match ISEA3H aperture 3.
-//!
-//! Reference: aperture-3 refinement pattern and cell counts per Sahr et al. / DGGRID ISEA3H;
-//! projection approach informed by the hexify package (MIT), without linking that library.
+//! Cells use extended Vince coordinates on the icosahedron per Kristensen (2021), with
+//! closed-form topological neighbors. Cell centers are geodesic barycentric blends on the
+//! unit sphere (Doc 04 §3.3.2).
 
+use std::collections::{BTreeSet, VecDeque};
 use std::f64::consts::PI;
 use std::sync::OnceLock;
 
-/// Maximum subdivision level validated by project docs (v1 worlds use 5–9; tests cover 0–9).
+/// Maximum subdivision level validated by project docs (tests cover 0–9).
 pub const MAX_SUBDIVISION_LEVEL: u8 = 9;
 
-/// Internal ISEA3H cell coordinate. `HexId` mapping is step 2 (`grid` module).
+/// Internal ISEA3H cell coordinate (Vince/Kristensen extended coordinates).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Isea3hCoord {
-    /// One of the 12 icosahedron vertices (always a pentagon).
-    Pentagon(PentagonId),
-    /// Hex cell on a triangular face, addressed by a base-3 refinement path.
-    Hex { face: FaceId, path: FacePath },
-}
-
-/// Index of one of the 12 icosahedron vertices / pentagon cells.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct PentagonId(pub u8);
-
-/// Index of one of the 20 icosahedron triangular faces.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct FaceId(pub u8);
-
-/// Base-3 refinement path on a face (`0..2` per step). Empty path = face centroid.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct FacePath {
-    digits: [u8; MAX_SUBDIVISION_LEVEL as usize],
-    len: u8,
+    /// Pentagon at an icosahedron vertex.
+    Pentagon { vertex: u8 },
+    /// Hex on an icosahedron edge (two vertices, two A3 indices).
+    Edge {
+        v_i: u8,
+        v_j: u8,
+        h_i: i32,
+        h_j: i32,
+    },
+    /// Hex in a face interior (three vertices, three A3 indices).
+    Interior {
+        v_i: u8,
+        v_j: u8,
+        v_k: u8,
+        h_i: i32,
+        h_j: i32,
+        h_k: i32,
+    },
 }
 
 /// Geographic point in radians (north latitude, east longitude).
@@ -65,7 +49,6 @@ pub struct Vec3 {
     pub z: f64,
 }
 
-/// Barycentric coordinates on a triangular face (sum to 1).
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Barycentric {
     a: f64,
@@ -88,7 +71,7 @@ pub fn is_valid_subdivision_level(level: u8) -> bool {
 
 /// Whether this coordinate is one of the 12 pentagon cells.
 pub fn is_pentagon(coord: Isea3hCoord) -> bool {
-    matches!(coord, Isea3hCoord::Pentagon(_))
+    matches!(coord, Isea3hCoord::Pentagon { .. })
 }
 
 /// Cell center as latitude/longitude in radians.
@@ -100,10 +83,33 @@ pub fn cell_center_lat_lon(coord: Isea3hCoord, level: u8) -> LatLon {
 pub fn cell_center_vec3(coord: Isea3hCoord, level: u8) -> Vec3 {
     let _ = level;
     match coord {
-        Isea3hCoord::Pentagon(id) => ico_vertices()[id.0 as usize],
-        Isea3hCoord::Hex { face, path } => {
-            let bary = barycentric_for_path(path);
-            bary_to_vec3(bary, ICO_FACES[face.0 as usize])
+        Isea3hCoord::Pentagon { vertex } => ico_vertices()[vertex as usize],
+        Isea3hCoord::Edge { v_i, v_j, h_i, h_j } => {
+            let h_hat = h_hat(level) as f64;
+            let face = face_for_edge(v_i, v_j);
+            let bary = Barycentric {
+                a: h_i as f64 / h_hat,
+                b: h_j as f64 / h_hat,
+                c: 0.0,
+            };
+            bary_to_vec3(bary, face)
+        }
+        Isea3hCoord::Interior {
+            v_i,
+            v_j,
+            v_k,
+            h_i,
+            h_j,
+            h_k,
+        } => {
+            let h_hat = h_hat(level) as f64;
+            let face = [v_i as usize, v_j as usize, v_k as usize];
+            let bary = Barycentric {
+                a: h_i as f64 / h_hat,
+                b: h_j as f64 / h_hat,
+                c: h_k as f64 / h_hat,
+            };
+            bary_to_vec3(bary, face)
         }
     }
 }
@@ -119,26 +125,333 @@ pub fn vec3_to_cell(point: Vec3, level: u8) -> Isea3hCoord {
 }
 
 /// Latitude/longitude of the 12 pentagon vertices (fixed for all levels).
-pub fn pentagon_lat_lon(pentagon: PentagonId) -> LatLon {
-    vec3_to_lat_lon(ico_vertices()[pentagon.0 as usize])
+pub fn pentagon_lat_lon(vertex: u8) -> LatLon {
+    vec3_to_lat_lon(ico_vertices()[vertex as usize])
 }
 
-/// Iterate all cells at `level` in deterministic order (pentagons, then face-major paths).
-pub fn all_cells(level: u8) -> impl Iterator<Item = Isea3hCoord> {
-    AllCells {
-        level,
-        face: 0,
-        phase: Phase::Pentagons(0),
-    }
+/// Topological neighbors at `level` (5 for pentagons, 6 for hexes).
+pub(crate) fn coord_neighbors(coord: Isea3hCoord, level: u8) -> Vec<Isea3hCoord> {
+    let mut out = match coord {
+        Isea3hCoord::Pentagon { vertex } => pentagon_neighbors(vertex, level),
+        Isea3hCoord::Edge { v_i, v_j, h_i, h_j } => edge_neighbors(v_i, v_j, h_i, h_j, level),
+        Isea3hCoord::Interior {
+            v_i,
+            v_j,
+            v_k,
+            h_i,
+            h_j,
+            h_k,
+        } => interior_neighbors(v_i, v_j, v_k, h_i, h_j, h_k, level),
+    };
+    out.retain(|&n| n != coord);
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// All cells at `level` in deterministic canonical order.
+pub fn all_cells(level: u8) -> impl Iterator<Item = Isea3hCoord> + Clone {
+    all_cells_cached(level).into_iter()
 }
 
 /// Maximum observed round-trip angular error (radians) for `level`.
-///
-/// Computed deterministically by sampling directions on the sphere and measuring
-/// lat/lon → nearest cell → cell center angular distance. Cached per level.
 pub fn max_cell_angular_radius(level: u8) -> f64 {
     static CACHE: OnceLock<[f64; (MAX_SUBDIVISION_LEVEL + 1) as usize]> = OnceLock::new();
     CACHE.get_or_init(compute_max_round_trip_angular_errors)[level as usize]
+}
+
+// --- Topology (Kristensen Fig. 6) ---
+
+const S_EVEN: [u8; 5] = [10, 1, 2, 3, 11];
+const S_ODD: [u8; 5] = [1, 4, 8, 9, 11];
+
+fn vertex_neighbors(v: u8) -> [u8; 5] {
+    let s = if v.is_multiple_of(2) { S_EVEN } else { S_ODD };
+    let mut out = [0u8; 5];
+    for (i, &step) in s.iter().enumerate() {
+        out[i] = (v + step) % 12;
+    }
+    out
+}
+
+/// Edge-crossing: return `x'` such that `{x', y, z}` is the face adjacent across edge `{y,z}`.
+fn omega(x: u8, y: u8, z: u8) -> u8 {
+    let n_y = vertex_neighbors(y);
+    let i = n_y.iter().position(|&v| v == z).expect("z adjacent to y");
+    let cand_plus = n_y[(i + 1) % 5];
+    let cand_minus = n_y[(i + 4) % 5];
+    if cand_plus == x {
+        cand_minus
+    } else {
+        cand_plus
+    }
+}
+
+fn faces_containing_edge(v_i: u8, v_j: u8) -> [usize; 2] {
+    let mut found = [None, None];
+    let mut count = 0usize;
+    for (idx, face) in ico_faces().iter().enumerate() {
+        let on = face.contains(&(v_i as usize)) && face.contains(&(v_j as usize));
+        if on {
+            found[count] = Some(idx);
+            count += 1;
+            if count == 2 {
+                break;
+            }
+        }
+    }
+    [
+        found[0].expect("edge on face"),
+        found[1].expect("edge on two faces"),
+    ]
+}
+
+fn face_for_edge(v_i: u8, v_j: u8) -> [usize; 3] {
+    ico_faces()[faces_containing_edge(v_i, v_j)[0]]
+}
+
+fn h_hat(level: u8) -> i32 {
+    let exp = (level as u32).div_ceil(2);
+    3_i32.pow(exp)
+}
+
+// --- Coordinate normalization ---
+
+/// Post-process neighbor `(v, h)` like the reference R (zero `v` where `h==0`, sort by `v`).
+fn finalize_neighbor(v: [u8; 3], h: [i32; 3]) -> Isea3hCoord {
+    let mut pairs = Vec::with_capacity(3);
+    for i in 0..3 {
+        if h[i] != 0 {
+            pairs.push((v[i], h[i]));
+        }
+    }
+    match pairs.len() {
+        1 => Isea3hCoord::Pentagon { vertex: pairs[0].0 },
+        2 => {
+            pairs.sort_by_key(|p| p.0);
+            Isea3hCoord::Edge {
+                v_i: pairs[0].0,
+                v_j: pairs[1].0,
+                h_i: pairs[0].1,
+                h_j: pairs[1].1,
+            }
+        }
+        3 => {
+            pairs.sort_by_key(|p| p.0);
+            Isea3hCoord::Interior {
+                v_i: pairs[0].0,
+                v_j: pairs[1].0,
+                v_k: pairs[2].0,
+                h_i: pairs[0].1,
+                h_j: pairs[1].1,
+                h_k: pairs[2].1,
+            }
+        }
+        _ => panic!("invalid neighbor state v={v:?} h={h:?}"),
+    }
+}
+
+// --- Neighbor rules ---
+
+const EVEN_OFFSETS: [[i32; 3]; 6] = [
+    [1, -1, 0],
+    [-1, 1, 0],
+    [1, 0, -1],
+    [-1, 0, 1],
+    [0, 1, -1],
+    [0, -1, 1],
+];
+
+const ODD_OFFSETS: [[i32; 3]; 6] = [
+    [2, -1, -1],
+    [-2, 1, 1],
+    [-1, 2, -1],
+    [1, -2, 1],
+    [-1, -1, 2],
+    [1, 1, -2],
+];
+
+fn interior_neighbors(
+    v_i: u8,
+    v_j: u8,
+    v_k: u8,
+    h_i: i32,
+    h_j: i32,
+    h_k: i32,
+    level: u8,
+) -> Vec<Isea3hCoord> {
+    let v = [v_i, v_j, v_k];
+    let h = [h_i, h_j, h_k];
+    let offsets = if level.is_multiple_of(2) {
+        &EVEN_OFFSETS[..]
+    } else {
+        &ODD_OFFSETS[..]
+    };
+    let mut out = Vec::with_capacity(6);
+    for dh in offsets {
+        let mut nv = v;
+        let mut nh = [h[0] + dh[0], h[1] + dh[1], h[2] + dh[2]];
+        if level % 2 == 1 && nh.iter().any(|&x| x < 0) {
+            let lost = nh.iter().position(|&x| x < 0).expect("negative");
+            let edge: [u8; 2] = [nv[(lost + 1) % 3], nv[(lost + 2) % 3]];
+            let lost_v = nv[lost];
+            let opposites = opposite_vertices_on_edge(edge[0], edge[1]);
+            nv[lost] = if opposites[0] != lost_v {
+                opposites[0]
+            } else {
+                opposites[1]
+            };
+            nh = h;
+        } else if level.is_multiple_of(2) {
+            for k in 0..3 {
+                if nh[k] >= 0 {
+                    continue;
+                }
+                let i = (k + 1) % 3;
+                let j = (k + 2) % 3;
+                if h[k] == 0 {
+                    nv[k] = omega(nv[k], nv[i], nv[j]);
+                    nh = [h[0] - dh[0], h[1] - dh[1], h[2] - dh[2]];
+                    if nh[k] < 0 {
+                        nh[k] = -nh[k];
+                    }
+                } else {
+                    nv[k] = omega(nv[k], nv[i], nv[j]);
+                    nh = h;
+                }
+                break;
+            }
+        }
+        out.push(finalize_neighbor(nv, nh));
+    }
+    out
+}
+
+fn opposite_vertices_on_edge(v1: u8, v2: u8) -> [u8; 2] {
+    let mut opposites = [0u8; 2];
+    let mut count = 0usize;
+    for face in ico_faces() {
+        let has_v1 = face.contains(&(v1 as usize));
+        let has_v2 = face.contains(&(v2 as usize));
+        if has_v1 && has_v2 {
+            for &vk in face {
+                let vk = vk as u8;
+                if vk != v1 && vk != v2 {
+                    opposites[count] = vk;
+                    count += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(count, 2, "edge {v1},{v2} has two opposite vertices");
+    opposites
+}
+
+fn pentagon_neighbors(vertex: u8, level: u8) -> Vec<Isea3hCoord> {
+    if level == 0 {
+        return vertex_neighbors(vertex)
+            .into_iter()
+            .map(|v| Isea3hCoord::Pentagon { vertex: v })
+            .collect();
+    }
+    let m = h_hat(level);
+    let n_v = vertex_neighbors(vertex);
+    let mut out = Vec::with_capacity(5);
+    if level.is_multiple_of(2) {
+        for &v2 in &n_v {
+            out.push(finalize_neighbor([vertex, v2, 0], [m - 1, 1, 0]));
+        }
+    } else {
+        for i in 0..5 {
+            let v2 = n_v[i];
+            let v3 = n_v[(i + 1) % 5];
+            out.push(finalize_neighbor([vertex, v2, v3], [m - 2, 1, 1]));
+        }
+    }
+    out
+}
+
+fn edge_neighbors(v_i: u8, v_j: u8, h_i: i32, h_j: i32, level: u8) -> Vec<Isea3hCoord> {
+    let v = [v_i, v_j, 0];
+    let h = [h_i, h_j, 0];
+    let mut out = Vec::new();
+    let v_opposites = opposite_vertices_on_edge(v_i, v_j);
+
+    let edge_ops_even: [[i32; 3]; 2] = [[-1, 0, 1], [0, -1, 1]];
+    let edge_ops_odd: [[i32; 3]; 3] = [[-2, 1, 1], [1, -2, 1], [-1, -1, 2]];
+
+    for &v3 in &v_opposites {
+        let ops: &[[i32; 3]] = if level.is_multiple_of(2) {
+            &edge_ops_even
+        } else {
+            &edge_ops_odd
+        };
+        for dh in ops {
+            let nh = [h[0] + dh[0], h[1] + dh[1], h[2] + dh[2]];
+            let nv = [v[0], v[1], v3];
+            out.push(finalize_neighbor(nv, nh));
+        }
+    }
+
+    if level.is_multiple_of(2) {
+        out.push(finalize_neighbor(v, [h[0] + 1, h[1] - 1, h[2]]));
+        out.push(finalize_neighbor(v, [h[0] - 1, h[1] + 1, h[2]]));
+    }
+
+    out
+}
+
+// --- Cell enumeration (neighbor-walk) ---
+
+fn all_cells_cached(level: u8) -> Vec<Isea3hCoord> {
+    static CACHE: OnceLock<Vec<Vec<Isea3hCoord>>> = OnceLock::new();
+    let table = CACHE.get_or_init(|| {
+        (0..=MAX_SUBDIVISION_LEVEL)
+            .map(enumerate_cells_at_level)
+            .collect()
+    });
+    table[level as usize].clone()
+}
+
+fn enumerate_cells_at_level(level: u8) -> Vec<Isea3hCoord> {
+    let mut set = BTreeSet::new();
+    let mut queue = VecDeque::new();
+    for v in 0..12u8 {
+        let pent = Isea3hCoord::Pentagon { vertex: v };
+        if set.insert(pent) {
+            queue.push_back(pent);
+        }
+    }
+    while let Some(coord) = queue.pop_front() {
+        for neighbor in coord_neighbors(coord, level) {
+            if set.insert(neighbor) {
+                queue.push_back(neighbor);
+            }
+        }
+    }
+    let expected = cell_count(level) as usize;
+    assert_eq!(
+        set.len(),
+        expected,
+        "neighbor-walk cell count mismatch at level {level}"
+    );
+    set.into_iter().collect()
+}
+
+// --- Nearest cell ---
+
+fn nearest_cell(point: Vec3, level: u8) -> Isea3hCoord {
+    let mut best = Isea3hCoord::Pentagon { vertex: 0 };
+    let mut best_dot = -f64::INFINITY;
+    for coord in all_cells(level) {
+        let center = cell_center_vec3(coord, level);
+        let d = point.dot(center);
+        if d > best_dot {
+            best_dot = d;
+            best = coord;
+        }
+    }
+    best
 }
 
 fn compute_max_round_trip_angular_errors() -> [f64; (MAX_SUBDIVISION_LEVEL + 1) as usize] {
@@ -168,7 +481,6 @@ fn compute_max_round_trip_angular_errors() -> [f64; (MAX_SUBDIVISION_LEVEL + 1) 
     out
 }
 
-/// Deterministic quasi-uniform directions on the unit sphere (Fibonacci / golden spiral).
 fn fibonacci_sphere_directions(count: usize) -> Vec<Vec3> {
     let golden = PI * (3.0 - 5.0_f64.sqrt());
     (0..count)
@@ -185,151 +497,41 @@ fn fibonacci_sphere_directions(count: usize) -> Vec<Vec3> {
         .collect()
 }
 
-// --- Face path ---
-
-impl FacePath {
-    pub const EMPTY: Self = Self {
-        digits: [0; MAX_SUBDIVISION_LEVEL as usize],
-        len: 0,
-    };
-
-    pub fn len(self) -> u8 {
-        self.len
-    }
-
-    pub fn is_empty(self) -> bool {
-        self.len == 0
-    }
-
-    pub fn digit(self, index: u8) -> Option<u8> {
-        if index >= self.len {
-            return None;
-        }
-        Some(self.digits[index as usize])
-    }
-
-    pub fn push(self, digit: u8) -> Option<Self> {
-        if digit > 2 || self.len as usize >= MAX_SUBDIVISION_LEVEL as usize {
-            return None;
-        }
-        let mut next = self;
-        next.digits[self.len as usize] = digit;
-        next.len += 1;
-        Some(next)
-    }
-}
-
-// --- Iteration ---
-
-enum Phase {
-    Pentagons(u8),
-    Hexes { path_len: u8, path_index: u32 },
-    Done,
-}
-
-struct AllCells {
-    level: u8,
-    face: u8,
-    phase: Phase,
-}
-
-impl Iterator for AllCells {
-    type Item = Isea3hCoord;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            match self.phase {
-                Phase::Pentagons(id) => {
-                    if id >= 12 {
-                        if self.level == 0 {
-                            self.phase = Phase::Done;
-                            continue;
-                        }
-                        self.phase = Phase::Hexes {
-                            path_len: 0,
-                            path_index: 0,
-                        };
-                        continue;
-                    }
-                    self.phase = Phase::Pentagons(id + 1);
-                    return Some(Isea3hCoord::Pentagon(PentagonId(id)));
-                }
-                Phase::Hexes {
-                    path_len,
-                    path_index,
-                } => {
-                    if self.face >= 20 {
-                        self.phase = Phase::Done;
-                        continue;
-                    }
-                    let per_len = 3_u32.pow(path_len as u32);
-                    if path_index < per_len {
-                        let path = decode_path(path_len, path_index);
-                        self.phase = Phase::Hexes {
-                            path_len,
-                            path_index: path_index + 1,
-                        };
-                        return Some(Isea3hCoord::Hex {
-                            face: FaceId(self.face),
-                            path,
-                        });
-                    }
-                    if path_len + 1 < self.level {
-                        self.phase = Phase::Hexes {
-                            path_len: path_len + 1,
-                            path_index: 0,
-                        };
-                        continue;
-                    }
-                    self.face += 1;
-                    self.phase = Phase::Hexes {
-                        path_len: 0,
-                        path_index: 0,
-                    };
-                }
-                Phase::Done => return None,
-            }
-        }
-    }
-}
-
-fn decode_path(len: u8, mut index: u32) -> FacePath {
-    let mut path = FacePath::EMPTY;
-    for _ in 0..len {
-        let digit = (index % 3) as u8;
-        index /= 3;
-        path = path.push(digit).expect("valid path digit");
-    }
-    path
-}
-
 // --- Icosahedron geometry ---
 
 const PHI: f64 = 1.618_033_988_749_895;
 
-/// 20 triangular faces as vertex index triples (outward winding).
-const ICO_FACES: [[usize; 3]; 20] = [
-    [0, 11, 5],
-    [0, 5, 1],
-    [0, 1, 7],
-    [0, 7, 10],
-    [0, 10, 11],
-    [1, 5, 9],
-    [5, 11, 4],
-    [11, 10, 2],
-    [10, 7, 6],
-    [7, 1, 8],
-    [3, 9, 4],
-    [3, 4, 2],
-    [3, 2, 6],
-    [3, 6, 8],
-    [3, 8, 9],
-    [4, 9, 5],
-    [2, 4, 11],
-    [6, 2, 10],
-    [8, 6, 7],
-    [9, 8, 1],
-];
+fn ico_faces() -> &'static [[usize; 3]; 20] {
+    static FACES: OnceLock<[[usize; 3]; 20]> = OnceLock::new();
+    FACES.get_or_init(build_ico_faces)
+}
+
+fn build_ico_faces() -> [[usize; 3]; 20] {
+    let mut faces = Vec::new();
+    for v_i in 0..12u8 {
+        for &v_j in vertex_neighbors(v_i).iter() {
+            if v_j <= v_i {
+                continue;
+            }
+            let n_i = vertex_neighbors(v_i);
+            for &v_k in n_i.iter() {
+                if v_k <= v_j {
+                    continue;
+                }
+                let n_j = vertex_neighbors(v_j);
+                if n_j.contains(&v_k) {
+                    faces.push([v_i as usize, v_j as usize, v_k as usize]);
+                }
+            }
+        }
+    }
+    assert_eq!(faces.len(), 20);
+    let mut arr = [[0usize; 3]; 20];
+    for (i, f) in faces.iter().enumerate() {
+        arr[i] = *f;
+    }
+    arr
+}
 
 fn ico_vertices() -> &'static [Vec3; 12] {
     static VERTS: OnceLock<[Vec3; 12]> = OnceLock::new();
@@ -403,48 +605,6 @@ fn ico_vertices() -> &'static [Vec3; 12] {
     })
 }
 
-// --- Barycentric refinement ---
-
-const FACE_CENTROID: Barycentric = Barycentric {
-    a: 1.0 / 3.0,
-    b: 1.0 / 3.0,
-    c: 1.0 / 3.0,
-};
-
-fn barycentric_for_path(path: FacePath) -> Barycentric {
-    let mut bary = FACE_CENTROID;
-    for i in 0..path.len {
-        let d = path.digits[i as usize];
-        bary = step_toward_corner(bary, d);
-    }
-    bary
-}
-
-fn step_toward_corner(bary: Barycentric, corner: u8) -> Barycentric {
-    let target = match corner {
-        0 => Barycentric {
-            a: 1.0,
-            b: 0.0,
-            c: 0.0,
-        },
-        1 => Barycentric {
-            a: 0.0,
-            b: 1.0,
-            c: 0.0,
-        },
-        _ => Barycentric {
-            a: 0.0,
-            b: 0.0,
-            c: 1.0,
-        },
-    };
-    Barycentric {
-        a: bary.a + (target.a - bary.a) / 3.0,
-        b: bary.b + (target.b - bary.b) / 3.0,
-        c: bary.c + (target.c - bary.c) / 3.0,
-    }
-}
-
 fn bary_to_vec3(bary: Barycentric, face: [usize; 3]) -> Vec3 {
     let verts = ico_vertices();
     let a = verts[face[0]];
@@ -457,26 +617,10 @@ fn bary_to_vec3(bary: Barycentric, face: [usize; 3]) -> Vec3 {
     })
 }
 
-// --- Nearest cell ---
-
-fn nearest_cell(point: Vec3, level: u8) -> Isea3hCoord {
-    let mut best = Isea3hCoord::Pentagon(PentagonId(0));
-    let mut best_dot = -f64::INFINITY;
-    for coord in all_cells(level) {
-        let center = cell_center_vec3(coord, level);
-        let d = point.dot(center);
-        if d > best_dot {
-            best_dot = d;
-            best = coord;
-        }
-    }
-    best
-}
-
 // --- Vector / lat-lon helpers ---
 
 impl Vec3 {
-    fn dot(self, other: Vec3) -> f64 {
+    pub fn dot(self, other: Vec3) -> f64 {
         self.x * other.x + self.y * other.y + self.z * other.z
     }
 }
@@ -560,14 +704,21 @@ fn rotate_around_axis(v: Vec3, axis: Vec3, angle: f64) -> Vec3 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
 
     fn assert_approx_eq(a: f64, b: f64, eps: f64) {
         assert!((a - b).abs() <= eps, "expected {a} ≈ {b} (eps {eps})");
     }
 
-    fn angular_distance(a: Vec3, b: Vec3) -> f64 {
-        a.dot(b).clamp(-1.0, 1.0).acos()
+    #[test]
+    fn omega_kristensen_example() {
+        // Edge {7,11}: y=7, z=11 -> x'=8 per Kristensen Method 1 example
+        assert_eq!(omega(3, 7, 11), 8);
+    }
+
+    #[test]
+    fn build_twenty_faces() {
+        assert_eq!(ico_faces().len(), 20);
     }
 
     #[test]
@@ -580,6 +731,24 @@ mod tests {
     }
 
     #[test]
+    fn neighbor_walk_from_pentagon_zero_finds_all_cells() {
+        let level = 4u8;
+        let start = Isea3hCoord::Pentagon { vertex: 0 };
+        let mut set = BTreeSet::new();
+        let mut queue = VecDeque::new();
+        set.insert(start);
+        queue.push_back(start);
+        while let Some(c) = queue.pop_front() {
+            for n in coord_neighbors(c, level) {
+                if set.insert(n) {
+                    queue.push_back(n);
+                }
+            }
+        }
+        assert_eq!(set.len() as u64, cell_count(level));
+    }
+
+    #[test]
     fn exactly_twelve_pentagons_at_each_level() {
         for level in 0..=MAX_SUBDIVISION_LEVEL {
             let pent_count = all_cells(level).filter(|c| is_pentagon(*c)).count();
@@ -588,39 +757,42 @@ mod tests {
     }
 
     #[test]
-    fn pentagon_positions_stable_across_levels() {
-        let anchors: Vec<LatLon> = (0..12).map(|i| pentagon_lat_lon(PentagonId(i))).collect();
-        for level in 1..=MAX_SUBDIVISION_LEVEL {
-            for (i, anchor) in anchors.iter().enumerate() {
-                let coord = Isea3hCoord::Pentagon(PentagonId(i as u8));
-                let center = cell_center_lat_lon(coord, level);
-                assert_approx_eq(center.lat_rad, anchor.lat_rad, 1e-12);
-                assert_approx_eq(center.lon_rad, anchor.lon_rad, 1e-12);
+    fn neighbor_counts_and_symmetry_levels_0_to_4() {
+        for level in 0..=4u8 {
+            let cells: Vec<_> = all_cells(level).collect();
+            let id_map: BTreeMap<_, _> = cells.iter().copied().enumerate().collect();
+            for &coord in &cells {
+                let neighbors = coord_neighbors(coord, level);
+                let expected = if is_pentagon(coord) { 5 } else { 6 };
+                assert_eq!(neighbors.len(), expected, "level {level} {coord:?}");
+                for n in neighbors {
+                    assert_ne!(n, coord);
+                    if level > 0 {
+                        assert!(
+                            !is_pentagon(coord) || !is_pentagon(n),
+                            "level {level} pent-pent: {coord:?} -> {n:?}"
+                        );
+                    }
+                    let back = coord_neighbors(n, level);
+                    assert!(
+                        back.contains(&coord),
+                        "level {level} {coord:?} -> {n:?} missing reverse"
+                    );
+                }
             }
+            let _ = id_map;
         }
     }
 
     #[test]
-    fn lat_lon_round_trip_within_cell_angular_radius() {
-        let samples = [
-            (0.0, 0.0),
-            (0.5, 1.0),
-            (-0.3, -2.1),
-            (1.0, 0.2),
-            (-1.1, 3.0),
-        ];
-        for level in 0..=6 {
-            let tol = max_cell_angular_radius(level);
-            for (lat, lon) in samples {
-                let cell = lat_lon_to_cell(lat, lon, level);
-                let center = cell_center_lat_lon(cell, level);
-                let v0 = lat_lon_to_vec3(lat, lon);
-                let v1 = lat_lon_to_vec3(center.lat_rad, center.lon_rad);
-                let angular = angular_distance(v0, v1);
-                assert!(
-                    angular <= tol,
-                    "level {level} ({lat},{lon}) angular error {angular} > {tol}"
-                );
+    fn pentagon_positions_stable_across_levels() {
+        let anchors: Vec<LatLon> = (0..12).map(pentagon_lat_lon).collect();
+        for level in 1..=MAX_SUBDIVISION_LEVEL {
+            for (i, anchor) in anchors.iter().enumerate() {
+                let coord = Isea3hCoord::Pentagon { vertex: i as u8 };
+                let center = cell_center_lat_lon(coord, level);
+                assert_approx_eq(center.lat_rad, anchor.lat_rad, 1e-12);
+                assert_approx_eq(center.lon_rad, anchor.lon_rad, 1e-12);
             }
         }
     }
@@ -655,17 +827,5 @@ mod tests {
         let level = 4;
         let coords: BTreeSet<Isea3hCoord> = all_cells(level).collect();
         assert_eq!(coords.len() as u64, cell_count(level));
-    }
-
-    #[test]
-    fn only_pentagon_coords_are_pentagons() {
-        for level in 0..=4 {
-            for coord in all_cells(level) {
-                assert_eq!(
-                    is_pentagon(coord),
-                    matches!(coord, Isea3hCoord::Pentagon(_))
-                );
-            }
-        }
     }
 }

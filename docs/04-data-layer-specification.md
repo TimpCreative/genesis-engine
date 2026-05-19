@@ -1,10 +1,15 @@
 # Genesis Engine — Data Layer Specification
 
 **Document Type:** Tier 2 — System Specification
-**Status:** Draft v0.1
+**Status:** Draft v0.3
 **Last Updated:** May 2026
 **Owner:** Brax Johnson
 **Implementing Phase:** 0 (Foundation)
+
+**Changelog:**
+- v0.3 (May 2026): Rewrote §3.3.1 to describe Vince/Kristensen topological neighbor scheme (replacing geometric k-NN approach). Updated §3.4 to reference topological construction. Added algorithm source citations.
+- v0.2 (May 2026): Extended cell count table to levels 0-4. Added §3.3.1 (Class I/II parity) and §3.3.2 (geodesic vs. Snyder projection). Reflects clarifications surfaced by step 1 implementation.
+- v0.1 (May 2026): Initial draft.
 
 ---
 
@@ -111,6 +116,11 @@ The grid is defined by a **subdivision level** (an integer). Higher subdivision 
 
 | Subdivision | Total Cells | Hex Area on Earth (km²) | Hex Area on Mars (km²) |
 |-------------|-------------|--------------------------|-------------------------|
+| 0 | 12 | 42,500,000 | 11,400,000 |
+| 1 | 32 | 15,900,000 | 4,260,000 |
+| 2 | 92 | 5,540,000 | 1,490,000 |
+| 3 | 272 | 1,870,000 | 502,000 |
+| 4 | 812 | 627,000 | 168,000 |
 | 5 | 2,432 | 209,800 | 56,200 |
 | 6 | 7,292 | 69,950 | 18,700 |
 | 7 | 21,872 | 23,300 | 6,250 |
@@ -118,7 +128,9 @@ The grid is defined by a **subdivision level** (an integer). Higher subdivision 
 | 9 | 196,832 | 2,590 | 695 |
 | 10 | 590,492 | 865 | 232 |
 
-**Default subdivision level: 8** (65,612 cells). This is the value used unless `WorldParameters.hex_subdivision_level` overrides it.
+**Default subdivision level: 8** (65,612 cells). This is the value used unless `WorldParameters.grid.subdivision_level` overrides it.
+
+**Note on level 0:** at subdivision level 0, all 12 cells are pentagons (the 12 icosahedron vertices). This is useful as a degenerate case for testing but not for actual worldbuilding. Levels 5–9 are the practical range for v1 worlds.
 
 ### 3.2 Hex Identifiers
 
@@ -142,9 +154,47 @@ pub fn is_pentagon(&self, hex: HexId) -> bool;
 
 Most algorithms do not need to special-case pentagons because neighbor iteration is variable-length (see §3.4). Pentagons surface to external code only when explicitly queried.
 
+### 3.3.1 Class I / Class II Parity (handled by the Vince/Kristensen scheme)
+
+ISEA3H hexes alternate orientation between subdivision levels. At even-numbered levels, hexes are oriented one way relative to their face's local frame (commonly called "Class I"); at odd-numbered levels, they are rotated 30° relative to even levels ("Class II"). This is a fundamental property of aperture-3 hexagonal grids and cannot be avoided.
+
+Genesis Engine handles parity automatically via the **Vince A3-coordinate scheme** (Vince 2006), as described and corrected by Kristensen (2021). The scheme uses closed-form neighbor rules that differ between even and odd resolutions — the rules themselves encode the parity. There is no separate "parity handling" step; the algorithm just works for both classes.
+
+Cells are internally represented as:
+
+```rust
+enum Isea3hCoord {
+    Pentagon { vertex: u8 },                                          // one of 12 icosahedron vertices
+    Edge { v_i: u8, v_j: u8, h_i: i32, h_j: i32 },                    // hex on an icosahedron edge
+    Interior { v_i: u8, v_j: u8, v_k: u8, h_i: i32, h_j: i32, h_k: i32 }, // hex inside a face
+}
+```
+
+Vertex indices use Kristensen's "Hamiltonian" indexing (Figure 6 in her blog post) where the opposite pole of vertex `v` is `(v + 6) mod 12`, and the 5 vertices adjacent to a focal vertex follow a regular pattern depending only on whether the focal vertex is even or odd.
+
+Neighbors are computed by closed-form rules from Kristensen §"Cell neighbourhood rules," including the edge-crossing function `ω(x, {y, z})` that returns the third vertex of the face adjacent across edge `{y, z}`.
+
+**The `Direction` enum semantics** still apply: a hex's `Direction::D0` does not point the same way across levels. Direction indices are relative to each hex's local orientation (determined by sorting topological neighbors by geographic bearing). Algorithms that depend on absolute directional semantics (e.g., "the neighbor most north of this hex") must use the geographic coordinate functions (§3.5), not direction indices.
+
+**Algorithm source references:**
+- Vince, A. (2006). "Indexing the aperture 3 hexagonal discrete global grid." *Journal of Visual Communication and Image Representation* 17(6): 1227-1236.
+- Kristensen, N. (2021). "Finding cell neighbours in an ISEA3H global grid in dggridR." https://nadiah.org/2021/09/29/find-cell-neighbours-isea3h/
+
+**Known erratum:** Kristensen's prose description of the even-resolution offset rule #6 is `(0, -1, -1)`, but her reference R implementation uses `(0, -1, +1)`. The R version produces correct cell counts and symmetric neighbor graphs at all tested levels; Genesis Engine follows the R implementation.
+
+### 3.3.2 Projection Choice: Geodesic vs. Snyder
+
+The "S" in ISEA3H stands for Snyder, referring to the Snyder equal-area icosahedral projection that produces hexes of exactly equal area. Genesis Engine v1 uses **geodesic barycentric centers** instead — cell centers are computed by barycentric interpolation between face vertex unit vectors, then normalized onto the sphere. This is simpler to implement and platform-stable.
+
+The trade-off: cells are not exactly equal-area. Hexes near pentagons are slightly smaller than hexes far from pentagons. Worst-case area variation is on the order of 10–20% in the immediate vicinity of pentagon cells. For most purposes (climate, biology, civilization) this is well below the simulation's other uncertainties and does not affect outcomes meaningfully.
+
+If, in later phases, we observe biases concentrated near the 12 pentagon locations (e.g., systematically larger or smaller populations clustered there), we can implement full Snyder projection. The architecture supports this swap without affecting external code, since `Isea3hCoord` is opaque to the rest of the engine.
+
 ### 3.4 Neighbor Lookup
 
-Neighbors are precomputed at grid construction and stored as a lookup table. The interface:
+Neighbors are precomputed at grid construction using the topological rules described in §3.3.1 (Vince/Kristensen scheme). At construction time, the engine computes each cell's neighbors via closed-form rules — no geometric search. The resulting `HexId`-to-`[HexId]` tables are stored for O(1) lookup at runtime.
+
+The interface:
 
 ```rust
 /// Returns the neighbors of a hex. Returns 5 entries for pentagons, 6 for hexes.
@@ -164,7 +214,7 @@ pub enum Direction {
 }
 ```
 
-The directions are defined in a consistent local frame per hex (each hex has its own concept of "direction 0"). Algorithms requiring global direction (e.g., "north") must use the geographic coordinate functions in §3.5.
+The directions are defined in a consistent local frame per hex (each hex has its own concept of "direction 0"). The topological neighbors are sorted by geographic bearing from the hex's center to assign Direction indices: `D0` is the neighbor at the smallest bearing angle (closest to due north), proceeding clockwise. Algorithms requiring global direction (e.g., "north") must use the geographic coordinate functions in §3.5, not direction indices, since `D0` for one hex is not the same direction as `D0` for another.
 
 ### 3.5 Geographic Coordinates
 
