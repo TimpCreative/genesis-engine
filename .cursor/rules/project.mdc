@@ -20,7 +20,14 @@ If you cannot access these files, stop and tell the user. Do not proceed from ge
 
 ## Programming Rules
 
-Verify Before Declaring Done. Before saying a task is complete, run cargo build --workspace, cargo test --workspace, cargo fmt --check, and cargo clippy --workspace --all-targets. Show the actual command outputs (or summarized results). If any fails, fix it before declaring done.
+Before saying a task is complete, run:
+
+- `cargo build --workspace` (must succeed)
+- `cargo test --workspace` (must pass)
+- `cargo fmt --check` (must pass)
+- `cargo clippy --workspace --all-targets` (no warnings, or explicit justifications)
+
+Show the actual results in your summary. If any command fails, fix the cause before declaring the task done — do not declare success on partial completion.
 
 ## Core Rules
 
