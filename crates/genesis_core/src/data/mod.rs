@@ -13,12 +13,7 @@ pub use ids::{BiomeId, NationId, PlateId, SettlementId, SpeciesId};
 
 use crate::HexGrid;
 
-/// Placeholder for `WorldYear` (full implementation in step 4 / `genesis_core::time`).
-///
-/// Just an `i64` newtype for now; the full type adds `WorldTime` and era handling.
-#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Default)]
-pub struct WorldYear(pub i64);
-// TODO(step-4): replace this with the full WorldYear from genesis_core::time
+pub use crate::time::WorldYear;
 
 /// Per-hex bulk arrays and global physical state for one world instance.
 ///

@@ -7,4 +7,8 @@ publish.workspace = true
 [lib]
 
 [dependencies]
+rand = { version = "0.8", features = ["small_rng"] }
+serde = { version = "1", features = ["derive"] }
 thiserror = "2"
+toml = "0.8"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
