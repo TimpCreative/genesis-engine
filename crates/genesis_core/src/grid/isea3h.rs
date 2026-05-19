@@ -81,7 +81,6 @@ pub fn cell_center_lat_lon(coord: Isea3hCoord, level: u8) -> LatLon {
 
 /// Cell center as a unit vector on the sphere.
 pub fn cell_center_vec3(coord: Isea3hCoord, level: u8) -> Vec3 {
-    let _ = level;
     match coord {
         Isea3hCoord::Pentagon { vertex } => ico_vertices()[vertex as usize],
         Isea3hCoord::Edge { v_i, v_j, h_i, h_j } => {
@@ -348,6 +347,8 @@ fn opposite_vertices_on_edge(v1: u8, v2: u8) -> [u8; 2] {
 }
 
 fn pentagon_neighbors(vertex: u8, level: u8) -> Vec<Isea3hCoord> {
+    // Level 0 has only 12 pentagon cells; Vince even-rule neighbors would be edge
+    // coords that do not exist yet. Use icosahedron vertex adjacency instead.
     if level == 0 {
         return vertex_neighbors(vertex)
             .into_iter()
@@ -704,7 +705,7 @@ fn rotate_around_axis(v: Vec3, axis: Vec3, angle: f64) -> Vec3 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::collections::BTreeSet;
 
     fn assert_approx_eq(a: f64, b: f64, eps: f64) {
         assert!((a - b).abs() <= eps, "expected {a} ≈ {b} (eps {eps})");
@@ -760,7 +761,6 @@ mod tests {
     fn neighbor_counts_and_symmetry_levels_0_to_4() {
         for level in 0..=4u8 {
             let cells: Vec<_> = all_cells(level).collect();
-            let id_map: BTreeMap<_, _> = cells.iter().copied().enumerate().collect();
             for &coord in &cells {
                 let neighbors = coord_neighbors(coord, level);
                 let expected = if is_pentagon(coord) { 5 } else { 6 };
@@ -780,7 +780,6 @@ mod tests {
                     );
                 }
             }
-            let _ = id_map;
         }
     }
 

@@ -117,7 +117,7 @@ impl HexGrid {
 
     /// Area of the hex on the planet's surface, in square kilometers.
     pub fn hex_area_km2(&self, hex: HexId) -> f64 {
-        let _ = hex;
+        let _ = hex; // All hexes share uniform area in v1; per-hex variation deferred (Doc 04 §3.3.2).
         self.uniform_hex_area_km2
     }
 
