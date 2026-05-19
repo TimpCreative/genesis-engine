@@ -1,0 +1,22 @@
+# Rust build artifacts
+/target/
+**/target/
+Cargo.lock.bak
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Genesis Engine working files
+/saves/
+/cache/
+*.gen.cache
+
+# Cursor
+.cursor/cache/

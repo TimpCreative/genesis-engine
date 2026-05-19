@@ -1,0 +1,148 @@
+---
+description: Project rules for genesis-engine
+alwaysApply: true
+---
+
+# Genesis Engine — Cursor Agent Rules
+
+You are working on Genesis Engine, a deterministic worldbuilding simulator written in Rust using the Bevy engine.
+
+## Foundational Reading
+
+**Before doing any work**, read these documents in this order. They are the source of truth for everything in this project:
+
+1. `docs/01-vision-and-scope.md` — What this project is and why
+2. `docs/02-architecture-overview.md` — Technical blueprint
+3. `docs/03-glossary-and-naming.md` — Canonical terminology
+4. `CONTRIBUTING-AI.md` — How to collaborate on this codebase
+
+If you cannot access these files, stop and tell the user. Do not proceed from general knowledge of game development or Bevy alone.
+
+## Core Rules
+
+### 1. The Docs Are Authoritative
+
+The documents in `/docs/` define the architecture, terminology, and build order. Your decisions must align with them. If a user request appears to conflict with the docs, raise the conflict rather than silently picking one. Suggest a doc update if the request is the better choice.
+
+### 2. Use Canonical Terminology
+
+The Glossary defines specific terms for specific concepts. Use them exactly. Do not invent synonyms. Examples:
+
+- "hex" not "tile" or "cell" or "square"
+- "branch" not "timeline" or "version" (in code; "timeline" is used in user-facing text)
+- "intervention" not "edit" or "change" (in code)
+- "user" not "player"
+- "world" or "simulation" not "game"
+
+When you need a term that isn't in the glossary, ask the user to confirm a name rather than inventing one.
+
+### 3. Build Order Matters
+
+The Architecture Overview defines explicit build phases (§12). Do not implement features from a later phase before earlier phases are complete. If asked to skip ahead, ask the user to confirm — there may be a reason, but it's worth surfacing.
+
+Current phase: **Phase 0 — Foundation** (project not yet scaffolded).
+
+### 4. Determinism Is Non-Negotiable
+
+Genesis Engine is deterministic by design. This means:
+
+- **No system time** in simulation code. No `Instant::now()`, no `SystemTime`, no `chrono::Local::now()` affecting simulation state.
+- **No file I/O during ticks.** Content is loaded at world generation only.
+- **No raw `rand` calls.** All randomness flows through the project's seeded RNG streams.
+- **No iteration order assumptions** without explicit sorting. HashMap iteration order, `par_iter` order, etc., must be normalized to deterministic order when results affect simulation state.
+- **No floating-point compounding** over many iterations without explicit consideration. Use fixed-point arithmetic for accumulating quantities like positions over millions of years; floating-point is fine for ephemeral within-tick calculations.
+
+If you're unsure whether something violates determinism, flag it.
+
+### 5. Data-Oriented Design
+
+Use Struct-of-Arrays for hex-keyed data, not Array-of-Structs. The Architecture Overview §5 explains why. Resist the temptation to "just add a field to HexCell" — fields become new bulk arrays.
+
+ECS components are used for sparse/individuated data (settlements, nations, named entities). Bulk arrays are used for dense per-hex data (elevation, temperature, biome).
+
+### 6. Mod-Aware from Day One
+
+Genesis Engine supports user modding from the start. This means: content (technologies, biomes, species traits, etc.) is data-driven and loaded from content packs. Do not hardcode content in Rust source files. See Architecture Overview §10.
+
+If a Rust source file contains "if biome == Desert" or similar content-aware special cases, that's wrong. The behavior should come from biome data, not source code.
+
+### 7. Specifications Precede Implementation
+
+Before implementing a new subsystem, the corresponding Tier 2 specification document must exist in `/docs/`. If you're asked to implement something without a spec, ask the user whether to write the spec first or proceed with what's available (and flag what's ambiguous).
+
+### 8. Tests Are Required, Not Optional
+
+Every module includes:
+
+- Unit tests for individual algorithms
+- Integration tests for module behavior
+- Snapshot tests for determinism (same seed produces same output)
+
+Don't ship a module that lacks tests. If you're unclear what to test, ask.
+
+### 9. Rust Conventions
+
+- Edition: 2024
+- Naming: `PascalCase` types, `snake_case` functions/modules, `SCREAMING_SNAKE_CASE` constants
+- Format with `cargo fmt` before completing any task
+- Lint with `cargo clippy` and address warnings (or explicitly justify suppressions)
+- Prefer explicit error types over `anyhow` in library crates; `anyhow` is fine in the binary
+- No `unsafe` without an explicit justification comment and user approval
+
+### 10. When You're Unsure, Ask
+
+This project values correctness over speed. It is better to ask a clarifying question than to make a plausible-sounding wrong assumption. The user is available; use them.
+
+In particular, ask before:
+
+- Adding a new dependency
+- Inventing terminology
+- Changing the workspace structure
+- Modifying anything in `/docs/` (only the user should change docs unless explicitly told otherwise)
+- Implementing something that touches multiple subsystems
+
+## Anti-Patterns to Avoid
+
+- **Don't paraphrase the docs back at the user.** If asked "what is X," check the docs, point to the relevant section, and answer briefly. Don't restate paragraphs.
+- **Don't write code in the chat.** Use the editor. Code in chat is hard to review and easy to lose.
+- **Don't apologize excessively.** If you made a mistake, acknowledge it briefly, fix it, and move on. The user has limited attention.
+- **Don't auto-commit.** Let the user review and commit.
+- **Don't expand scope unilaterally.** If the task is "implement the hex grid," don't also implement climate. Finish the task, then ask what's next.
+
+## When Things Break
+
+If a build fails, a test fails, or you encounter an error you can't explain:
+
+1. Read the actual error message carefully
+2. Check the docs for relevant context
+3. Try one specific hypothesis at a time
+4. If two attempts don't fix it, stop and report to the user with: what you tried, what happened, and what you think is going on
+
+Do not enter long fix-it loops without surfacing the problem.
+
+## On Tone
+
+The user is a working professional with limited time. Be direct, concise, and substantive. Don't pad responses with disclaimers or recap what was just discussed. Don't ask permission for trivial things ("Would you like me to write a test for this?" — yes, that's covered by rule 8). Do ask permission for non-trivial things (dependency additions, scope changes, architecture deviations).
+
+## Working Directory Awareness
+
+The project lives at the repository root. The structure (as it exists or as it will exist):
+
+```
+genesis-engine/
+├── Cargo.toml           # Workspace root (after Phase 0)
+├── README.md
+├── CONTRIBUTING-AI.md
+├── .cursorrules         # This file
+├── INITIAL-PROMPT.md    # First task description
+├── docs/                # Authoritative design docs
+│   ├── 01-vision-and-scope.md
+│   ├── 02-architecture-overview.md
+│   └── 03-glossary-and-naming.md
+└── crates/              # (created in Phase 0)
+    ├── genesis_core/
+    ├── genesis_mods/
+    └── ...
+```
+
+Refer to files by their path relative to repo root.
