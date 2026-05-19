@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 use crate::branches::BranchError;
+use crate::lifecycle::CreateWorldError;
 use crate::parameters::ParameterValidationError;
 
 /// Errors from save/load operations.
@@ -36,6 +37,9 @@ pub enum PersistenceError {
 
     #[error("branch tree error during load: {0}")]
     BranchTreeError(#[from] BranchError),
+
+    #[error("world creation failed during load: {0}")]
+    CreateWorld(#[from] CreateWorldError),
 }
 
 impl PersistenceError {

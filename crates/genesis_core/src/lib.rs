@@ -5,10 +5,12 @@ pub mod data;
 pub mod events;
 pub mod grid;
 pub mod interventions;
+pub mod lifecycle;
 pub mod parameters;
 pub mod persistence;
 pub mod rng;
 pub mod time;
+pub mod world;
 
 pub use branches::{Branch, BranchError, BranchId, BranchTree};
 pub use data::{
@@ -20,6 +22,10 @@ pub use grid::{Direction, GridError, HexGrid, HexId};
 pub use interventions::{
     Intervention, InterventionAction, InterventionId, InterventionLog, InterventionScope,
 };
+pub use lifecycle::{
+    CreateWorldError, GenerationError, GenerationProgress, ProgressCallback, create_world,
+    generate_full_history,
+};
 pub use parameters::{
     BiologyParameters, CivilizationParameters, ClimateInitialParameters, CoreParameters,
     GeologyParameters, GridParameters, ModEntry, ModManifest, ParameterExtensions,
@@ -29,3 +35,4 @@ pub use parameters::{
 pub use persistence::{LoadedWorld, PersistenceError, SaveMeta, load_world, save_world};
 pub use rng::{WorldRng, compute_effective_seed};
 pub use time::{Era, SimulationLayer, TickCoordinator, WorldTime};
+pub use world::World;

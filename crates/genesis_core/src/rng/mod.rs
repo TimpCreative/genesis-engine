@@ -6,6 +6,7 @@ use rand::rngs::SmallRng;
 use crate::parameters::{ModManifest, WorldParameters, WorldSeed};
 
 /// Named deterministic RNG streams for simulation subsystems.
+#[derive(Debug)]
 pub struct WorldRng {
     effective_seed: u64,
 }

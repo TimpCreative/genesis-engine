@@ -150,8 +150,10 @@ mod tests {
     const EARTH_RADIUS_KM: f64 = 6371.0;
 
     fn world_at(year: WorldYear) -> WorldData {
+        let mut params = WorldParameters::default();
+        params.core.grid.subdivision_level = 4;
         let grid = HexGrid::new(4, EARTH_RADIUS_KM).expect("grid");
-        let mut world = WorldData::new(grid);
+        let mut world = WorldData::new(grid, params);
         world.current_year = year;
         world
     }

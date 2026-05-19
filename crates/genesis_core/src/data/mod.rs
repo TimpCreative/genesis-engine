@@ -12,6 +12,7 @@ pub use enums::BedrockType;
 pub use ids::{BiomeId, NationId, PlateId, SettlementId, SpeciesId};
 
 use crate::HexGrid;
+use crate::parameters::WorldParameters;
 
 pub use crate::time::WorldYear;
 
@@ -22,6 +23,8 @@ pub use crate::time::WorldYear;
 pub struct WorldData {
     // ---- Infrastructure ----
     pub grid: HexGrid,
+    /// Immutable recipe for this world. Set at construction; do not mutate in simulation code.
+    pub parameters: WorldParameters,
     pub current_year: WorldYear,
 
     // ---- Physical Layer (Layer 0) ----
@@ -73,10 +76,12 @@ impl WorldData {
     /// Constructs a new [`WorldData`] backed by the given grid.
     ///
     /// All bulk arrays are sized to `grid.cell_count()` and filled with Phase 0 defaults.
-    pub fn new(grid: HexGrid) -> Self {
+    pub fn new(grid: HexGrid, parameters: WorldParameters) -> Self {
         let n = grid.cell_count() as usize;
         Self {
-            current_year: WorldYear::default(),
+            grid,
+            parameters: parameters.clone(),
+            current_year: parameters.core.time.world_start_year,
             elevation_mean: vec![0.0; n],
             elevation_relief: vec![0.0; n],
             bedrock_type: vec![BedrockType::Unknown; n],
@@ -95,7 +100,6 @@ impl WorldData {
             population: vec![0; n],
             settlement_id: vec![None; n],
             nation_id: vec![None; n],
-            grid,
         }
     }
 
@@ -109,12 +113,32 @@ impl WorldData {
 mod tests {
     use super::*;
     use crate::HexGrid;
+    use crate::parameters::WorldParameters;
 
     const EARTH_RADIUS_KM: f64 = 6371.0;
 
     fn world_at_level(level: u8) -> WorldData {
+        let mut params = WorldParameters::default();
+        params.core.grid.subdivision_level = level;
         let grid = HexGrid::new(level, EARTH_RADIUS_KM).expect("grid constructs");
-        WorldData::new(grid)
+        WorldData::new(grid, params)
+    }
+
+    #[test]
+    fn new_populates_parameters() {
+        let params = WorldParameters::default();
+        let grid = HexGrid::new(4, EARTH_RADIUS_KM).expect("grid constructs");
+        let world = WorldData::new(grid, params.clone());
+        assert_eq!(world.parameters, params);
+    }
+
+    #[test]
+    fn new_sets_current_year_from_parameters() {
+        let mut params = WorldParameters::default();
+        params.core.time.world_start_year = WorldYear(1000);
+        let grid = HexGrid::new(4, EARTH_RADIUS_KM).expect("grid constructs");
+        let world = WorldData::new(grid, params);
+        assert_eq!(world.current_year, WorldYear(1000));
     }
 
     #[test]

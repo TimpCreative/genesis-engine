@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::parameters::WorldParameters;
 use crate::persistence::error::PersistenceError;
+use crate::time::WorldYear;
 
 /// Top-level world recipe file: metadata plus parameters.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -22,23 +23,34 @@ pub struct SaveMeta {
     pub genesis_engine_version: String,
     pub save_format_version: u32,
     pub created_at: DateTime<Utc>,
+    #[serde(default = "default_simulation_year")]
+    pub simulation_year: WorldYear,
+}
+
+fn default_simulation_year() -> WorldYear {
+    WorldYear::FORMATION
 }
 
 impl SaveMeta {
     pub const CURRENT_SAVE_FORMAT_VERSION: u32 = 1;
 
-    pub fn current() -> Self {
+    pub fn for_save(simulation_year: WorldYear) -> Self {
         Self {
             genesis_engine_version: env!("CARGO_PKG_VERSION").to_string(),
             save_format_version: Self::CURRENT_SAVE_FORMAT_VERSION,
             created_at: Utc::now(),
+            simulation_year,
         }
     }
 }
 
-pub fn write_world_toml(path: &Path, parameters: &WorldParameters) -> Result<(), PersistenceError> {
+pub fn write_world_toml(
+    path: &Path,
+    parameters: &WorldParameters,
+    simulation_year: WorldYear,
+) -> Result<(), PersistenceError> {
     let recipe = WorldRecipe {
-        meta: SaveMeta::current(),
+        meta: SaveMeta::for_save(simulation_year),
         parameters: parameters.clone(),
     };
     let text = toml::to_string_pretty(&recipe)?;

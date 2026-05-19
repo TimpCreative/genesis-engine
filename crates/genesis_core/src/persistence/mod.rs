@@ -14,36 +14,35 @@ use std::fs;
 use std::path::Path;
 
 use crate::branches::{Branch, BranchTree};
-use crate::parameters::WorldParameters;
+use crate::lifecycle::create_world;
+use crate::world::World;
 
 /// What [`load_world`] returns.
-#[derive(Clone, Debug)]
 pub struct LoadedWorld {
     pub meta: SaveMeta,
-    pub parameters: WorldParameters,
-    pub branch_tree: BranchTree,
+    pub world: World,
 }
 
 /// Saves a complete world to a `.gen` directory.
 ///
 /// Creates the directory if it doesn't exist. Overwrites existing contents.
 /// The given path should have `.gen` suffix by convention (not enforced).
-pub fn save_world(
-    parameters: &WorldParameters,
-    tree: &BranchTree,
-    path: &Path,
-) -> Result<(), PersistenceError> {
+pub fn save_world(world: &World, path: &Path) -> Result<(), PersistenceError> {
     fs::create_dir_all(path)?;
 
-    recipe::write_world_toml(&path.join("world.toml"), parameters)?;
-    tree::write_branch_tree_toml(&path.join("branch_tree.toml"), tree)?;
+    recipe::write_world_toml(
+        &path.join("world.toml"),
+        &world.data.parameters,
+        world.data.current_year,
+    )?;
+    tree::write_branch_tree_toml(&path.join("branch_tree.toml"), &world.branch_tree)?;
 
     let branches_root = path.join("branches");
     if branches_root.exists() {
         fs::remove_dir_all(&branches_root)?;
     }
 
-    for branch in tree.all_branches() {
+    for branch in world.branch_tree.all_branches() {
         let branch_dir = logs::branch_dir(path, branch.id);
         fs::create_dir_all(&branch_dir)?;
         logs::write_branch_logs(&branch_dir, branch)?;
@@ -84,11 +83,11 @@ pub fn load_world(path: &Path) -> Result<LoadedWorld, PersistenceError> {
 
     let branch_tree = BranchTree::from_loaded_branches(branches)?;
 
-    Ok(LoadedWorld {
-        meta,
-        parameters,
-        branch_tree,
-    })
+    let mut world = create_world(parameters)?;
+    world.branch_tree = branch_tree;
+    world.data.current_year = meta.simulation_year;
+
+    Ok(LoadedWorld { meta, world })
 }
 
 #[cfg(test)]
@@ -99,6 +98,8 @@ mod tests {
     use crate::interventions::{
         Intervention, InterventionAction, InterventionId, InterventionScope,
     };
+    use crate::lifecycle::{create_world, generate_full_history};
+    use crate::parameters::WorldParameters;
     use crate::time::WorldYear;
     use chrono::Utc;
     use tempfile::tempdir;
@@ -154,6 +155,12 @@ mod tests {
         }
     }
 
+    fn world_with_tree(params: WorldParameters, tree: BranchTree) -> World {
+        let mut world = create_world(params).unwrap();
+        world.branch_tree = tree;
+        world
+    }
+
     fn tree_with_branches_and_logs() -> BranchTree {
         let mut tree = BranchTree::new();
         tree.get_mut(BranchId::ROOT)
@@ -203,37 +210,37 @@ mod tests {
     #[test]
     fn round_trip_empty_world() {
         let params = WorldParameters::default();
-        let tree = BranchTree::new();
+        let world = create_world(params.clone()).unwrap();
         let dir = tempdir().unwrap();
-        save_world(&params, &tree, dir.path()).unwrap();
+        save_world(&world, dir.path()).unwrap();
         let loaded = load_world(dir.path()).unwrap();
-        assert_eq!(loaded.parameters, params);
-        trees_equal(&tree, &loaded.branch_tree);
+        assert_eq!(loaded.world.data.parameters, params);
+        trees_equal(&world.branch_tree, &loaded.world.branch_tree);
     }
 
     #[test]
     fn round_trip_multi_branch_with_logs() {
         let params = WorldParameters::default();
-        let tree = tree_with_branches_and_logs();
+        let world = world_with_tree(params.clone(), tree_with_branches_and_logs());
         let dir = tempdir().unwrap();
-        save_world(&params, &tree, dir.path()).unwrap();
+        save_world(&world, dir.path()).unwrap();
         let loaded = load_world(dir.path()).unwrap();
-        assert_eq!(loaded.parameters, params);
-        trees_equal(&tree, &loaded.branch_tree);
+        assert_eq!(loaded.world.data.parameters, params);
+        trees_equal(&world.branch_tree, &loaded.world.branch_tree);
     }
 
     #[test]
     fn save_creates_expected_directory_structure() {
         let params = WorldParameters::default();
-        let tree = tree_with_branches_and_logs();
+        let world = world_with_tree(params, tree_with_branches_and_logs());
         let dir = tempdir().unwrap();
         let path = dir.path();
-        save_world(&params, &tree, path).unwrap();
+        save_world(&world, path).unwrap();
 
         assert!(path.join("world.toml").is_file());
         assert!(path.join("branch_tree.toml").is_file());
 
-        for branch in tree.all_branches() {
+        for branch in world.branch_tree.all_branches() {
             let branch_path = path.join("branches").join(branch.id.0.to_string());
             assert!(branch_path.join("events.jsonl").is_file());
             assert!(branch_path.join("interventions.jsonl").is_file());
@@ -253,14 +260,15 @@ mod tests {
             .unwrap()
             .event_log
             .push(sample_event(99, 999, BranchId::ROOT));
-        save_world(&params, &tree_v1, path).unwrap();
+        let world_v1 = world_with_tree(params.clone(), tree_v1);
+        save_world(&world_v1, path).unwrap();
 
-        let tree_v2 = tree_with_branches_and_logs();
-        save_world(&params, &tree_v2, path).unwrap();
+        let world_v2 = world_with_tree(params, tree_with_branches_and_logs());
+        save_world(&world_v2, path).unwrap();
 
         let loaded = load_world(path).unwrap();
-        trees_equal(&tree_v2, &loaded.branch_tree);
-        assert_eq!(loaded.branch_tree.count(), 4);
+        trees_equal(&world_v2.branch_tree, &loaded.world.branch_tree);
+        assert_eq!(loaded.world.branch_tree.count(), 4);
     }
 
     #[test]
@@ -268,29 +276,34 @@ mod tests {
         let dir = tempdir().unwrap();
         let file_path = dir.path().join("not_a_dir");
         std::fs::write(&file_path, b"x").unwrap();
-        let err = load_world(&file_path).unwrap_err();
-        assert!(matches!(err, PersistenceError::NotADirectory(_)));
+        assert!(matches!(
+            load_world(&file_path),
+            Err(PersistenceError::NotADirectory(_))
+        ));
     }
 
     #[test]
     fn load_rejects_missing_world_toml() {
         let dir = tempdir().unwrap();
         fs::create_dir_all(dir.path()).unwrap();
-        let err = load_world(dir.path()).unwrap_err();
-        assert!(matches!(err, PersistenceError::MissingFile(_)));
+        assert!(matches!(
+            load_world(dir.path()),
+            Err(PersistenceError::MissingFile(_))
+        ));
     }
 
     #[test]
     fn load_rejects_missing_branch_tree_toml() {
-        let params = WorldParameters::default();
-        let tree = BranchTree::new();
+        let world = create_world(WorldParameters::default()).unwrap();
         let dir = tempdir().unwrap();
         let path = dir.path();
-        save_world(&params, &tree, path).unwrap();
+        save_world(&world, path).unwrap();
         fs::remove_file(path.join("branch_tree.toml")).unwrap();
 
-        let err = load_world(path).unwrap_err();
-        assert!(matches!(err, PersistenceError::MissingFile(_)));
+        assert!(matches!(
+            load_world(path),
+            Err(PersistenceError::MissingFile(_))
+        ));
     }
 
     #[test]
@@ -304,6 +317,7 @@ mod tests {
                 genesis_engine_version: "0.1.0".to_string(),
                 save_format_version: 999,
                 created_at: Utc::now(),
+                simulation_year: WorldYear::FORMATION,
             },
             parameters: WorldParameters::default(),
         };
@@ -311,40 +325,39 @@ mod tests {
         fs::write(path.join("world.toml"), text).unwrap();
         fs::write(path.join("branch_tree.toml"), "branches = []\n").unwrap();
 
-        let err = load_world(path).unwrap_err();
         assert!(matches!(
-            err,
-            PersistenceError::UnsupportedFormatVersion {
+            load_world(path),
+            Err(PersistenceError::UnsupportedFormatVersion {
                 found: 999,
                 supported: 1,
-            }
+            })
         ));
     }
 
     #[test]
     fn load_rejects_invalid_parameters() {
-        let params = WorldParameters::default();
-        let tree = BranchTree::new();
+        let world = create_world(WorldParameters::default()).unwrap();
         let dir = tempdir().unwrap();
         let path = dir.path();
-        save_world(&params, &tree, path).unwrap();
+        save_world(&world, path).unwrap();
 
         let world_path = path.join("world.toml");
         let mut text = fs::read_to_string(&world_path).unwrap();
         text = text.replace("radius_km = 6371.0", "radius_km = -1.0");
         fs::write(&world_path, text).unwrap();
 
-        let err = load_world(path).unwrap_err();
-        assert!(matches!(err, PersistenceError::InvalidParameters(_)));
+        assert!(matches!(
+            load_world(path),
+            Err(PersistenceError::InvalidParameters(_))
+        ));
     }
 
     #[test]
     fn empty_event_log_round_trips() {
-        let params = WorldParameters::default();
-        let tree = BranchTree::new();
-        assert!(tree.root().event_log.is_empty());
+        let world = create_world(WorldParameters::default()).unwrap();
+        assert!(world.branch_tree.root().event_log.is_empty());
         let dir = tempdir().unwrap();
-        save_world(&params, &tree, dir.path()).unwrap();
+        save_world(&world, dir.path()).unwrap();
 
         let events_path = dir.path().join("branches/0/events.jsonl");
         assert!(events_path.is_file());
@@ -352,7 +365,7 @@ mod tests {
         assert!(content.is_empty());
 
         let loaded = load_world(dir.path()).unwrap();
-        assert!(loaded.branch_tree.root().event_log.is_empty());
+        assert!(loaded.world.branch_tree.root().event_log.is_empty());
     }
 
     #[test]
@@ -384,10 +397,11 @@ mod tests {
 
         let params = WorldParameters::default();
         let tree = BranchTree::from_loaded_branches(branches).unwrap();
+        let world = world_with_tree(params, tree);
         let dir = tempdir().unwrap();
-        save_world(&params, &tree, dir.path()).unwrap();
+        save_world(&world, dir.path()).unwrap();
 
-        let mut loaded = load_world(dir.path()).unwrap().branch_tree;
+        let mut loaded = load_world(dir.path()).unwrap().world.branch_tree;
         let next = loaded
             .create_branch(BranchId::ROOT, WorldYear(200), "New".to_string())
             .unwrap();
@@ -396,15 +410,26 @@ mod tests {
 
     #[test]
     fn meta_version_matches_crate_version_on_save() {
-        let params = WorldParameters::default();
-        let tree = BranchTree::new();
+        let world = create_world(WorldParameters::default()).unwrap();
         let dir = tempdir().unwrap();
-        save_world(&params, &tree, dir.path()).unwrap();
+        save_world(&world, dir.path()).unwrap();
         let loaded = load_world(dir.path()).unwrap();
         assert_eq!(
             loaded.meta.genesis_engine_version,
             env!("CARGO_PKG_VERSION")
         );
+    }
+
+    #[test]
+    fn round_trip_preserves_current_year() {
+        let mut world = create_world(WorldParameters::default()).unwrap();
+        generate_full_history(&mut world, WorldYear(5000), |_| {}).unwrap();
+        assert_eq!(world.data.current_year, WorldYear(5000));
+
+        let dir = tempdir().unwrap();
+        save_world(&world, dir.path()).unwrap();
+        let loaded = load_world(dir.path()).unwrap();
+        assert_eq!(loaded.world.data.current_year, WorldYear(5000));
     }
 
     #[test]
