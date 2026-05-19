@@ -1,12 +1,13 @@
 # Genesis Engine — Data Layer Specification
 
 **Document Type:** Tier 2 — System Specification
-**Status:** Draft v0.3
+**Status:** Draft v0.4
 **Last Updated:** May 2026
 **Owner:** Brax Johnson
 **Implementing Phase:** 0 (Foundation)
 
 **Changelog:**
+- v0.4 (May 2026): Clarified §5.1 that `parameters` field is added in step 4. Added sentinel constant documentation to §5.3 (`PlateId::NONE`, `BiomeId::NONE`). Corrected §16 file organization to reflect actual code layout (`Direction` lives in `grid::ids`, not `data::enums`).
 - v0.3 (May 2026): Rewrote §3.3.1 to describe Vince/Kristensen topological neighbor scheme (replacing geometric k-NN approach). Updated §3.4 to reference topological construction. Added algorithm source citations.
 - v0.2 (May 2026): Extended cell count table to levels 0-4. Added §3.3.1 (Class I/II parity) and §3.3.2 (geodesic vs. Snyder projection). Reflects clarifications surfaced by step 1 implementation.
 - v0.1 (May 2026): Initial draft.
@@ -538,12 +539,15 @@ The TOML representation is the canonical shared format. Internally, parameters m
 
 Per-hex data lives in bulk arrays (Struct-of-Arrays pattern). These arrays are owned by the `WorldData` struct in `genesis_core`.
 
+**Note on `parameters` field:** Phase 0 step 3 implements `WorldData` without the `parameters: WorldParameters` field, because `WorldParameters` is implemented in step 4. The schema below shows the final shape; the step-3 implementation omits `parameters` and the step-4 implementation adds it. Similarly, `current_year` is typed as a placeholder `WorldYear(i64)` in step 3 and replaced with the full `WorldYear` from `genesis_core::time` in step 4.
+
 ```rust
 pub struct WorldData {
     /// The grid this data corresponds to. Immutable after construction.
     pub grid: HexGrid,
 
     /// The parameters this world was created from. Immutable.
+    /// (Added in step 4 alongside the `genesis_core::parameters` module.)
     pub parameters: WorldParameters,
 
     /// The current simulation time.
@@ -668,6 +672,31 @@ pub struct BiomeId(pub u16);
 ```
 
 `BiomeId` is content-driven: a biome is a content entry from a mod. The `BiomeId` is an index into the loaded biome registry. Save files reference biomes by their content identifier string (`"core:temperate_forest"`) for stability across mod versions.
+
+**Sentinel values for sparse defaults.** `PlateId` and `BiomeId` reserve `u16::MAX` as a "none" sentinel. This avoids the memory overhead of wrapping every hex's `plate_id` and `biome` field in `Option<T>`:
+
+```rust
+impl PlateId {
+    /// Sentinel value indicating no plate assignment.
+    pub const NONE: PlateId = PlateId(u16::MAX);
+}
+
+impl BiomeId {
+    /// Sentinel value indicating no biome assignment.
+    pub const NONE: BiomeId = BiomeId(u16::MAX);
+}
+```
+
+Code that constructs bulk arrays for these fields uses the sentinel as the default:
+
+```rust
+plate_id: vec![PlateId::NONE; cell_count],
+biome:    vec![BiomeId::NONE; cell_count],
+```
+
+The simulation modules replace the sentinel with real assignments as they run. Reading code can detect "no assignment" by comparing to the `NONE` constant.
+
+For other ID types (`SettlementId`, `NationId`, `SpeciesId`), which appear in `Option<T>` fields rather than bulk arrays, no sentinel is needed — `None` itself represents "no assignment."
 
 ### 5.4 Enums
 
@@ -1094,14 +1123,16 @@ The data layer lives in `genesis_core`. Phase 0 organizes it as:
 crates/genesis_core/src/
 ├── lib.rs              # Crate root, public re-exports
 ├── grid/
-│   ├── mod.rs          # HexGrid public API
-│   ├── isea3h.rs       # ISEA3H coordinate math
-│   ├── neighbors.rs    # Neighbor table construction
-│   └── geography.rs    # Lat/lon, area, distance
+│   ├── mod.rs          # HexGrid public API; Direction and HexId types
+│   ├── isea3h.rs       # ISEA3H coordinate math (Vince/Kristensen)
+│   ├── neighbors.rs    # Neighbor table construction (topological)
+│   ├── geography.rs    # Lat/lon, area, distance, bearing
+│   ├── ids.rs          # HexId, Direction
+│   └── error.rs        # GridError
 ├── data/
-│   ├── mod.rs          # WorldData struct
-│   ├── enums.rs        # BedrockType, Direction, etc.
-│   └── ids.rs          # HexId, PlateId, etc.
+│   ├── mod.rs          # WorldData struct (re-exports Direction from grid)
+│   ├── enums.rs        # BedrockType
+│   └── ids.rs          # SettlementId, NationId, SpeciesId, PlateId, BiomeId
 ├── parameters/
 │   ├── mod.rs          # WorldParameters
 │   ├── core.rs         # CoreParameters sub-structs
