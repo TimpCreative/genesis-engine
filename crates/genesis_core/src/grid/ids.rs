@@ -1,9 +1,12 @@
+use serde::{Deserialize, Serialize};
+
 /// Opaque, dense identifier for a hex cell.
-#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct HexId(pub u32);
 
 /// Direction within a hex's local frame. Six standard directions; pentagons use only five.
-#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Serialize, Deserialize)]
 pub enum Direction {
     D0,
     D1,
