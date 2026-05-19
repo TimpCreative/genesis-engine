@@ -1,6 +1,6 @@
 //! Branch tree: alternate timelines forked by interventions.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -140,6 +140,36 @@ impl BranchTree {
         self.branches.len()
     }
 
+    /// Reconstructs a branch tree from a list of loaded branches.
+    /// Used by persistence; not for normal branching operations.
+    ///
+    /// Errors if branches reference unknown parents or if the ROOT branch is missing.
+    pub fn from_loaded_branches(branches: Vec<Branch>) -> Result<Self, BranchError> {
+        let ids: HashSet<BranchId> = branches.iter().map(|b| b.id).collect();
+        if !ids.contains(&BranchId::ROOT) {
+            return Err(BranchError::MissingRoot);
+        }
+        for branch in &branches {
+            if let Some(parent) = branch.parent
+                && !ids.contains(&parent)
+            {
+                return Err(BranchError::InvalidParentReference {
+                    child: branch.id,
+                    parent,
+                });
+            }
+        }
+        let next_id = branches
+            .iter()
+            .map(|b| b.id.0)
+            .max()
+            .map(|max| max + 1)
+            .unwrap_or(1);
+        let branches: BTreeMap<BranchId, Branch> =
+            branches.into_iter().map(|b| (b.id, b)).collect();
+        Ok(Self { branches, next_id })
+    }
+
     /// Returns all events visible on `branch` at or before `year`, walking up
     /// the parent chain. Each parent's events are included only up to the
     /// child's divergence point.
@@ -194,6 +224,12 @@ impl Default for BranchTree {
 pub enum BranchError {
     #[error("branch {0:?} does not exist")]
     UnknownBranch(BranchId),
+
+    #[error("loaded branch tree missing required ROOT branch")]
+    MissingRoot,
+
+    #[error("loaded branch {child:?} references unknown parent {parent:?}")]
+    InvalidParentReference { child: BranchId, parent: BranchId },
 }
 
 #[cfg(test)]
@@ -376,5 +412,53 @@ mod tests {
         let visible = tree.interventions_visible_on(child, WorldYear(300));
         let years: Vec<i64> = visible.iter().map(|i| i.year.value()).collect();
         assert_eq!(years, vec![100, 200, 250]);
+    }
+
+    fn loaded_branch(id: u32, parent: Option<BranchId>, name: &str) -> Branch {
+        Branch {
+            id: BranchId(id),
+            parent,
+            divergence_year: WorldYear(100),
+            name: name.to_string(),
+            created_at_real_time: Utc::now(),
+            intervention_log: InterventionLog::new(),
+            event_log: EventLog::new(parent, WorldYear(100)),
+        }
+    }
+
+    #[test]
+    fn from_loaded_branches_rejects_missing_root() {
+        let branches = vec![loaded_branch(1, Some(BranchId(99)), "orphan")];
+        let err = BranchTree::from_loaded_branches(branches).unwrap_err();
+        assert!(matches!(err, BranchError::MissingRoot));
+    }
+
+    #[test]
+    fn from_loaded_branches_rejects_invalid_parent() {
+        let branches = vec![
+            loaded_branch(0, None, "Root"),
+            loaded_branch(1, Some(BranchId(99)), "Child"),
+        ];
+        let err = BranchTree::from_loaded_branches(branches).unwrap_err();
+        assert!(matches!(
+            err,
+            BranchError::InvalidParentReference {
+                child: BranchId(1),
+                parent: BranchId(99),
+            }
+        ));
+    }
+
+    #[test]
+    fn from_loaded_branches_sets_next_id() {
+        let branches = vec![
+            loaded_branch(0, None, "Root"),
+            loaded_branch(5, Some(BranchId::ROOT), "High"),
+        ];
+        let mut tree = BranchTree::from_loaded_branches(branches).unwrap();
+        let next = tree
+            .create_branch(BranchId::ROOT, WorldYear(200), "New".to_string())
+            .unwrap();
+        assert_eq!(next, BranchId(6));
     }
 }

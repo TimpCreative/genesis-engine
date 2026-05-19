@@ -6,6 +6,7 @@ pub mod events;
 pub mod grid;
 pub mod interventions;
 pub mod parameters;
+pub mod persistence;
 pub mod rng;
 pub mod time;
 
@@ -25,5 +26,6 @@ pub use parameters::{
     ParameterValidationError, ParameterValue, ParameterValueData, PlanetParameters, TimeParameters,
     WorldParameters, WorldSeed,
 };
+pub use persistence::{LoadedWorld, PersistenceError, SaveMeta, load_world, save_world};
 pub use rng::{WorldRng, compute_effective_seed};
 pub use time::{Era, SimulationLayer, TickCoordinator, WorldTime};
