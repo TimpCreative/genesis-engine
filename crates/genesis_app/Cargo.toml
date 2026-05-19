@@ -1,0 +1,12 @@
+[package]
+name = "genesis_app"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "genesis_app"
+path = "src/main.rs"
+
+[dependencies]
+bevy = { workspace = true }

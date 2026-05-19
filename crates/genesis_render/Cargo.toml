@@ -1,0 +1,10 @@
+[package]
+name = "genesis_render"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+
+[dependencies]
+bevy = { workspace = true }

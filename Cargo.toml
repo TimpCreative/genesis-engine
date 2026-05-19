@@ -1,0 +1,31 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/genesis_app",
+    "crates/genesis_biology",
+    "crates/genesis_civilization",
+    "crates/genesis_climate",
+    "crates/genesis_core",
+    "crates/genesis_export",
+    "crates/genesis_hydrology",
+    "crates/genesis_mods",
+    "crates/genesis_render",
+    "crates/genesis_tech",
+    "crates/genesis_tectonics",
+    "crates/genesis_ui",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace.dependencies]
+bevy = "0.18.1"
+
+# Bevy dev-profile recommendations (https://bevy.org/learn/quick-start/getting-started/setup/)
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
