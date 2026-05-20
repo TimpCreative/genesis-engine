@@ -79,6 +79,10 @@ impl WorldParameters {
         )?;
         validate_scale(self.core.geology.volcanism_scale, "geology.volcanism_scale")?;
         validate_scale(
+            self.core.geology.geology_activity_scale,
+            "geology.geology_activity_scale",
+        )?;
+        validate_scale(
             self.core.biology.mutation_rate_scale,
             "biology.mutation_rate_scale",
         )?;

@@ -1,11 +1,13 @@
 //! History generation with tectonics registered on the tick coordinator.
 
 use genesis_core::World;
+use genesis_core::branches::BranchId;
+use genesis_core::events::{Event, EventKind, EventLocation, Significance};
 use genesis_core::lifecycle::{GenerationError, GenerationProgress, advance_with_coordinator};
 use genesis_core::time::{TickCoordinator, WorldYear};
 
 use crate::erosion::ensure_deposition_buffer;
-use crate::events::flush_events_to_branch;
+use crate::events::{alloc_event_id, flush_events_to_branch, maybe_emit};
 use crate::hotspots::generate_initial_hotspots;
 use crate::initial_terrain::apply_formation_terrain;
 use crate::layer::TectonicsLayer;
@@ -65,5 +67,21 @@ pub fn run_formation(world: &mut World, state: &mut TectonicsState) {
     apply_formation_terrain(&mut world.data, &state.registry, &world.rng);
     state.hotspots = generate_initial_hotspots(&world.data, &world.rng);
     ensure_deposition_buffer(state, world.data.grid.cell_count() as usize);
+
+    let event_granularity = world.data.parameters.core.geology.event_granularity;
+    let event_id = alloc_event_id(state);
+    maybe_emit(
+        state,
+        Event {
+            id: event_id,
+            year: world.data.current_year,
+            branch_id: BranchId::ROOT,
+            location: EventLocation::Global,
+            significance: Significance::Pivotal,
+            kind: EventKind::WorldFormation,
+        },
+        event_granularity,
+    );
+
     state.formation_complete = true;
 }

@@ -3,6 +3,7 @@
 //! Phase 1: plate generation, drift, boundaries, and terrain sculpting.
 
 pub mod boundary;
+pub mod boundary_events;
 pub mod elevation;
 pub mod erosion;
 pub mod events;
@@ -14,12 +15,15 @@ pub mod layer;
 pub mod motion;
 pub mod partition;
 pub mod plate;
+pub mod reorganization;
+pub mod sea_level;
 pub mod volcanism;
 
 pub use boundary::{
     BoundaryClass, BoundaryInfo, ClassifiedEdge, ConvergentSubtype, convergent_subtype,
     detect_and_classify_boundaries,
 };
+pub use boundary_events::{boundary_type_from_class, emit_boundary_events};
 pub use elevation::{
     CC_INLAND_HEXES, CONTINENTAL_RIFT_SUBSIDENCE_FACTOR, MAX_ELEVATION_M, MAX_RELIEF_M,
     MIN_ELEVATION_M, OC_INLAND_HEXES, OROGENY_RATE, SUBDUCTION_RATE, SUBSIDENCE_RATE,
@@ -50,6 +54,11 @@ pub use partition::repartition_hexes;
 pub use plate::{
     HotSpot, HotSpotRegistry, Plate, PlateClass, PlateRegistry, PlateType, TectonicsState,
 };
+pub use reorganization::{
+    REORGANIZATION_ACTION_STREAM, REORGANIZATION_CHECK_STREAM, maybe_reorganize,
+    purge_extinct_plates, update_last_nonempty_years,
+};
+pub use sea_level::{total_divergent_boundary_length_km, update_sea_level};
 pub use volcanism::{
     ELEVATION_CHANGE_MAX_M, ELEVATION_CHANGE_MIN_M, ERUPTION_PROBABILITY_BASE,
     NOTABLE_PEAK_THRESHOLD_M, RELIEF_CHANGE_MAX_M, RELIEF_CHANGE_MIN_M, VOLCANISM_STREAM,
@@ -411,6 +420,105 @@ mod integration_tests {
             eruption_count > 0,
             "expected at least one VolcanicEruption in root log (got {eruption_count})"
         );
+    }
+
+    #[test]
+    fn formation_emits_world_formation_event() {
+        let mut world = test_world();
+        let mut state = TectonicsState::new();
+        run_formation(&mut world, &mut state);
+        flush_events_to_branch(&mut world, &mut state);
+        assert!(
+            world
+                .branch_tree
+                .root()
+                .event_log
+                .iter()
+                .any(|e| matches!(e.kind, EventKind::WorldFormation)),
+            "expected WorldFormation in root log after formation"
+        );
+    }
+
+    #[test]
+    fn sea_level_bounded_at_one_million_years() {
+        let mut world = test_world();
+        world.data.parameters.core.geology.event_granularity = Significance::Trace;
+        let mut state = TectonicsState::new();
+        generate_full_history_with_tectonics(&mut world, &mut state, WorldYear(1_000_000), |_| {})
+            .expect("history");
+
+        assert!(
+            world.data.sea_level_m.abs() <= 200.0,
+            "sea level should stay within ±200 m (got {})",
+            world.data.sea_level_m
+        );
+
+        let sea_level_events = world
+            .branch_tree
+            .root()
+            .event_log
+            .iter()
+            .filter(|e| matches!(e.kind, EventKind::SeaLevelChange { .. }))
+            .count();
+        assert!(
+            sea_level_events > 0,
+            "expected SeaLevelChange events at Trace granularity (got {sea_level_events})"
+        );
+    }
+
+    #[test]
+    fn plate_count_reasonable_at_one_million_years() {
+        let mut world = test_world();
+        let mut state = TectonicsState::new();
+        generate_full_history_with_tectonics(&mut world, &mut state, WorldYear(1_000_000), |_| {})
+            .expect("history");
+        let count = state.registry.count();
+        assert!(
+            (5..=15).contains(&count),
+            "plate count at 1M years should be in [5, 15], got {count}"
+        );
+    }
+
+    #[test]
+    fn event_log_deterministic_at_one_million_years() {
+        let mut world_a = test_world();
+        let mut world_b = test_world();
+        let mut state_a = TectonicsState::new();
+        let mut state_b = TectonicsState::new();
+
+        world_a.data.parameters.core.geology.event_granularity = Significance::Trace;
+        world_b.data.parameters.core.geology.event_granularity = Significance::Trace;
+
+        generate_full_history_with_tectonics(
+            &mut world_a,
+            &mut state_a,
+            WorldYear(1_000_000),
+            |_| {},
+        )
+        .expect("history a");
+        generate_full_history_with_tectonics(
+            &mut world_b,
+            &mut state_b,
+            WorldYear(1_000_000),
+            |_| {},
+        )
+        .expect("history b");
+
+        let log_a: Vec<_> = world_a
+            .branch_tree
+            .root()
+            .event_log
+            .iter()
+            .map(|e| (e.id, e.year, format!("{:?}", e.kind)))
+            .collect();
+        let log_b: Vec<_> = world_b
+            .branch_tree
+            .root()
+            .event_log
+            .iter()
+            .map(|e| (e.id, e.year, format!("{:?}", e.kind)))
+            .collect();
+        assert_eq!(log_a, log_b);
     }
 
     #[test]

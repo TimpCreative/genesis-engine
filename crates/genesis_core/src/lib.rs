@@ -17,7 +17,10 @@ pub use data::{
     BedrockType, BiomeId, HotSpotId, NationId, PlateId, SettlementId, SpeciesId, WorldData,
     WorldYear,
 };
-pub use events::{Event, EventId, EventKind, EventLocation, EventLog, Significance};
+pub use events::{
+    BoundaryType, Event, EventId, EventKind, EventLocation, EventLog, PlateReorgAction,
+    Significance,
+};
 pub use grid::isea3h;
 pub use grid::{Direction, GridError, HexGrid, HexId};
 pub use interventions::{

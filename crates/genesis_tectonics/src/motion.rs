@@ -1,10 +1,44 @@
 //! Plate motion: accumulated rotation and effective seed positions.
 
 use glam::{DQuat, DVec3};
+use rand::Rng;
 
 use genesis_core::HexGrid;
 
 use crate::plate::Plate;
+
+/// Doc 06 §2.1 — sample a motion axis uniform on the sphere with centroid constraints.
+pub fn sample_motion_axis(centroid: DVec3, rng: &mut rand::rngs::SmallRng) -> DVec3 {
+    use std::f64::consts::PI;
+
+    let z_axis = DVec3::Z;
+    let centroid = centroid.normalize();
+
+    for _attempt in 0..100 {
+        let u: f64 = rng.gen_range(0.0..1.0);
+        let v: f64 = rng.gen_range(0.0..1.0);
+        let theta = 2.0 * PI * u;
+        let phi = (2.0_f64 * v - 1.0).acos();
+        let axis = DVec3::new(phi.sin() * theta.cos(), phi.sin() * theta.sin(), phi.cos());
+
+        if axis.dot(z_axis).abs() > 0.95 {
+            continue;
+        }
+
+        let to_centroid = axis.dot(centroid).clamp(-1.0, 1.0).acos();
+        if !(PI * 30.0 / 180.0..=PI * 150.0 / 180.0).contains(&to_centroid) {
+            continue;
+        }
+
+        return axis;
+    }
+
+    if centroid.dot(z_axis).abs() < 0.99 {
+        centroid.cross(z_axis).normalize()
+    } else {
+        centroid.cross(DVec3::X).normalize()
+    }
+}
 
 /// Rotates the seed hex center direction about `plate.motion_axis` by
 /// `plate.accumulated_rotation_rad`, returning a unit direction.
@@ -69,6 +103,7 @@ mod tests {
             age_year: WorldYear::FORMATION,
             target_fraction: 0.1,
             accumulated_rotation_rad: 0.0,
+            last_nonempty_year: WorldYear::FORMATION,
         }
     }
 

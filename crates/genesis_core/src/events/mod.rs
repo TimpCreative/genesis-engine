@@ -2,7 +2,7 @@
 
 mod kinds;
 
-pub use kinds::EventKind;
+pub use kinds::{BoundaryType, EventKind, PlateReorgAction};
 
 use serde::{Deserialize, Serialize};
 
@@ -247,6 +247,80 @@ mod tests {
             hex: HexId(42),
             hot_spot_id: HotSpotId(7),
             elevation_change_m: 350.0,
+        };
+        let json = serde_json::to_string(&kind).unwrap();
+        let back: EventKind = serde_json::from_str(&json).unwrap();
+        assert_eq!(kind, back);
+    }
+
+    #[test]
+    fn world_formation_kind_round_trip() {
+        let kind = EventKind::WorldFormation;
+        let json = serde_json::to_string(&kind).unwrap();
+        let back: EventKind = serde_json::from_str(&json).unwrap();
+        assert_eq!(kind, back);
+    }
+
+    #[test]
+    fn plate_reorganization_kind_round_trip() {
+        use crate::data::PlateId;
+
+        let kind = EventKind::PlateReorganization {
+            action: PlateReorgAction::Split {
+                parent: PlateId(1),
+                child: PlateId(2),
+            },
+            affected_plates: vec![PlateId(1), PlateId(2)],
+        };
+        let json = serde_json::to_string(&kind).unwrap();
+        let back: EventKind = serde_json::from_str(&json).unwrap();
+        assert_eq!(kind, back);
+    }
+
+    #[test]
+    fn mountain_range_formed_kind_round_trip() {
+        use crate::data::PlateId;
+
+        let kind = EventKind::MountainRangeFormed {
+            boundary_hexes: vec![HexId(1), HexId(2)],
+            plates: (PlateId(0), PlateId(1)),
+            peak_elevation_m: 4500.0,
+        };
+        let json = serde_json::to_string(&kind).unwrap();
+        let back: EventKind = serde_json::from_str(&json).unwrap();
+        assert_eq!(kind, back);
+    }
+
+    #[test]
+    fn ocean_basin_opened_kind_round_trip() {
+        use crate::data::PlateId;
+
+        let kind = EventKind::OceanBasinOpened {
+            boundary_hexes: vec![HexId(5)],
+            plates: (PlateId(2), PlateId(3)),
+        };
+        let json = serde_json::to_string(&kind).unwrap();
+        let back: EventKind = serde_json::from_str(&json).unwrap();
+        assert_eq!(kind, back);
+    }
+
+    #[test]
+    fn boundary_transition_kind_round_trip() {
+        let kind = EventKind::BoundaryTransition {
+            hex: HexId(10),
+            from: BoundaryType::Divergent,
+            to: BoundaryType::ConvergentContinentalContinental,
+        };
+        let json = serde_json::to_string(&kind).unwrap();
+        let back: EventKind = serde_json::from_str(&json).unwrap();
+        assert_eq!(kind, back);
+    }
+
+    #[test]
+    fn sea_level_change_kind_round_trip() {
+        let kind = EventKind::SeaLevelChange {
+            delta_m: 12.5,
+            new_sea_level_m: 12.5,
         };
         let json = serde_json::to_string(&kind).unwrap();
         let back: EventKind = serde_json::from_str(&json).unwrap();

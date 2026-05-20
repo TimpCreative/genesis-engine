@@ -1,8 +1,25 @@
-//! Flush tectonic events into the root branch event log.
+//! Event emission and flush to branch event log.
 
 use crate::plate::TectonicsState;
 use genesis_core::World;
 use genesis_core::branches::BranchId;
+use genesis_core::events::{Event, EventId, Significance};
+
+/// Allocates the next monotonic [`EventId`] from tectonics state.
+pub fn alloc_event_id(state: &mut TectonicsState) -> EventId {
+    let id = EventId(state.next_event_id);
+    state.next_event_id += 1;
+    id
+}
+
+/// Records `event` when its significance meets the user granularity threshold.
+///
+/// Terrain and world-state updates happen regardless; only chronicle logging is gated.
+pub fn maybe_emit(state: &mut TectonicsState, event: Event, granularity: Significance) {
+    if event.significance >= granularity {
+        state.pending_events.push(event);
+    }
+}
 
 /// Pushes [`TectonicsState::pending_events`] onto the root branch [`EventLog`](genesis_core::events::EventLog).
 pub fn flush_events_to_branch(world: &mut World, state: &mut TectonicsState) {
@@ -18,7 +35,7 @@ pub fn flush_events_to_branch(world: &mut World, state: &mut TectonicsState) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use genesis_core::events::{Event, EventId, EventKind, EventLocation, Significance};
+    use genesis_core::events::{EventKind, EventLocation};
     use genesis_core::parameters::WorldParameters;
     use genesis_core::time::WorldYear;
     use genesis_core::{HexId, PlateId, create_world};
@@ -45,5 +62,34 @@ mod tests {
         assert_eq!(world.branch_tree.root().event_log.len(), 1);
         let event = world.branch_tree.root().event_log.iter().next().unwrap();
         assert!(matches!(event.kind, EventKind::VolcanicEruption { .. }));
+    }
+
+    #[test]
+    fn maybe_emit_respects_granularity() {
+        let mut state = TectonicsState::new();
+        let event = Event {
+            id: alloc_event_id(&mut state),
+            year: WorldYear(500_000),
+            branch_id: BranchId::ROOT,
+            location: EventLocation::Global,
+            significance: Significance::Trace,
+            kind: EventKind::SeaLevelChange {
+                delta_m: 1.0,
+                new_sea_level_m: 1.0,
+            },
+        };
+        maybe_emit(&mut state, event, Significance::Pivotal);
+        assert!(state.pending_events.is_empty());
+
+        let event2 = Event {
+            id: alloc_event_id(&mut state),
+            year: WorldYear(500_000),
+            branch_id: BranchId::ROOT,
+            location: EventLocation::Global,
+            significance: Significance::Pivotal,
+            kind: EventKind::WorldFormation,
+        };
+        maybe_emit(&mut state, event2, Significance::Notable);
+        assert_eq!(state.pending_events.len(), 1);
     }
 }

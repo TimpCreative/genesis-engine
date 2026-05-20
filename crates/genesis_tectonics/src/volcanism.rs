@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 
 use genesis_core::branches::BranchId;
 use genesis_core::data::{BedrockType, WorldData};
-use genesis_core::events::{Event, EventId, EventKind, EventLocation, Significance};
+use genesis_core::events::{Event, EventKind, EventLocation, Significance};
 use genesis_core::rng::WorldRng;
 use genesis_core::time::WorldYear;
 use genesis_core::{HexId, PlateId};
@@ -13,6 +13,7 @@ use rand::Rng;
 use crate::boundary::{BoundaryClass, BoundaryInfo, ConvergentSubtype};
 use crate::elevation::clamp_terrain;
 use crate::elevation::subducting_plate_id;
+use crate::events::{alloc_event_id, maybe_emit};
 use crate::plate::{Plate, PlateRegistry, PlateType};
 
 /// RNG stream for eruption rolls and magnitude sampling (Doc 06 §4.4).
@@ -73,11 +74,11 @@ pub fn apply_boundary_volcanism(
         let peak_proxy = data.elevation_mean[idx] + data.elevation_relief[idx];
         let significance = eruption_significance(peak_proxy);
 
-        if significance >= event_granularity {
-            let id = EventId(state.next_event_id);
-            state.next_event_id += 1;
-            state.pending_events.push(Event {
-                id,
+        let event_id = alloc_event_id(state);
+        maybe_emit(
+            state,
+            Event {
+                id: event_id,
                 year: tick_year,
                 branch_id,
                 location: EventLocation::Hex(hex),
@@ -87,8 +88,9 @@ pub fn apply_boundary_volcanism(
                     elevation_change_m: elev_change,
                     plate: plate_id,
                 },
-            });
-        }
+            },
+            event_granularity,
+        );
     }
 
     clamp_terrain(data);
@@ -176,6 +178,7 @@ mod tests {
             age_year: WorldYear::FORMATION,
             target_fraction: 0.5,
             accumulated_rotation_rad: 0.0,
+            last_nonempty_year: WorldYear::FORMATION,
         }
     }
 

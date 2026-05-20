@@ -126,6 +126,8 @@ pub struct GeologyParameters {
     pub plate_velocity_scale: f32,
     /// Volcanism intensity multiplier. Default 1.0.
     pub volcanism_scale: f32,
+    /// Plate reorganization and general geological activity scale. Default 1.0 (Doc 06 §4.5).
+    pub geology_activity_scale: f32,
     /// Number of major (large) plates at world formation. Default 7. Valid range 6-9.
     pub initial_major_plate_count: u8,
     /// Number of minor (smaller) plates at world formation. Default 8. Valid range 6-10.

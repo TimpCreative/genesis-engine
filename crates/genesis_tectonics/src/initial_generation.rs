@@ -52,6 +52,7 @@ pub fn generate_initial_plates_data(data: &mut WorldData, rng: &WorldRng) -> Pla
             age_year: WorldYear::FORMATION,
             target_fraction: major_target_fractions[i],
             accumulated_rotation_rad: 0.0,
+            last_nonempty_year: WorldYear::FORMATION,
         };
         registry.insert(plate);
     }
@@ -92,6 +93,7 @@ pub fn generate_initial_plates_data(data: &mut WorldData, rng: &WorldRng) -> Pla
             age_year: WorldYear::FORMATION,
             target_fraction: minor_target_fractions[i],
             accumulated_rotation_rad: 0.0,
+            last_nonempty_year: WorldYear::FORMATION,
         };
         registry.insert(plate);
     }
@@ -520,7 +522,7 @@ fn assign_plate_motion(
 
     for id in plate_ids {
         let centroid = compute_plate_centroid(grid, id, plate_id_for_hex);
-        let axis = sample_motion_axis(centroid, &mut axes_rng);
+        let axis = crate::motion::sample_motion_axis(centroid, &mut axes_rng);
 
         let log_sample: f64 = sample_log_normal(&mut rates_rng, sigma);
         let mut rate_cm_per_year = median_cm_per_year * log_sample;
@@ -562,39 +564,6 @@ fn compute_plate_centroid(
         return DVec3::Z;
     }
     sum.normalize()
-}
-
-/// Doc 06 §2.1 — reject axes too close to z or wrong angular distance from plate centroid.
-fn sample_motion_axis(centroid: DVec3, rng: &mut rand::rngs::SmallRng) -> DVec3 {
-    use std::f64::consts::PI;
-
-    let z_axis = DVec3::Z;
-    let centroid = centroid.normalize();
-
-    for _attempt in 0..100 {
-        let u = rng.gen_range(0.0..1.0);
-        let v = rng.gen_range(0.0..1.0);
-        let theta = 2.0 * PI * u;
-        let phi = (2.0_f64 * v - 1.0).acos();
-        let axis = DVec3::new(phi.sin() * theta.cos(), phi.sin() * theta.sin(), phi.cos());
-
-        if axis.dot(z_axis).abs() > 0.95 {
-            continue;
-        }
-
-        let to_centroid = axis.dot(centroid).clamp(-1.0, 1.0).acos();
-        if !(PI * 30.0 / 180.0..=PI * 150.0 / 180.0).contains(&to_centroid) {
-            continue;
-        }
-
-        return axis;
-    }
-
-    if centroid.dot(z_axis).abs() < 0.99 {
-        centroid.cross(z_axis).normalize()
-    } else {
-        centroid.cross(DVec3::X).normalize()
-    }
 }
 
 /// Whether `axis` satisfies §2.1 angular-distance constraints relative to `centroid`.

@@ -8,7 +8,7 @@
 
 use genesis_core::branches::BranchId;
 use genesis_core::data::{BedrockType, WorldData};
-use genesis_core::events::{Event, EventId, EventKind, EventLocation, Significance};
+use genesis_core::events::{Event, EventKind, EventLocation, Significance};
 use genesis_core::grid::HexGrid;
 use genesis_core::rng::WorldRng;
 use genesis_core::time::WorldYear;
@@ -16,6 +16,7 @@ use genesis_core::{HexId, HotSpotId};
 use glam::DVec3;
 use rand::Rng;
 
+use crate::events::{alloc_event_id, maybe_emit};
 use crate::plate::{HotSpot, HotSpotRegistry, TectonicsState};
 
 /// One-shot Formation stream for initial hot spot positions and parameters (§4.4).
@@ -156,10 +157,10 @@ pub fn apply_hotspot_tick(
         hotspot.cumulative_uplift_m += elev_change;
         let significance = hotspot_significance(hotspot.cumulative_uplift_m);
 
-        if significance >= event_granularity {
-            let event_id = EventId(state.next_event_id);
-            state.next_event_id += 1;
-            state.pending_events.push(Event {
+        let event_id = alloc_event_id(state);
+        maybe_emit(
+            state,
+            Event {
                 id: event_id,
                 year: tick_year,
                 branch_id,
@@ -170,8 +171,9 @@ pub fn apply_hotspot_tick(
                     hot_spot_id: id,
                     elevation_change_m: elev_change,
                 },
-            });
-        }
+            },
+            event_granularity,
+        );
     }
 
     let spawn_roll: f64 = activity_rng.gen_range(0.0..1.0);

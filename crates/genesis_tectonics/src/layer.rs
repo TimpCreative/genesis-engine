@@ -5,19 +5,24 @@ use std::rc::Rc;
 
 use genesis_core::branches::BranchId;
 use genesis_core::data::WorldData;
+use genesis_core::events::{Event, EventKind, EventLocation, Significance};
 use genesis_core::parameters::WorldParameters;
 use genesis_core::rng::WorldRng;
 use genesis_core::time::{Era, SimulationLayer, WorldYear};
 
 use crate::boundary::detect_and_classify_boundaries;
-use crate::elevation::apply_boundary_elevation;
+use crate::boundary_events::emit_boundary_events;
+use crate::elevation::{apply_boundary_elevation, clamp_terrain};
 use crate::erosion::{apply_erosion_tick, ensure_deposition_buffer};
+use crate::events::{alloc_event_id, maybe_emit};
 use crate::hotspots::{apply_hotspot_tick, generate_initial_hotspots};
 use crate::initial_generation::generate_initial_plates_data;
 use crate::initial_terrain::apply_formation_terrain;
 use crate::motion::advance_plate_motion;
 use crate::partition::repartition_hexes;
 use crate::plate::TectonicsState;
+use crate::reorganization::maybe_reorganize;
+use crate::sea_level::update_sea_level;
 use crate::volcanism::apply_boundary_volcanism;
 
 /// Default Geological-era tick interval (Doc 06 §4.1).
@@ -74,6 +79,22 @@ impl SimulationLayer for TectonicsLayer {
             apply_formation_terrain(world, &state.registry, rng);
             state.hotspots = generate_initial_hotspots(world, rng);
             ensure_deposition_buffer(&mut state, world.grid.cell_count() as usize);
+
+            let event_granularity = world.parameters.core.geology.event_granularity;
+            let formation_event_id = alloc_event_id(&mut state);
+            maybe_emit(
+                &mut state,
+                Event {
+                    id: formation_event_id,
+                    year: world.current_year,
+                    branch_id: BranchId::ROOT,
+                    location: EventLocation::Global,
+                    significance: Significance::Pivotal,
+                    kind: EventKind::WorldFormation,
+                },
+                event_granularity,
+            );
+
             state.formation_complete = true;
             self.last_tick_year.set(world.current_year);
             return Vec::new();
@@ -97,6 +118,8 @@ impl SimulationLayer for TectonicsLayer {
                 boundary_hex_count = state.boundaries.boundary_hexes.len(),
                 "tectonics boundaries classified"
             );
+
+            state.elevation_at_tick_start = world.elevation_mean.clone();
 
             apply_boundary_elevation(world, &state.registry, &state.boundaries, interval_years);
 
@@ -123,6 +146,42 @@ impl SimulationLayer for TectonicsLayer {
             );
 
             apply_erosion_tick(world, &mut state, rng, tick_year, interval_years);
+
+            let reorg_fired = maybe_reorganize(
+                world,
+                &mut state,
+                rng,
+                tick_year,
+                event_granularity,
+                BranchId::ROOT,
+            );
+            if reorg_fired {
+                repartition_hexes(world, &state.registry);
+                state.boundaries = detect_and_classify_boundaries(world, &state.registry);
+            }
+
+            let boundaries = state.boundaries.clone();
+            update_sea_level(
+                world,
+                &boundaries,
+                &mut state,
+                rng,
+                tick_year,
+                reorg_fired,
+                event_granularity,
+                BranchId::ROOT,
+            );
+
+            emit_boundary_events(
+                world,
+                &boundaries,
+                &mut state,
+                tick_year,
+                event_granularity,
+                BranchId::ROOT,
+            );
+
+            clamp_terrain(world);
 
             let (min_elev, max_elev) = elevation_min_max(world);
             tracing::debug!(

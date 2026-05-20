@@ -69,6 +69,7 @@ mod tests {
             age_year: WorldYear::FORMATION,
             target_fraction: 0.5,
             accumulated_rotation_rad: rotation,
+            last_nonempty_year: WorldYear::FORMATION,
         }
     }
 

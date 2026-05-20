@@ -61,6 +61,7 @@ impl Default for WorldParameters {
                     initial_continental_fraction: 0.29,
                     plate_velocity_scale: 1.0,
                     volcanism_scale: 1.0,
+                    geology_activity_scale: 1.0,
                     initial_major_plate_count: 7,
                     initial_minor_plate_count: 8,
                     event_granularity: Significance::Notable,

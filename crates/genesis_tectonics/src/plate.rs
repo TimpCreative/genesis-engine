@@ -50,6 +50,9 @@ pub struct Plate {
 
     /// Total rotation about `motion_axis` since formation, in radians (`f64`).
     pub accumulated_rotation_rad: f64,
+
+    /// Last year this plate owned at least one hex (§12.1 extinct-plate purge).
+    pub last_nonempty_year: WorldYear,
 }
 
 /// All plates in a world, keyed by `PlateId`.
@@ -92,6 +95,10 @@ impl PlateRegistry {
 
     pub(crate) fn plates_mut(&mut self) -> &mut BTreeMap<PlateId, Plate> {
         &mut self.plates
+    }
+
+    pub(crate) fn remove(&mut self, id: PlateId) {
+        self.plates.remove(&id);
     }
 }
 
@@ -163,6 +170,8 @@ impl HotSpotRegistry {
     }
 }
 
+use genesis_core::events::BoundaryType;
+
 use crate::boundary::BoundaryInfo;
 
 /// Runtime tectonics state held by the app or test harness (not in `genesis_core::World`).
@@ -176,6 +185,12 @@ pub struct TectonicsState {
     pub hotspots: HotSpotRegistry,
     /// Accumulated eroded mass deposited per hex (§8.3); not persisted in `WorldData`.
     pub cumulative_deposition_m: Vec<f32>,
+    /// `elevation_mean` snapshot before boundary elevation this tick (boundary events).
+    pub elevation_at_tick_start: Vec<f32>,
+    /// Prior tick directed edge classes for `BoundaryTransition` detection.
+    pub previous_edge_class: BTreeMap<(genesis_core::HexId, genesis_core::HexId), BoundaryType>,
+    /// Baseline divergent boundary length for sea level (§4.6); set on first Geological tick.
+    pub baseline_divergent_length_km: Option<f64>,
     /// Events queued during ticks; flushed to root branch at end of history generation.
     pub pending_events: Vec<genesis_core::events::Event>,
     /// Monotonic counter for [`EventId`](genesis_core::events::EventId) allocation.
