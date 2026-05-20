@@ -9,7 +9,9 @@ use genesis_core::rng::WorldRng;
 use genesis_core::time::{Era, SimulationLayer, WorldYear};
 
 use crate::boundary::detect_and_classify_boundaries;
+use crate::elevation::apply_boundary_elevation;
 use crate::initial_generation::generate_initial_plates_data;
+use crate::initial_terrain::apply_formation_terrain;
 use crate::motion::advance_plate_motion;
 use crate::partition::repartition_hexes;
 use crate::plate::TectonicsState;
@@ -65,6 +67,7 @@ impl SimulationLayer for TectonicsLayer {
 
         if !state.formation_complete && era == Era::Formation {
             state.registry = generate_initial_plates_data(world, rng);
+            apply_formation_terrain(world, &state.registry, rng);
             state.formation_complete = true;
             self.last_tick_year.set(world.current_year);
             return Vec::new();
@@ -88,9 +91,33 @@ impl SimulationLayer for TectonicsLayer {
                 boundary_hex_count = state.boundaries.boundary_hexes.len(),
                 "tectonics boundaries classified"
             );
+
+            apply_boundary_elevation(world, &state.registry, &state.boundaries, interval_years);
+
+            let (min_elev, max_elev) = elevation_min_max(world);
+            tracing::debug!(
+                year = world.current_year.value(),
+                min_elevation_m = min_elev,
+                max_elevation_m = max_elev,
+                "tectonics terrain updated"
+            );
         }
 
         Vec::new()
+    }
+}
+
+fn elevation_min_max(world: &WorldData) -> (f32, f32) {
+    let mut min = f32::MAX;
+    let mut max = f32::MIN;
+    for &e in &world.elevation_mean {
+        min = min.min(e);
+        max = max.max(e);
+    }
+    if min == f32::MAX {
+        (0.0, 0.0)
+    } else {
+        (min, max)
     }
 }
 

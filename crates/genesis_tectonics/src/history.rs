@@ -4,6 +4,7 @@ use genesis_core::World;
 use genesis_core::lifecycle::{GenerationError, GenerationProgress, advance_with_coordinator};
 use genesis_core::time::{TickCoordinator, WorldYear};
 
+use crate::initial_terrain::apply_formation_terrain;
 use crate::layer::TectonicsLayer;
 use crate::plate::TectonicsState;
 
@@ -57,5 +58,6 @@ pub fn run_formation(world: &mut World, state: &mut TectonicsState) {
         return;
     }
     state.registry = crate::generate_initial_plates_data(&mut world.data, &world.rng);
+    apply_formation_terrain(&mut world.data, &state.registry, &world.rng);
     state.formation_complete = true;
 }

@@ -1,10 +1,12 @@
 //! Tectonic simulation for Genesis Engine.
 //!
-//! Phase 1: initial plate generation, motion, and Voronoi re-partition per Geological-era ticks.
+//! Phase 1: plate generation, drift, boundaries, and terrain sculpting.
 
 pub mod boundary;
+pub mod elevation;
 pub mod history;
 pub mod initial_generation;
+pub mod initial_terrain;
 pub mod layer;
 pub mod motion;
 pub mod partition;
@@ -14,8 +16,17 @@ pub use boundary::{
     BoundaryClass, BoundaryInfo, ClassifiedEdge, ConvergentSubtype, convergent_subtype,
     detect_and_classify_boundaries,
 };
+pub use elevation::{
+    CC_INLAND_HEXES, CONTINENTAL_RIFT_SUBSIDENCE_FACTOR, MAX_ELEVATION_M, MAX_RELIEF_M,
+    MIN_ELEVATION_M, OC_INLAND_HEXES, OROGENY_RATE, SUBDUCTION_RATE, SUBSIDENCE_RATE,
+    apply_boundary_elevation, clamp_terrain, subducting_plate_id,
+};
 pub use history::{generate_full_history_with_tectonics, run_formation};
 pub use initial_generation::{generate_initial_plates, generate_initial_plates_data};
+pub use initial_terrain::{
+    CONTINENTAL_BASE_ELEVATION_M, INITIAL_ELEVATION_NOISE_RANGE_M, INITIAL_ELEVATION_NOISE_STREAM,
+    OCEANIC_BASE_ELEVATION_M, apply_formation_terrain,
+};
 pub use layer::{DEFAULT_GEOLOGICAL_TICK_YEARS, TectonicsLayer, geological_tick_interval};
 pub use motion::{advance_plate_motion, effective_position_direction, surface_velocity_m_per_year};
 pub use partition::repartition_hexes;
@@ -27,6 +38,8 @@ mod integration_tests {
     use genesis_core::parameters::WorldParameters;
     use genesis_core::time::WorldYear;
     use genesis_core::{PlateId, create_world};
+
+    use crate::plate::PlateType;
 
     fn test_world() -> genesis_core::World {
         let mut params = WorldParameters::default();
@@ -45,6 +58,95 @@ mod integration_tests {
             assert_ne!(plate_id, PlateId::NONE);
             assert!(state.registry.get(plate_id).is_some());
         }
+    }
+
+    fn mean_elevation_for_plate_type(
+        data: &genesis_core::data::WorldData,
+        registry: &PlateRegistry,
+        plate_type: PlateType,
+    ) -> f32 {
+        let mut sum = 0.0_f64;
+        let mut count = 0_u64;
+        for (i, &plate_id) in data.plate_id.iter().enumerate() {
+            if plate_id == PlateId::NONE {
+                continue;
+            }
+            let Some(plate) = registry.get(plate_id) else {
+                continue;
+            };
+            if plate.plate_type != plate_type {
+                continue;
+            }
+            sum += f64::from(data.elevation_mean[i]);
+            count += 1;
+        }
+        if count == 0 {
+            0.0
+        } else {
+            (sum / count as f64) as f32
+        }
+    }
+
+    #[test]
+    fn formation_continental_elevation_above_oceanic() {
+        let mut world = test_world();
+        let mut state = TectonicsState::new();
+        run_formation(&mut world, &mut state);
+        let continental =
+            mean_elevation_for_plate_type(&world.data, &state.registry, PlateType::Continental);
+        let oceanic =
+            mean_elevation_for_plate_type(&world.data, &state.registry, PlateType::Oceanic);
+        assert!(continental > oceanic, "{continental} vs {oceanic}");
+    }
+
+    #[test]
+    fn terrain_elevation_deterministic_at_one_million_years() {
+        let mut world_a = test_world();
+        let mut world_b = test_world();
+        let mut state_a = TectonicsState::new();
+        let mut state_b = TectonicsState::new();
+
+        generate_full_history_with_tectonics(
+            &mut world_a,
+            &mut state_a,
+            WorldYear(1_000_000),
+            |_| {},
+        )
+        .expect("history a");
+        generate_full_history_with_tectonics(
+            &mut world_b,
+            &mut state_b,
+            WorldYear(1_000_000),
+            |_| {},
+        )
+        .expect("history b");
+
+        assert_eq!(world_a.data.elevation_mean, world_b.data.elevation_mean);
+        assert_eq!(world_a.data.elevation_relief, world_b.data.elevation_relief);
+        assert_eq!(world_a.data.bedrock_type, world_b.data.bedrock_type);
+    }
+
+    #[test]
+    fn terrain_elevation_sanity_at_one_million_years() {
+        let mut world = test_world();
+        let mut state = TectonicsState::new();
+        generate_full_history_with_tectonics(&mut world, &mut state, WorldYear(1_000_000), |_| {})
+            .expect("history");
+
+        let min = world
+            .data
+            .elevation_mean
+            .iter()
+            .copied()
+            .fold(f32::INFINITY, f32::min);
+        let max = world
+            .data
+            .elevation_mean
+            .iter()
+            .copied()
+            .fold(f32::NEG_INFINITY, f32::max);
+        assert!(min < -1000.0, "min elevation {min}");
+        assert!(max > 0.0, "max elevation {max}");
     }
 
     #[test]
