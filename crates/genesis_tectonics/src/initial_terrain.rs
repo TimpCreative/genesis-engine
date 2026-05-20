@@ -52,8 +52,8 @@ pub fn apply_formation_terrain(data: &mut WorldData, registry: &PlateRegistry, r
 #[cfg(test)]
 mod tests {
     use super::*;
-    use genesis_core::{PlateId, create_world};
     use genesis_core::parameters::WorldParameters;
+    use genesis_core::{PlateId, create_world};
 
     fn formation_world() -> genesis_core::World {
         let mut params = WorldParameters::default();

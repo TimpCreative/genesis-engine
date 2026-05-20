@@ -3,6 +3,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use genesis_core::branches::BranchId;
 use genesis_core::data::WorldData;
 use genesis_core::parameters::WorldParameters;
 use genesis_core::rng::WorldRng;
@@ -15,6 +16,7 @@ use crate::initial_terrain::apply_formation_terrain;
 use crate::motion::advance_plate_motion;
 use crate::partition::repartition_hexes;
 use crate::plate::TectonicsState;
+use crate::volcanism::apply_boundary_volcanism;
 
 /// Default Geological-era tick interval (Doc 06 §4.1).
 pub const DEFAULT_GEOLOGICAL_TICK_YEARS: i64 = 500_000;
@@ -93,6 +95,19 @@ impl SimulationLayer for TectonicsLayer {
             );
 
             apply_boundary_elevation(world, &state.registry, &state.boundaries, interval_years);
+
+            let volcanism_scale = world.parameters.core.geology.volcanism_scale;
+            let event_granularity = world.parameters.core.geology.event_granularity;
+            let tick_year = world.current_year;
+            apply_boundary_volcanism(
+                world,
+                &mut state,
+                rng,
+                volcanism_scale,
+                event_granularity,
+                tick_year,
+                BranchId::ROOT,
+            );
 
             let (min_elev, max_elev) = elevation_min_max(world);
             tracing::debug!(

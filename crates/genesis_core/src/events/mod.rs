@@ -226,6 +226,20 @@ mod tests {
     }
 
     #[test]
+    fn volcanic_eruption_kind_round_trip() {
+        use crate::data::PlateId;
+
+        let kind = EventKind::VolcanicEruption {
+            hex: HexId(99),
+            elevation_change_m: 250.0,
+            plate: PlateId(3),
+        };
+        let json = serde_json::to_string(&kind).unwrap();
+        let back: EventKind = serde_json::from_str(&json).unwrap();
+        assert_eq!(kind, back);
+    }
+
+    #[test]
     fn jsonl_each_line_is_valid_json() {
         let mut log = EventLog::new(None, WorldYear::FORMATION);
         log.push(sample_event(1, 100, Significance::Minor));

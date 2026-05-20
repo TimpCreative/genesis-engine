@@ -4,6 +4,7 @@
 
 pub mod boundary;
 pub mod elevation;
+pub mod events;
 pub mod history;
 pub mod initial_generation;
 pub mod initial_terrain;
@@ -11,6 +12,7 @@ pub mod layer;
 pub mod motion;
 pub mod partition;
 pub mod plate;
+pub mod volcanism;
 
 pub use boundary::{
     BoundaryClass, BoundaryInfo, ClassifiedEdge, ConvergentSubtype, convergent_subtype,
@@ -21,6 +23,7 @@ pub use elevation::{
     MIN_ELEVATION_M, OC_INLAND_HEXES, OROGENY_RATE, SUBDUCTION_RATE, SUBSIDENCE_RATE,
     apply_boundary_elevation, clamp_terrain, subducting_plate_id,
 };
+pub use events::flush_events_to_branch;
 pub use history::{generate_full_history_with_tectonics, run_formation};
 pub use initial_generation::{generate_initial_plates, generate_initial_plates_data};
 pub use initial_terrain::{
@@ -31,10 +34,16 @@ pub use layer::{DEFAULT_GEOLOGICAL_TICK_YEARS, TectonicsLayer, geological_tick_i
 pub use motion::{advance_plate_motion, effective_position_direction, surface_velocity_m_per_year};
 pub use partition::repartition_hexes;
 pub use plate::{Plate, PlateClass, PlateRegistry, PlateType, TectonicsState};
+pub use volcanism::{
+    ELEVATION_CHANGE_MAX_M, ELEVATION_CHANGE_MIN_M, ERUPTION_PROBABILITY_BASE,
+    NOTABLE_PEAK_THRESHOLD_M, RELIEF_CHANGE_MAX_M, RELIEF_CHANGE_MIN_M, VOLCANISM_STREAM,
+    apply_boundary_volcanism, is_arc_hex,
+};
 
 #[cfg(test)]
 mod integration_tests {
     use super::*;
+    use genesis_core::events::{EventKind, Significance};
     use genesis_core::parameters::WorldParameters;
     use genesis_core::time::WorldYear;
     use genesis_core::{PlateId, create_world};
@@ -258,6 +267,28 @@ mod integration_tests {
                 assert_eq!(a.class, b.class);
             }
         }
+    }
+
+    #[test]
+    fn history_records_volcanic_eruptions_with_trace_granularity() {
+        let mut world = test_world();
+        world.data.parameters.core.geology.event_granularity = Significance::Trace;
+        world.data.parameters.core.geology.volcanism_scale = 3.0;
+        let mut state = TectonicsState::new();
+        generate_full_history_with_tectonics(&mut world, &mut state, WorldYear(1_000_000), |_| {})
+            .expect("history");
+
+        let eruption_count = world
+            .branch_tree
+            .root()
+            .event_log
+            .iter()
+            .filter(|e| matches!(e.kind, EventKind::VolcanicEruption { .. }))
+            .count();
+        assert!(
+            eruption_count > 0,
+            "expected at least one VolcanicEruption in root log (got {eruption_count})"
+        );
     }
 
     #[test]

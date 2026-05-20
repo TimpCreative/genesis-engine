@@ -110,6 +110,10 @@ pub struct TectonicsState {
     pub formation_complete: bool,
     /// Boundary hexes and classified edges; recomputed each Geological tick.
     pub boundaries: BoundaryInfo,
+    /// Events queued during ticks; flushed to root branch at end of history generation.
+    pub pending_events: Vec<genesis_core::events::Event>,
+    /// Monotonic counter for [`EventId`](genesis_core::events::EventId) allocation.
+    pub next_event_id: u64,
 }
 
 impl TectonicsState {

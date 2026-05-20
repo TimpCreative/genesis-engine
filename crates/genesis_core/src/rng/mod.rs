@@ -41,13 +41,34 @@ impl WorldRng {
     /// Derives a deterministic RNG for the given stream name.
     ///
     /// Each call returns a fresh RNG with identical initial state for the same name.
+    /// One-shot streams (Formation) use this; per-tick simulation should use
+    /// [`stream_at`](Self::stream_at) instead.
     pub fn stream(&self, name: &str) -> SmallRng {
-        let mut input = Vec::new();
-        input.extend_from_slice(&self.effective_seed.to_le_bytes());
-        input.extend_from_slice(name.as_bytes());
-        let stream_seed = xxhash_rust::xxh3::xxh3_64(&input);
-        SmallRng::seed_from_u64(stream_seed)
+        SmallRng::seed_from_u64(derive_stream_seed(self.effective_seed, name, None))
     }
+
+    /// Derives a deterministic RNG for a named stream at a specific simulation tick.
+    ///
+    /// Hash input: `effective_seed || name || tick_key` (all little-endian where applicable).
+    /// Same `(effective_seed, name, tick_key)` always yields the same sequence; different
+    /// `tick_key` values produce independent streams (e.g. per Geological tick).
+    pub fn stream_at(&self, name: &str, tick_key: u64) -> SmallRng {
+        SmallRng::seed_from_u64(derive_stream_seed(
+            self.effective_seed,
+            name,
+            Some(tick_key),
+        ))
+    }
+}
+
+fn derive_stream_seed(effective_seed: u64, name: &str, tick_key: Option<u64>) -> u64 {
+    let mut input = Vec::new();
+    input.extend_from_slice(&effective_seed.to_le_bytes());
+    input.extend_from_slice(name.as_bytes());
+    if let Some(key) = tick_key {
+        input.extend_from_slice(&key.to_le_bytes());
+    }
+    xxhash_rust::xxh3::xxh3_64(&input)
 }
 
 #[cfg(test)]
@@ -106,6 +127,30 @@ mod tests {
             WorldRng::from_parameters(&p2).effective_seed()
         );
         let _ = &mut p1;
+    }
+
+    #[test]
+    fn stream_at_same_tick_key_matches_repeat_calls() {
+        let rng = WorldRng::from_effective_seed(42);
+        let a = draw_ten(&mut rng.stream_at("tectonics.volcanism", 500_000));
+        let b = draw_ten(&mut rng.stream_at("tectonics.volcanism", 500_000));
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn stream_at_different_tick_keys_differ() {
+        let rng = WorldRng::from_effective_seed(42);
+        let a = draw_ten(&mut rng.stream_at("tectonics.volcanism", 500_000));
+        let b = draw_ten(&mut rng.stream_at("tectonics.volcanism", 1_000_000));
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn stream_at_differs_from_stream_without_tick_key() {
+        let rng = WorldRng::from_effective_seed(42);
+        let base = draw_ten(&mut rng.stream("tectonics.volcanism"));
+        let ticked = draw_ten(&mut rng.stream_at("tectonics.volcanism", 0));
+        assert_ne!(base, ticked);
     }
 
     #[test]

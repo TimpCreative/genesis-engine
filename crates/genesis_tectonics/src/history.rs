@@ -4,6 +4,7 @@ use genesis_core::World;
 use genesis_core::lifecycle::{GenerationError, GenerationProgress, advance_with_coordinator};
 use genesis_core::time::{TickCoordinator, WorldYear};
 
+use crate::events::flush_events_to_branch;
 use crate::initial_terrain::apply_formation_terrain;
 use crate::layer::TectonicsLayer;
 use crate::plate::TectonicsState;
@@ -41,6 +42,7 @@ pub fn generate_full_history_with_tectonics(
     drop(coordinator);
 
     *state = TectonicsLayer::detach_state(shared);
+    flush_events_to_branch(world, state);
 
     progress(GenerationProgress {
         current_year: world.data.current_year,
