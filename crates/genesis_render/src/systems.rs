@@ -9,7 +9,7 @@ use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use genesis_core::{WorldSeed, create_world};
 
-use crate::color::hex_color;
+use crate::color::hex_fill_color;
 use crate::polygon::{direction_to_lat_lon, hex_polygon_vertices, unwrap_lon_relative};
 use crate::projection::{hex_mesh_2d, project, should_skip_for_equirectangular};
 use crate::resources::{CameraState, HexEntityCache, WorldDirty, WorldResource};
@@ -232,8 +232,12 @@ pub fn render_world_if_dirty(
 
         let mesh = hex_mesh_2d(center_2d, &ring);
         let mesh_handle = meshes.add(mesh);
+        let idx = hex.0 as usize;
+        let elev = world_res.0.data.elevation_mean[idx];
+        let sea = world_res.0.data.sea_level_m;
         let is_pentagon = grid.is_pentagon(hex);
-        let material = materials.add(ColorMaterial::from_color(hex_color(hex, is_pentagon)));
+        let fill = hex_fill_color(elev, sea, is_pentagon);
+        let material = materials.add(ColorMaterial::from_color(fill));
 
         let entity = commands
             .spawn((

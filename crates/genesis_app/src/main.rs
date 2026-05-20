@@ -16,16 +16,17 @@ fn main() {
         .expect("tectonic formation and geological ticks");
 
     info!(
-        "Genesis Engine smoke test: subdivision level {}, {} hexes, {} plates",
+        "Genesis Engine geology smoke test: subdivision level {}, {} hexes, {} plates",
         world.data.grid.subdivision_level(),
         world.data.grid.cell_count(),
         tectonics.registry.count(),
     );
+    info!("{}", genesis_tectonics::summarize_world(&world, &tectonics));
 
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
-                title: "Genesis Engine — Phase 0 Smoke Test".to_string(),
+                title: "Genesis Engine — Geology Smoke Test".to_string(),
                 resolution: (1280, 720).into(),
                 ..default()
             }),
