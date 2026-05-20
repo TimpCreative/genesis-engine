@@ -9,7 +9,7 @@ mod ids;
 
 pub use crate::grid::Direction;
 pub use enums::BedrockType;
-pub use ids::{BiomeId, NationId, PlateId, SettlementId, SpeciesId};
+pub use ids::{BiomeId, HotSpotId, NationId, PlateId, SettlementId, SpeciesId};
 
 use crate::HexGrid;
 use crate::parameters::WorldParameters;

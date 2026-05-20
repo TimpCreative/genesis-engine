@@ -6,6 +6,7 @@ pub mod boundary;
 pub mod elevation;
 pub mod events;
 pub mod history;
+pub mod hotspots;
 pub mod initial_generation;
 pub mod initial_terrain;
 pub mod layer;
@@ -25,6 +26,12 @@ pub use elevation::{
 };
 pub use events::flush_events_to_branch;
 pub use history::{generate_full_history_with_tectonics, run_formation};
+pub use hotspots::{
+    ACTIVITY_RATE_MAX, ACTIVITY_RATE_MIN, HOTSPOT_ACTIVITY_STREAM, HOTSPOT_ELEVATION_CHANGE_MAX_M,
+    HOTSPOT_ELEVATION_CHANGE_MIN_M, HOTSPOT_LOCATIONS_STREAM, LIFESPAN_MAX_YEARS,
+    LIFESPAN_MIN_YEARS, NOTABLE_CUMULATIVE_UPLIFT_M, SPAWN_PROBABILITY_PER_TICK,
+    apply_hotspot_tick, generate_initial_hotspots, hex_at_anchor,
+};
 pub use initial_generation::{generate_initial_plates, generate_initial_plates_data};
 pub use initial_terrain::{
     CONTINENTAL_BASE_ELEVATION_M, INITIAL_ELEVATION_NOISE_RANGE_M, INITIAL_ELEVATION_NOISE_STREAM,
@@ -33,7 +40,9 @@ pub use initial_terrain::{
 pub use layer::{DEFAULT_GEOLOGICAL_TICK_YEARS, TectonicsLayer, geological_tick_interval};
 pub use motion::{advance_plate_motion, effective_position_direction, surface_velocity_m_per_year};
 pub use partition::repartition_hexes;
-pub use plate::{Plate, PlateClass, PlateRegistry, PlateType, TectonicsState};
+pub use plate::{
+    HotSpot, HotSpotRegistry, Plate, PlateClass, PlateRegistry, PlateType, TectonicsState,
+};
 pub use volcanism::{
     ELEVATION_CHANGE_MAX_M, ELEVATION_CHANGE_MIN_M, ERUPTION_PROBABILITY_BASE,
     NOTABLE_PEAK_THRESHOLD_M, RELIEF_CHANGE_MAX_M, RELIEF_CHANGE_MIN_M, VOLCANISM_STREAM,
@@ -267,6 +276,38 @@ mod integration_tests {
                 assert_eq!(a.class, b.class);
             }
         }
+    }
+
+    #[test]
+    fn formation_populates_hotspots() {
+        let mut world = test_world();
+        let mut state = TectonicsState::new();
+        run_formation(&mut world, &mut state);
+        assert!(
+            state.hotspots.count() > 0,
+            "Formation should seed mantle hot spots"
+        );
+    }
+
+    #[test]
+    fn history_records_hotspot_activity_with_trace_granularity() {
+        let mut world = test_world();
+        world.data.parameters.core.geology.event_granularity = Significance::Trace;
+        let mut state = TectonicsState::new();
+        generate_full_history_with_tectonics(&mut world, &mut state, WorldYear(1_000_000), |_| {})
+            .expect("history");
+
+        let count = world
+            .branch_tree
+            .root()
+            .event_log
+            .iter()
+            .filter(|e| matches!(e.kind, EventKind::HotSpotActivity { .. }))
+            .count();
+        assert!(
+            count > 0,
+            "expected at least one HotSpotActivity in root log (got {count})"
+        );
     }
 
     #[test]

@@ -14,7 +14,8 @@ pub mod world;
 
 pub use branches::{Branch, BranchError, BranchId, BranchTree};
 pub use data::{
-    BedrockType, BiomeId, NationId, PlateId, SettlementId, SpeciesId, WorldData, WorldYear,
+    BedrockType, BiomeId, HotSpotId, NationId, PlateId, SettlementId, SpeciesId, WorldData,
+    WorldYear,
 };
 pub use events::{Event, EventId, EventKind, EventLocation, EventLog, Significance};
 pub use grid::isea3h;

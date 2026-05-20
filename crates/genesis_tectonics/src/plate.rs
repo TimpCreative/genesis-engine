@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use genesis_core::time::WorldYear;
-use genesis_core::{HexId, PlateId};
+use genesis_core::{HexId, HotSpotId, PlateId};
 use serde::{Deserialize, Serialize};
 
 /// Whether the plate is continental (lighter, thicker, higher elevation)
@@ -101,6 +101,68 @@ impl Default for PlateRegistry {
     }
 }
 
+/// A fixed mantle thermal anomaly; anchor does not move with plates (Doc 06 §7.1).
+#[derive(Clone, Debug)]
+pub struct HotSpot {
+    pub id: HotSpotId,
+    /// Unit vector in the world frame; plates drift over this point.
+    pub anchor_position: [f64; 3],
+    /// Per Geological tick probability of eruption when alive (§7.1).
+    pub activity_rate: f64,
+    pub age_year: WorldYear,
+    /// Simulated lifetime in years from birth; not an end year (§7.2).
+    pub lifespan_years: i64,
+    /// Running uplift for §6.2 significance assignment.
+    pub cumulative_uplift_m: f32,
+}
+
+/// Active hot spots keyed by id for deterministic iteration.
+#[derive(Clone, Debug, Default)]
+pub struct HotSpotRegistry {
+    hotspots: BTreeMap<HotSpotId, HotSpot>,
+    next_id: u16,
+}
+
+impl HotSpotRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn count(&self) -> usize {
+        self.hotspots.len()
+    }
+
+    pub fn get(&self, id: HotSpotId) -> Option<&HotSpot> {
+        self.hotspots.get(&id)
+    }
+
+    pub fn hotspot_ids(&self) -> Vec<HotSpotId> {
+        self.hotspots.keys().copied().collect()
+    }
+
+    pub(crate) fn insert(&mut self, hotspot: HotSpot) {
+        self.hotspots.insert(hotspot.id, hotspot);
+    }
+
+    pub(crate) fn remove(&mut self, id: HotSpotId) {
+        self.hotspots.remove(&id);
+    }
+
+    pub(crate) fn next_id(&mut self) -> HotSpotId {
+        let id = HotSpotId(self.next_id);
+        self.next_id += 1;
+        id
+    }
+
+    pub(crate) fn hotspots_mut(&mut self) -> &mut BTreeMap<HotSpotId, HotSpot> {
+        &mut self.hotspots
+    }
+
+    pub(crate) fn seed_next_id(&mut self, next: u16) {
+        self.next_id = next;
+    }
+}
+
 use crate::boundary::BoundaryInfo;
 
 /// Runtime tectonics state held by the app or test harness (not in `genesis_core::World`).
@@ -110,6 +172,8 @@ pub struct TectonicsState {
     pub formation_complete: bool,
     /// Boundary hexes and classified edges; recomputed each Geological tick.
     pub boundaries: BoundaryInfo,
+    /// Mantle hot spots; seeded at Formation, updated each Geological tick.
+    pub hotspots: HotSpotRegistry,
     /// Events queued during ticks; flushed to root branch at end of history generation.
     pub pending_events: Vec<genesis_core::events::Event>,
     /// Monotonic counter for [`EventId`](genesis_core::events::EventId) allocation.

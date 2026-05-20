@@ -11,6 +11,7 @@ use genesis_core::time::{Era, SimulationLayer, WorldYear};
 
 use crate::boundary::detect_and_classify_boundaries;
 use crate::elevation::apply_boundary_elevation;
+use crate::hotspots::{apply_hotspot_tick, generate_initial_hotspots};
 use crate::initial_generation::generate_initial_plates_data;
 use crate::initial_terrain::apply_formation_terrain;
 use crate::motion::advance_plate_motion;
@@ -70,6 +71,7 @@ impl SimulationLayer for TectonicsLayer {
         if !state.formation_complete && era == Era::Formation {
             state.registry = generate_initial_plates_data(world, rng);
             apply_formation_terrain(world, &state.registry, rng);
+            state.hotspots = generate_initial_hotspots(world, rng);
             state.formation_complete = true;
             self.last_tick_year.set(world.current_year);
             return Vec::new();
@@ -106,6 +108,15 @@ impl SimulationLayer for TectonicsLayer {
                 volcanism_scale,
                 event_granularity,
                 tick_year,
+                BranchId::ROOT,
+            );
+
+            apply_hotspot_tick(
+                world,
+                &mut state,
+                rng,
+                tick_year,
+                event_granularity,
                 BranchId::ROOT,
             );
 

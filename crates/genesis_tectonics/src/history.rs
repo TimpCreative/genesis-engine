@@ -5,6 +5,7 @@ use genesis_core::lifecycle::{GenerationError, GenerationProgress, advance_with_
 use genesis_core::time::{TickCoordinator, WorldYear};
 
 use crate::events::flush_events_to_branch;
+use crate::hotspots::generate_initial_hotspots;
 use crate::initial_terrain::apply_formation_terrain;
 use crate::layer::TectonicsLayer;
 use crate::plate::TectonicsState;
@@ -61,5 +62,6 @@ pub fn run_formation(world: &mut World, state: &mut TectonicsState) {
     }
     state.registry = crate::generate_initial_plates_data(&mut world.data, &world.rng);
     apply_formation_terrain(&mut world.data, &state.registry, &world.rng);
+    state.hotspots = generate_initial_hotspots(&world.data, &world.rng);
     state.formation_complete = true;
 }

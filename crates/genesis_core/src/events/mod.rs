@@ -240,6 +240,20 @@ mod tests {
     }
 
     #[test]
+    fn hotspot_activity_kind_round_trip() {
+        use crate::data::HotSpotId;
+
+        let kind = EventKind::HotSpotActivity {
+            hex: HexId(42),
+            hot_spot_id: HotSpotId(7),
+            elevation_change_m: 350.0,
+        };
+        let json = serde_json::to_string(&kind).unwrap();
+        let back: EventKind = serde_json::from_str(&json).unwrap();
+        assert_eq!(kind, back);
+    }
+
+    #[test]
     fn jsonl_each_line_is_valid_json() {
         let mut log = EventLog::new(None, WorldYear::FORMATION);
         log.push(sample_event(1, 100, Significance::Minor));
