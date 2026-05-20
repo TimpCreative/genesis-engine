@@ -1,12 +1,13 @@
 # Genesis Engine — Data Layer Specification
 
 **Document Type:** Tier 2 — System Specification
-**Status:** Draft v0.4
+**Status:** Draft v0.5
 **Last Updated:** May 2026
 **Owner:** Brax Johnson
 **Implementing Phase:** 0 (Foundation)
 
 **Changelog:**
+- v0.5 (May 2026): Default subdivision level changed from 8 to 7 (§3.1, §14.4, GridParameters doc comment). Rationale: level 7 (21,872 hexes) balances simulation cost, save size, and rendering performance for a worldbuilding tool. Users can opt into 8 or 9 for finer detail. Also added note in §3.3.1 about the icosahedron vertex labeling fix uncovered during Phase 0 smoke test (geometric vertex array now permuted to match Kristensen topological indexing — see prompt 8.6).
 - v0.4 (May 2026): Clarified §5.1 that `parameters` field is added in step 4. Added sentinel constant documentation to §5.3 (`PlateId::NONE`, `BiomeId::NONE`). Corrected §16 file organization to reflect actual code layout (`Direction` lives in `grid::ids`, not `data::enums`).
 - v0.3 (May 2026): Rewrote §3.3.1 to describe Vince/Kristensen topological neighbor scheme (replacing geometric k-NN approach). Updated §3.4 to reference topological construction. Added algorithm source citations.
 - v0.2 (May 2026): Extended cell count table to levels 0-4. Added §3.3.1 (Class I/II parity) and §3.3.2 (geodesic vs. Snyder projection). Reflects clarifications surfaced by step 1 implementation.
@@ -129,7 +130,9 @@ The grid is defined by a **subdivision level** (an integer). Higher subdivision 
 | 9 | 196,832 | 2,590 | 695 |
 | 10 | 590,492 | 865 | 232 |
 
-**Default subdivision level: 8** (65,612 cells). This is the value used unless `WorldParameters.grid.subdivision_level` overrides it.
+**Default subdivision level: 7** (21,872 cells, ~23,300 km² per hex on Earth-sized planets). This is the value used unless `WorldParameters.grid.subdivision_level` overrides it. Level 7 balances simulation cost, save file size, and rendering performance for a worldbuilding tool — fine enough to distinguish drainage basins and biome zones, coarse enough that worlds generate and simulate quickly.
+
+Users can opt into higher detail (level 8 or 9) for finer geographic resolution at the cost of slower simulation. Levels below 7 are valid but coarser than is typical for v1 worldbuilding.
 
 **Note on level 0:** at subdivision level 0, all 12 cells are pentagons (the 12 icosahedron vertices). This is useful as a degenerate case for testing but not for actual worldbuilding. Levels 5–9 are the practical range for v1 worlds.
 
@@ -182,6 +185,8 @@ Neighbors are computed by closed-form rules from Kristensen §"Cell neighbourhoo
 - Kristensen, N. (2021). "Finding cell neighbours in an ISEA3H global grid in dggridR." https://nadiah.org/2021/09/29/find-cell-neighbours-isea3h/
 
 **Known erratum:** Kristensen's prose description of the even-resolution offset rule #6 is `(0, -1, -1)`, but her reference R implementation uses `(0, -1, +1)`. The R version produces correct cell counts and symmetric neighbor graphs at all tested levels; Genesis Engine follows the R implementation.
+
+**Geometric/topological vertex alignment:** The Kristensen scheme is a topological labeling where vertex `v`'s antipode is `(v + 6) mod 12` and its neighbors are determined by `S_EVEN` / `S_ODD` step tables. The standard golden-ratio icosahedron vertex layout uses a different labeling. Genesis Engine computes a permutation at startup (via `find_kristensen_permutation` in `isea3h.rs`) that aligns the geometric vertex array with the Kristensen indexing. This is required for `bary_to_vec3` to compute cell centers correctly — without it, "interior" cells with antipodal face vertices would alias onto pentagon positions. The permutation is verified by the `icosahedron_vertices_match_kristensen_topology` test, which asserts that for every vertex `v`: (a) the dot product with vertex `(v + 6) mod 12` equals -1 (antipode), and (b) the dot product with each of its 5 neighbors equals `1/√5` (icosahedron edge cosine).
 
 ### 3.3.2 Projection Choice: Geodesic vs. Snyder
 
@@ -261,7 +266,7 @@ See §5.1 for these fields' definitions.
 
 ### 3.8 Grid Construction Cost
 
-The hex grid is constructed once per world load. The expected cost at subdivision level 8 (~65K cells) is well under 1 second on target hardware. The constructed grid is read-only thereafter.
+The hex grid is constructed once per world load. The expected cost at subdivision level 7 (~22K cells) is well under 1 second on target hardware; level 8 (~65K cells) takes a few hundred milliseconds in release builds. The constructed grid is read-only thereafter.
 
 ### 3.9 No Edges
 
@@ -388,7 +393,7 @@ pub struct PlanetParameters {
 
 ```rust
 pub struct GridParameters {
-    /// ISEA3H subdivision level. Default 8 (65,612 cells).
+    /// ISEA3H subdivision level. Default 7 (21,872 cells). Valid range 5-9.
     pub subdivision_level: u8,                   // Immutable
 }
 ```
@@ -1213,6 +1218,7 @@ A test that creates a known world from a fixed seed and verifies the SHA-256 of 
 
 ### 14.4 Performance Sanity Tests
 
+- Grid construction at subdivision level 7 (default) completes in under 500ms
 - Grid construction at subdivision level 8 completes in under 1 second
 - World load (recipe only, no snapshots) completes in under 100ms
 

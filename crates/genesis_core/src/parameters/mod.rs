@@ -49,7 +49,7 @@ impl Default for WorldParameters {
                     tidally_locked: false,
                 },
                 grid: GridParameters {
-                    subdivision_level: 8,
+                    subdivision_level: 7,
                 },
                 time: TimeParameters {
                     world_start_year: WorldYear::FORMATION,

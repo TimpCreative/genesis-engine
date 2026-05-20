@@ -1,0 +1,758 @@
+# 06 — Tectonics Module Specification
+
+**Document Type:** Tier 2 — System Specification
+**Status:** Draft v0.1
+**Last Updated:** May 2026
+**Owner:** Brax Johnson
+**Implementing Phase:** 1 (Geology Prototype)
+
+**Changelog:**
+- v0.1 (May 2026): Initial draft. Defines plate model, boundary dynamics, hot spots, erosion, event schema, and the user-tunable event granularity system.
+
+## 1. Purpose and Scope
+
+This document specifies the **tectonics simulation layer** — the first real simulation layer in Genesis Engine. Tectonics produces the foundational physical geography of a world: continents, oceans, mountain ranges, plate boundaries, and the bedrock that underlies everything else.
+
+### 1.1 Goals
+
+Tectonics must:
+
+1. **Produce plausible continental configurations** from a deterministic seed. Two worlds with the same seed must produce byte-identical tectonic histories.
+2. **Cover the full geological era** (typically year 0 through ~4.5 billion years) with multiple continental reorganizations along the way.
+3. **Write to `WorldData` bulk arrays** that climate, hydrology, and biology will read from in later phases: `elevation_mean`, `elevation_relief`, `bedrock_type`, `plate_id`, and `sea_level_m`.
+4. **Generate events** describing what happened, at a granularity controllable by the user.
+5. **Run at acceptable speed.** Per Phase 1 goals (Architecture §12), this is the riskiest assumption to validate — multi-billion-year simulation completing in minutes rather than hours.
+6. **Stand up to light scientific scrutiny.** Worldbuilders who happen to be geology enthusiasts should recognize the dynamics as "yeah, roughly how it works" — not academically rigorous, but not magical either.
+
+### 1.2 Non-Goals
+
+This is explicitly NOT a research-grade plate tectonics simulator. We are not modeling:
+
+- Subduction angles, slab pull, ridge push at numerically accurate rates
+- Viscous mantle flow or convection cells
+- Isostatic adjustment beyond a simple proxy
+- Mineralogical composition or igneous petrology
+- Earthquake mechanics
+- Continental drift at correct velocities (Earth: ~2-15 cm/year; we'll use values that produce visually interesting results at reasonable tick counts)
+- Specific Earth historical reconstruction (Pangea, Pannotia, Rodinia, etc. — though our worlds will go through analogous supercontinent cycles)
+
+If the player is a geophysicist, they will find things to nitpick. That's acceptable. The goal is plausible worldbuilding, not academic accuracy.
+
+### 1.3 Dependencies
+
+Reads from:
+- `WorldData.grid` (the hex grid — topology and geographic positions)
+- `WorldData.parameters.core.geology` (plate count, velocity scale, volcanism scale, continental fraction)
+- `WorldData.parameters.core.planet` (radius — affects timescales; not heavily used in v1)
+- `WorldRng` — uses named streams (§4.4)
+
+Writes to:
+- `WorldData.elevation_mean` (per-hex, meters)
+- `WorldData.elevation_relief` (per-hex, meters)
+- `WorldData.bedrock_type` (per-hex)
+- `WorldData.plate_id` (per-hex)
+- `WorldData.sea_level_m` (global, slowly drifts as ocean basins change)
+
+Produces:
+- `EventKind` variants per §6
+- Possibly updates `EventLog` significance distribution (most events Trace, rare ones Pivotal)
+
+Does not write to:
+- Biology arrays (`biome`, `biomass`)
+- Civilization arrays
+- Temperature or precipitation (climate's job)
+
+## 2. The Plate Model
+
+### 2.1 Plate Representation
+
+```rust
+pub struct Plate {
+    pub id: PlateId,
+    pub plate_type: PlateType,
+    pub seed_hex: HexId,           // Geographic anchor; doesn't move
+    pub motion_axis: Vec3,          // Unit vector; rotation axis on the sphere
+    pub motion_rate_rad_per_year: f64,  // Angular velocity in radians/year
+    pub age_year: WorldYear,        // When this plate was created (or last reorganized)
+}
+
+pub enum PlateType {
+    Continental,
+    Oceanic,
+}
+```
+
+**Why a rotation axis instead of a velocity vector?** On a sphere, "moving in a direction" only makes sense locally. Plates as rigid spherical caps rotate about an Euler pole — this is how real geophysics describes plate motion, and it produces correct behavior near the poles (a velocity vector in lat/lon would wrap incorrectly).
+
+The motion axis is a unit `Vec3` representing the rotation pole. Each tick, the plate's hex membership shifts as the plate "rotates" by `motion_rate_rad_per_year * tick_interval_years`.
+
+### 2.2 Plate Membership
+
+Each hex has a `PlateId`. Membership is determined by **nearest-seed Voronoi partitioning** on the sphere:
+
+```
+for each hex h:
+    plate[h] = argmin over plates p of: angular_distance(h.center, p.seed_hex.center)
+```
+
+Critically: **plate seeds rotate with the plate** in the abstract sense, but we don't actually move the seed hex (it's a fixed `HexId`). Instead, we conceptually treat each plate as having a "current position" derived from its motion axis and total elapsed motion. The Voronoi partition is recomputed when plate motion has accumulated enough that boundaries would visibly move.
+
+For implementation, this means each tick we:
+1. Update each plate's `accumulated_rotation_rad` (small per-tick increment)
+2. Compute each plate's *effective* current position as a rotation of its original seed hex by `accumulated_rotation_rad` about its `motion_axis`
+3. Re-partition hexes to plates based on effective positions
+
+The re-partition uses the rotated seed positions, not the original ones. Over 4.5 billion years, plates wander significantly across the sphere even though the `seed_hex` field never changes.
+
+### 2.3 Plate Type Distribution
+
+Per `WorldParameters.core.geology.initial_continental_fraction` (default 0.29, matching Earth):
+
+- Roughly that fraction of plates start as `Continental`
+- The rest are `Oceanic`
+- Specifically: `num_continental = round(initial_plate_count * initial_continental_fraction)`
+- Continental plates have higher initial elevation (~500m mean), oceanic plates lower (~-3500m mean)
+
+Initial plate seed selection uses Poisson-disk-like sampling to avoid two plates spawning in nearly the same hex (which would produce a tiny plate immediately swallowed by neighbors).
+
+### 2.4 Plate Velocity
+
+Real Earth plates move at 2-15 cm/year. Over 4.5 billion years, that's 90,000 to 675,000 km of travel — many times around the planet. Our simulation needs plates to traverse significant distances within our tick budget.
+
+Each plate's `motion_rate_rad_per_year` is sampled from a distribution centered on **Earth-like values scaled by `WorldParameters.core.geology.plate_velocity_scale`**:
+
+- Default scale = 1.0 produces Earth-like rates (slow, realistic)
+- Scale > 1.0 produces faster motion (interesting for highly-active worlds)
+- Scale < 1.0 produces slower motion (stable worlds with old continental cores)
+
+Rate distribution: log-normal with median ~5 cm/year converted to radians/year on the planet's radius. Specifically:
+
+```
+median_cm_per_year = 5.0 * plate_velocity_scale
+median_rad_per_year = (median_cm_per_year * 1e-5) / planet_radius_km
+```
+
+Plate motion axes are sampled uniformly on the sphere. Different plates rotate about different axes, producing the relative motion that drives boundary interactions.
+
+## 3. Boundary Detection and Classification
+
+### 3.1 Identifying Boundaries
+
+A **boundary hex** is one with at least one neighbor belonging to a different plate. Each tick (after re-partition), the tectonics layer iterates all hexes and flags those with cross-plate neighbors.
+
+Stored as a derived structure (not in `WorldData` — recomputed each tick):
+
+```rust
+struct BoundaryInfo {
+    boundary_hexes: Vec<HexId>,
+    // For each boundary hex, the set of neighbor plates it touches.
+    plate_contacts: BTreeMap<HexId, BTreeSet<PlateId>>,
+}
+```
+
+### 3.2 Classifying Boundary Type
+
+For each boundary hex `h` and each cross-plate neighbor `n`:
+
+1. Compute the relative velocity between plate A (h's plate) and plate B (n's plate) at this geographic location.
+2. Decompose into a component **normal** to the boundary (perpendicular to the edge between A and B) and a component **tangential** to the boundary.
+3. Classify:
+   - **Divergent:** Normal component is negative (plates separating)
+   - **Convergent:** Normal component is positive (plates approaching)
+   - **Transform:** Tangential component dominates (plates sliding past)
+
+The threshold for "tangential dominates" is when `|normal_velocity| < 0.3 * |tangential_velocity|`. Otherwise the boundary is divergent or convergent based on normal velocity sign.
+
+### 3.3 Boundary Subtype (Convergent only)
+
+Convergent boundaries split by plate type:
+
+- **Continental-Continental:** Mountain building. Two continents collide and crumple.
+- **Oceanic-Oceanic:** Island arc formation. One plate subducts, volcanic islands form.
+- **Continental-Oceanic:** Subduction zone. Oceanic plate descends. Coastal mountains and arc volcanism on the continental side.
+
+### 3.4 Velocity Computation at a Point
+
+Given two plates A and B with motion axes `ω_A` and `ω_B` and rates `r_A` and `r_B`, the velocity of plate A at point `p` on the sphere is:
+
+```
+v_A(p) = (ω_A * r_A) × p
+```
+
+(Cross product, treating ω as a vector pointing along the axis with magnitude r.)
+
+The relative velocity at point p (movement of A relative to B) is:
+
+```
+v_rel(p) = v_A(p) - v_B(p)
+```
+
+For boundary classification, we project this onto the local boundary frame (normal and tangent vectors at p).
+
+## 4. Per-Tick Algorithm
+
+### 4.1 Tick Interval
+
+Geological tick interval scales with the current `Era`:
+
+| Era | Tick Interval | Rationale |
+|-----|---------------|-----------|
+| Formation | 1 tick at year 0 only | Initial plate generation |
+| Geological | 500,000 years | Continental drift moves visibly per tick |
+| Prehistoric | 2,000,000 years | Slower; geology mostly settled, just refining |
+| Ancient | 10,000,000 years | Negligible change over historical timescales |
+| Recent | Layer dormant | No simulation, just state |
+
+These are configurable via `WorldParameters.core.geology.tick_interval_overrides` (optional map per era; falls back to defaults).
+
+Total tick count for default Earth-analog world:
+- Formation: 1 tick
+- Geological: (life_emergence_year - 0) / 500,000 = ~1,000 ticks (assuming life emerges at 500 million years)
+- Prehistoric: (sapience_year - life_emergence) / 2,000,000 = ~2,000 ticks
+- Ancient: small number
+- **Total: ~3,000-4,000 ticks over the full geological history**
+
+### 4.2 Per-Tick Steps
+
+In order:
+
+1. **Update plate motion accumulators.** For each plate, increment `accumulated_rotation_rad` by `motion_rate_rad_per_year * tick_interval_years`.
+2. **Re-partition hexes to plates.** Recompute `WorldData.plate_id[hex]` for all hexes based on each plate's current effective position.
+3. **Detect boundary hexes and classify boundary types** (§3).
+4. **Apply boundary effects to elevation** (§5).
+5. **Apply hot spot effects** (§7).
+6. **Apply erosion** (§8).
+7. **Check for plate reorganization events** (§4.5).
+8. **Update sea level** (§4.6).
+9. **Emit events** based on what happened this tick (§6).
+
+Each step uses a distinct RNG stream (§4.4) for any randomness, ensuring tick determinism.
+
+### 4.3 First-Tick Initialization
+
+At year 0 (Formation era, one-time tick), tectonics performs:
+
+1. Sample `initial_plate_count` seed hexes via Poisson-disk-like distribution
+2. Assign each plate a type per `initial_continental_fraction`
+3. Sample each plate's motion axis (uniform on sphere) and rate (log-normal scaled by `plate_velocity_scale`)
+4. Compute initial Voronoi partition → `plate_id` for every hex
+5. Set initial elevation: continental plates ~500m, oceanic plates ~-3500m, with small per-hex random variation (~±200m)
+6. Set initial `bedrock_type`: continental plates start as `Igneous` (basement rock), oceanic plates as `OceanicCrust`
+7. Set initial `sea_level_m` to 0 (calibrated so that ocean basins fill but continents emerge)
+8. Emit one `EventKind::WorldFormation` event
+
+### 4.4 RNG Streams
+
+Tectonics uses these named streams (derived from `WorldRng::stream(name)`):
+
+| Stream Name | Purpose |
+|---|---|
+| `tectonics.plate_seeds` | Initial plate seed hex selection |
+| `tectonics.plate_axes` | Plate motion axis sampling |
+| `tectonics.plate_rates` | Plate motion rate sampling |
+| `tectonics.plate_types` | Continental vs oceanic assignment |
+| `tectonics.initial_elevation_noise` | Per-hex initial elevation variation |
+| `tectonics.reorganization_check` | Per-tick check for whether a plate reorganization occurs |
+| `tectonics.reorganization_action` | If reorganizing, which plates and how |
+| `tectonics.hotspot_locations` | Initial hot spot positions |
+| `tectonics.hotspot_activity` | Per-tick activity at each hot spot |
+| `tectonics.volcanism` | Stochastic volcanic eruptions at boundaries |
+| `tectonics.erosion_noise` | Per-tick erosion variation |
+
+Each is initialized once at plate creation and re-derived deterministically every tick. Different streams ensure that, e.g., tweaking volcanism logic doesn't change initial plate layout.
+
+### 4.5 Plate Reorganization
+
+Real plate tectonics is not static — plates split, merge, and change motion direction over hundreds of millions of years. Modeling this gives our worlds varied geological history (multiple supercontinent cycles, not just one static configuration).
+
+Each Geological-era tick, with probability `0.001 * geology_activity_scale` (default ~once per 500 million simulated years), a reorganization event occurs. Reorganization is one of:
+
+- **Plate split** (40% of events): A randomly-chosen large plate splits along a chosen axis. Creates a new plate with a related but distinct motion axis. Continental plate splits often produce a new ocean basin between the two halves.
+- **Plate motion change** (40% of events): A randomly-chosen plate gets a new motion axis. Models the "the plate slowed down and changed direction" that happens in real Earth history.
+- **Plate merger** (20% of events): Two adjacent plates merge into one. Often happens after extensive continental collision when the boundary effectively locks up.
+
+Each reorganization emits an event with `Significance::Pivotal` (these are the supercontinent-cycle-defining moments).
+
+### 4.6 Sea Level Drift
+
+Per Doc 04 §3.3, sea level is variable (not fixed at zero). Tectonic activity affects ocean basin volume:
+
+- More active divergent boundaries (mid-ocean ridges) → ridges displace water → sea level rises
+- Less active periods → ridges subside → sea level falls
+
+Each tick, sea level adjusts by a small amount derived from total divergent boundary length:
+
+```
+delta_sea_level_m = (current_divergent_length_km - baseline_divergent_length_km) * 1e-6
+```
+
+Plus a slow long-term trend toward equilibrium (sea level can't run away over billions of years). The result: sea level oscillates by tens of meters over geological time, with rare excursions of ±100m during major reorganizations.
+
+## 5. Elevation Update Rules
+
+### 5.1 Divergent Boundaries
+
+At a divergent boundary, two plates separate. New crust forms in the gap.
+
+For each boundary hex h at a divergent boundary:
+- Elevation decreases toward the oceanic baseline (-3500m) at a rate proportional to `relative_velocity_magnitude * tick_interval_years`
+- Specifically: `elevation_mean[h] -= velocity_cm_per_year * tick_interval_years * subsidence_rate`
+- Where `subsidence_rate ≈ 0.001 m per cm of separation` (calibrated to produce ~3.5km deepening over 100 million years)
+- Bedrock changes to `OceanicCrust` if it was previously something else
+- Plate ID is reassigned (the boundary hex now clearly belongs to whichever plate it's farther into)
+
+If divergence happens within a continental plate (rifting), elevation drops more slowly and bedrock stays `Igneous` until the rift becomes oceanic (after ~50 million years of sustained divergence).
+
+### 5.2 Convergent: Continental-Continental
+
+Two continents collide. Crust crumples upward.
+
+For each boundary hex h at a continental-continental boundary:
+- `elevation_mean[h] += orogeny_rate * velocity_cm_per_year * tick_interval_years`
+- Where `orogeny_rate ≈ 0.005 m per cm of convergence` (calibrated to produce ~5km elevation over 100 million years of sustained collision)
+- `elevation_relief[h] += orogeny_rate * 0.3 * velocity_cm_per_year * tick_interval_years` (mountains get rougher)
+- Bedrock changes to `Metamorphic` (collision metamorphism)
+
+Effect spreads inland — hexes within 2-3 hexes of the boundary on the continental side also gain elevation, with falloff.
+
+### 5.3 Convergent: Oceanic-Continental
+
+Oceanic plate subducts under continental plate.
+
+For each boundary hex h on the **oceanic side**:
+- Elevation decreases sharply (forming a trench): `elevation_mean[h] -= subduction_rate * velocity * tick_interval`
+- `subduction_rate ≈ 0.02 m per cm` (deeper response than divergence)
+
+For each boundary hex h on the **continental side** (within 3-5 hexes inland):
+- Elevation increases (coastal mountains)
+- Volcanism is likely (see §5.5)
+- Bedrock changes to `Igneous` (volcanic rock from arc magmatism)
+
+### 5.4 Convergent: Oceanic-Oceanic
+
+One oceanic plate subducts under the other. Island arcs form on the upper plate.
+
+For each boundary hex h on the **upper plate side**:
+- Elevation increases sharply (volcanic islands forming)
+- Bedrock changes to `Igneous`
+
+For each boundary hex h on the **lower plate side**:
+- Elevation decreases (the subducting trench)
+
+### 5.5 Volcanism (Boundary-Driven)
+
+At convergent boundaries with subduction (oceanic-continental and oceanic-oceanic), stochastic volcanic eruptions occur each tick:
+
+- Each boundary hex on the upper-plate volcanic arc side has a per-tick probability of a volcanic event
+- Probability = `0.05 * volcanism_scale` (default ~5% per tick per boundary hex)
+- When it fires:
+  - Elevation increases by 100-500m at that hex (sampled from a distribution)
+  - `elevation_relief[h] += 50-200m` (volcanoes have prominent peaks)
+  - Bedrock stays/becomes `Igneous`
+  - Emits a `VolcanicEruption` event
+
+### 5.6 Transform Boundaries
+
+Transform boundaries (sliding) don't change elevation significantly, but they affect bedrock:
+- Bedrock changes to `Metamorphic` over long durations (transform fault metamorphism)
+- No event emission (these are continuous, not punctuated)
+
+### 5.7 Elevation Bounds
+
+Elevation is clamped to a physically plausible range:
+
+- `MIN_ELEVATION_M = -11_000.0` (Marianas Trench depth)
+- `MAX_ELEVATION_M = 9_000.0` (slightly above Everest)
+- `MAX_RELIEF_M = 5_000.0`
+
+Bounds prevent runaway accumulation from poorly-tuned parameters. If a boundary somehow generates 50 km of elevation, we clamp and log a warning in debug builds.
+
+## 6. Event Schema
+
+This section defines what tectonic events look like and introduces the **user-tunable granularity system**.
+
+### 6.1 New EventKind Variants
+
+Add to `EventKind` in `genesis_core::events::kinds`:
+
+```rust
+pub enum EventKind {
+    Placeholder { description: String },  // existing
+    
+    // Tectonic events (Phase 1)
+    WorldFormation,
+    PlateReorganization {
+        action: PlateReorgAction,
+        affected_plates: Vec<PlateId>,
+    },
+    MountainRangeFormed {
+        boundary_hexes: Vec<HexId>,
+        plates: (PlateId, PlateId),
+        peak_elevation_m: f32,
+    },
+    OceanBasinOpened {
+        boundary_hexes: Vec<HexId>,
+        plates: (PlateId, PlateId),
+    },
+    VolcanicEruption {
+        hex: HexId,
+        elevation_change_m: f32,
+        plate: PlateId,
+    },
+    HotSpotActivity {
+        hex: HexId,
+        hot_spot_id: HotSpotId,
+        elevation_change_m: f32,
+    },
+    BoundaryTransition {
+        hex: HexId,
+        from: BoundaryType,
+        to: BoundaryType,
+    },
+    SeaLevelChange {
+        delta_m: f32,
+        new_sea_level_m: f32,
+    },
+}
+
+pub enum PlateReorgAction {
+    Split { parent: PlateId, child: PlateId },
+    Merge { absorbed: PlateId, into: PlateId },
+    MotionChange { plate: PlateId, new_axis: Vec3, new_rate: f64 },
+}
+```
+
+### 6.2 Significance Assignment
+
+Each emitted event gets a `Significance` value indicating how noteworthy it is. Significance is fixed per event variant:
+
+| Variant | Significance | Rationale |
+|---|---|---|
+| `WorldFormation` | `Pivotal` | The world begins |
+| `PlateReorganization` | `Pivotal` | Supercontinent-cycle-defining moments |
+| `MountainRangeFormed` | `Major` | Continental-scale geographic features |
+| `OceanBasinOpened` | `Major` | New oceans matter for climate and life |
+| `VolcanicEruption` (peak > 2000m) | `Notable` | Significant volcanic peaks |
+| `VolcanicEruption` (peak ≤ 2000m) | `Minor` | Smaller eruptions |
+| `HotSpotActivity` (cumulative > 1km) | `Notable` | Island chains forming |
+| `HotSpotActivity` (smaller) | `Trace` | Individual hot spot pulses |
+| `BoundaryTransition` | `Trace` | Subtle, gradual changes |
+| `SeaLevelChange` (> 50m) | `Notable` | Major sea level excursions |
+| `SeaLevelChange` (smaller) | `Trace` | Background drift |
+
+### 6.3 The Granularity System
+
+Per the design discussion: we want to be able to log fine-grained events for analysis, but not blow up save file sizes for ordinary use. The mechanism is a **per-layer event granularity threshold** in `WorldParameters`.
+
+Add to `WorldParameters.core.geology`:
+
+```rust
+pub struct GeologyParameters {
+    // ... existing fields ...
+    
+    /// Minimum event significance to log during tectonic simulation.
+    /// Events below this threshold are computed and applied to world state
+    /// but NOT recorded in the event log.
+    pub event_granularity: Significance,
+}
+```
+
+Default value: `Significance::Notable`.
+
+Effect:
+- At `Significance::Trace`: log everything. Save file grows substantially. Useful for debugging or for users who want every detail.
+- At `Significance::Minor`: log Minor and above. Skips Trace events (mostly background sea level drift, hot spot pulses).
+- At `Significance::Notable` (default): log Notable and above. Reasonable middle ground.
+- At `Significance::Major`: only the big stuff (mountain ranges, ocean basins, reorganizations).
+- At `Significance::Pivotal`: only the era-defining moments. Smallest save.
+
+Implementation in the tectonics layer:
+
+```rust
+fn maybe_emit(&mut self, event: Event, world: &WorldData) {
+    if event.significance >= world.parameters.core.geology.event_granularity {
+        // Emit to event log
+        self.events_this_tick.push(event);
+    }
+    // Below threshold: still computed, but not logged
+}
+```
+
+This lets us:
+1. Implement the full event taxonomy (every variant)
+2. Measure save file sizes at each granularity level during testing
+3. Make an informed choice about defaults based on real data
+4. Give power users the option to crank it up for analysis
+
+### 6.4 Event Volume Estimates
+
+At default granularity (`Notable`), expected event counts over 4.5 billion years:
+
+| Event Variant | Estimated Count |
+|---|---|
+| `WorldFormation` | 1 |
+| `PlateReorganization` | 5-15 |
+| `MountainRangeFormed` | 20-50 |
+| `OceanBasinOpened` | 10-30 |
+| `VolcanicEruption` (Notable only) | 500-2,000 |
+| `HotSpotActivity` (Notable only) | 100-500 |
+| `SeaLevelChange` (Notable only) | 10-30 |
+| **Total at Notable** | **~700-2,600 events** |
+
+At `Trace`: roughly 50-200x more events (most of the volume from `VolcanicEruption (Minor)` and per-tick `SeaLevelChange (Trace)`).
+
+These are estimates; Phase 1 implementation will produce real numbers we can use to refine the granularity defaults.
+
+## 7. Hot Spots
+
+### 7.1 Hot Spot Model
+
+Real Earth has ~40-50 hot spots (Hawaii, Iceland, Yellowstone). They're persistent thermal anomalies in the mantle that punch through whatever plate is currently above them. As plates move, hot spots produce volcanic chains.
+
+For our simulation:
+
+```rust
+pub struct HotSpot {
+    pub id: HotSpotId,
+    pub anchor_position: Vec3,   // Fixed in the world frame; doesn't move with plates
+    pub activity_rate: f64,      // Per-tick probability of an eruption when a plate is above
+    pub age_year: WorldYear,
+    pub lifespan_year: WorldYear, // Hot spots eventually die
+}
+
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
+pub struct HotSpotId(pub u16);
+```
+
+### 7.2 Hot Spot Generation
+
+At world formation:
+- `num_hot_spots = round(8 + 16 * (planet_radius_km / earth_radius_km))` — about 12-20 for an Earth-sized world
+- Positions sampled uniformly on the sphere via the `tectonics.hotspot_locations` stream
+- Each gets a random `activity_rate` (0.01 to 0.1 per tick) and a `lifespan_year` (100M to 1B years)
+
+### 7.3 Hot Spot Dynamics
+
+Each tick:
+1. For each hot spot still alive:
+   - Find the hex currently above the hot spot's anchor position
+   - With probability `activity_rate`, an eruption occurs
+   - Eruption raises elevation by 100-1000m, similar to boundary volcanism
+   - Emits `HotSpotActivity` event
+2. If `current_year - age_year > lifespan_year`, the hot spot dies (removed from active list)
+3. Rare new hot spots form (probability `0.0001` per tick) to maintain a roughly stable count over time
+
+### 7.4 Tracks
+
+Hot spot tracks (island chains like Hawaii) emerge naturally from the model: as plates move over the hot spot, the eruption location relative to the plate shifts, producing a linear chain of volcanic features in the plate's frame of reference. We don't need to explicitly model "tracks" — they're an emergent consequence.
+
+## 8. Erosion
+
+### 8.1 Why Erosion Matters
+
+Without erosion, every continental collision adds elevation forever. Earth's mountains have been eroding since they formed; the Appalachians used to be Himalayan-scale. A world without erosion would have implausibly tall mountains everywhere there's ever been a convergent boundary.
+
+### 8.2 Erosion Model (v1: simplified)
+
+Per tick, each hex with elevation above sea level erodes:
+
+```
+erosion_amount_m = elevation_above_sea * erosion_rate * tick_interval_years
+```
+
+Where:
+- `erosion_rate ≈ 1e-9` per year (calibrated so 5 km of elevation erodes to negligible over a few hundred million years)
+- `elevation_above_sea = elevation_mean - sea_level_m`
+- Hexes below sea level don't erode (erosion model only handles above-water for v1)
+
+The eroded material is distributed to lower-elevation neighbors (the simplest "downhill flow" model). Phase 2 (Hydrology) will refine this with proper drainage networks. For now: each tick, eroded mass moves one hex toward the lowest neighbor.
+
+### 8.3 Sedimentary Bedrock Formation
+
+When eroded material accumulates on a hex with `BedrockType::Igneous` or `BedrockType::Metamorphic`, the bedrock changes to `BedrockType::Sedimentary` over time. Specifically:
+
+- Track cumulative deposition per hex (transient state, not in `WorldData`)
+- When cumulative > threshold (e.g., 500m of accumulated material), bedrock transitions to `Sedimentary`
+- This is what creates "fertile ancient seabeds" — areas now above water that used to be below it, with thick sediment.
+
+### 8.4 Limestone Formation (Special Case)
+
+`BedrockType::Limestone` represents carbonate rock that forms in warm shallow seas. For v1:
+
+- Hexes that have been below sea level for an extended period (> 100 million years) AND are in equatorial-to-tropical latitudes (|lat| < 30°) acquire `BedrockType::Limestone` instead of generic sedimentary.
+- This is the "Cretaceous beach" mechanic mentioned in Doc 04 §3.3 — when later tectonic uplift raises these hexes above sea level, they have distinctive limestone bedrock that affects soil fertility chains.
+
+## 9. Performance Targets
+
+### 9.1 Time Budget
+
+For a default Earth-analog world at subdivision level 7 (~22K hexes):
+- **Total tectonic simulation:** 60 seconds or less on target hardware (M-series MacBook Pro)
+- **Per-tick cost at Geological era:** 15-30ms (for ~3,000 ticks at this rate)
+- **Initial plate generation:** under 200ms
+- **Memory overhead:** under 10MB beyond `WorldData`
+
+At subdivision level 8 (~65K hexes): targets multiply by ~3x. Still acceptable.
+
+### 9.2 What Makes This Fast
+
+- All hex operations are O(1) lookups in `Vec<f32>` arrays (no allocations per hex per tick)
+- Plate-to-hex Voronoi recomputation only when accumulated motion exceeds a threshold (not every tick)
+- Boundary detection iterates hexes once, classifying via neighbor lookups
+- Hot spot count is small (~20), checks are negligible
+- Erosion is per-hex but parallelizable (Phase 1 keeps it sequential; can parallelize later)
+
+### 9.3 Measurement
+
+Phase 1 ships with built-in profiling:
+- Per-tick timing logged when `RUST_LOG=genesis_tectonics=debug` is set
+- Per-step timing within a tick (motion update, partition, boundary, elevation, hot spots, erosion)
+- Total simulation time logged at `info` level on completion
+
+Performance regressions will be caught by a `tectonics_full_history_completes_within_budget` test in CI.
+
+## 10. Determinism Requirements
+
+Standard Genesis Engine determinism rules apply (Doc 04 §6):
+
+1. All randomness via `WorldRng::stream(name)` with named streams (§4.4)
+2. All collections sorted before iteration where order matters (BTreeMap, BTreeSet — never std HashMap)
+3. Floating-point math in f64 for accumulating quantities, f32 acceptable for per-hex storage
+4. No reliance on wall-clock time anywhere in the simulation
+5. Plate IDs and Hot Spot IDs assigned in deterministic order
+
+Additional tectonics-specific rules:
+
+6. **Reorganization events** use the `tectonics.reorganization_check` stream for the per-tick probability check, then `tectonics.reorganization_action` for which plates and how. Two streams ensures that changing the reorganization probability doesn't shift downstream plate selection.
+7. **Plate motion** is computed in f64 and stored in f32 — accumulation happens in f64 to avoid drift over thousands of ticks.
+8. **Re-partition order:** when iterating hexes for Voronoi assignment, iterate by `HexId` ascending. This ensures ties (a hex equidistant from two plates) break deterministically.
+
+A snapshot test must verify: same seed produces byte-identical `WorldData` after full geological simulation.
+
+## 11. Validation Criteria
+
+How do we know tectonics is producing plausible output? These are sanity checks, not unit tests.
+
+After running full geological simulation on a default Earth-analog world, the result should satisfy:
+
+1. **Continental fraction:** 25-35% of hexes are above sea level (Earth: ~29%)
+2. **Plate count:** Final plate count is between 5 and 15 (started with 8, may have split/merged)
+3. **Mountain ranges exist:** At least 3 distinct contiguous regions of elevation > 3000m
+4. **Ocean basins exist:** At least 1 contiguous region of elevation < -3000m covering > 1000 hexes
+5. **Bedrock diversity:** All 6 `BedrockType` variants are present in the final world
+6. **No runaway elevation:** Maximum elevation < 9000m, minimum > -11000m
+7. **Sea level plausible:** Final `sea_level_m` is within ±200m of 0
+8. **Event count sensible:** At default `Notable` granularity, event count is 500-3000 (loose bounds)
+
+Implementation tests verify each of these against a fixed seed.
+
+## 12. Edge Cases and Open Questions
+
+### 12.1 What if a plate has zero hexes?
+
+After Voronoi re-partition, a plate could theoretically have no hexes (if other plates have grown to surround it). For v1: a plate with zero hexes for 10M+ years is considered "extinct" and removed from the active plate list. Its `PlateId` is never reused.
+
+### 12.2 Multi-plate convergent boundaries (triple junctions)
+
+A hex can have neighbors from 2 or more different plates. The boundary classification then runs pairwise; the hex applies effects from all classifications additively. Triple junctions are where particularly active geology happens — this naturally produces complex boundary regions in our simulation.
+
+### 12.3 Hot spot vs boundary volcanism interactions
+
+A hot spot under a divergent boundary (like Iceland) would have both processes active. We let both apply additively. Result: extra-volcanic regions where these overlap. Plausible.
+
+### 12.4 Initial plate seeding near pentagons
+
+Pentagons have 5 neighbors instead of 6. If a plate's seed hex is a pentagon, nothing special happens — Voronoi partitioning doesn't care about neighbor count. Boundary detection naturally handles the 5-neighbor case.
+
+### 12.5 What if `event_granularity` is set above `Pivotal`?
+
+Then no events get logged. World state is still computed correctly, but the chronicle is empty. This is an extreme but valid configuration ("simulate but don't record"). Phase 1 implementation should not crash on this; tests verify.
+
+## 13. File Organization
+
+Implementation lives in `crates/genesis_tectonics/`:
+
+```
+genesis_tectonics/
+├── Cargo.toml
+└── src/
+    ├── lib.rs              # public API + TectonicsLayer impl
+    ├── plate.rs            # Plate, PlateType, Plate registry
+    ├── motion.rs           # Plate motion math (rotation about axis)
+    ├── partition.rs        # Voronoi partition (hex → plate)
+    ├── boundary.rs         # Boundary detection and classification
+    ├── elevation.rs        # Per-boundary-type elevation update rules
+    ├── volcanism.rs        # Boundary-driven and hot spot volcanism
+    ├── hotspots.rs         # Hot spot model
+    ├── erosion.rs          # Erosion and sedimentation
+    ├── reorganization.rs   # Plate split / merge / motion change
+    └── events.rs           # Event emission and granularity gating
+```
+
+Depends on:
+- `genesis_core` (data structures, RNG, time, events)
+- `glam` (vector math, already pulled in via genesis_core's grid)
+
+No Bevy dependency. The tectonics layer is engine-agnostic.
+
+## 14. Out of Scope for Phase 1
+
+Explicitly NOT included; deferred to later phases:
+
+- **Climate effects on erosion:** Phase 2 (Climate) will introduce climate-dependent erosion rates (more rain → more erosion). Phase 1 uses uniform erosion.
+- **Soil composition:** Doc 08 (Hydrology & Soil). Bedrock type sets the stage; soil is built on top.
+- **Magnetic field and pole reversals:** Cool worldbuilding hook but not relevant for any v1 simulation.
+- **Detailed mineral composition:** Beyond the 6 BedrockType variants, no individual mineral tracking.
+- **Realistic timescales for non-Earth planets:** A radically different planet radius or gravity could justify scaled tectonic rates. Phase 1 treats `planet.radius_km` and `planet.gravity_g` as informational only.
+- **Tidal forces from moons:** Some real geophysics ties tides to plate motion. We ignore this.
+
+## 15. Implementation Plan (Phase 1 Sub-Steps)
+
+Like Phase 0 was broken into 8 implementation prompts, Phase 1 will be broken into sub-steps. Preliminary breakdown:
+
+1. **Plate generation and storage** — `Plate` struct, initial seeding, partition
+2. **Plate motion and re-partition** — motion math, accumulated rotation, partition refresh
+3. **Boundary detection and classification** — identifying and typing boundaries
+4. **Elevation updates per boundary type** — the core dynamics
+5. **Hot spots** — separate from boundary dynamics
+6. **Erosion and bedrock evolution** — closes the elevation loop
+7. **Plate reorganization** — split, merge, motion change
+8. **Event emission and granularity gating** — the chronicle
+9. **Integration and validation** — register with `TickCoordinator`, run full history, verify validation criteria
+10. **Rendering integration** — `genesis_render` learns to color hexes by elevation
+
+Each step will be a separate prompt with its own spec, tests, and review cycle, following the Phase 0 process.
+
+## 16. Implementation Notes for the AI Agent
+
+Per Doc 04 §16, this section addresses agents implementing the spec.
+
+1. **Read this entire doc** before starting any sub-step. The pieces interact — you can't implement boundaries without understanding plate motion, can't do elevation without understanding boundaries.
+2. **Use `BTreeMap` and `BTreeSet`** for all collections. Never `std::HashMap`.
+3. **Each new sub-prompt will reference specific sections of this doc.** If a prompt seems to contradict this doc, surface the contradiction before resolving it.
+4. **Performance is a feature.** If the easiest implementation is slow, that's still acceptable for first-pass; we'll optimize after correctness. But report timings.
+5. **Surface every assumption** that goes beyond what's specified here. Default values, parameter ranges, calibration constants — flag them in your summary so we can refine the doc.
+
+## 17. Open Questions for Doc Review
+
+Items I'm uncertain about and want input on:
+
+1. **Tick intervals (§4.1):** Are 500K-year Geological ticks the right granularity? Faster ticks → more events, more accurate boundary motion, more cost. Slower ticks → coarser. Real worldbuilding probably wants somewhere in 200K-1M range.
+
+2. **Plate count default (§2):** Default `initial_plate_count = 7` per Doc 04 §4.7. Earth has 7 major + 8 minor = 15. Should we default higher for richer geography?
+
+3. **Erosion rate calibration (§8.2):** Earth's mountains erode at ~1mm/year average. Our rate of `1e-9 per year` multiplied by 5km of elevation gives 5e-6 m/year = 0.005mm/year. That's too slow. Probably should be 1e-7 or 1e-6 — calibrate during Phase 1 implementation.
+
+4. **Limestone formation (§8.4):** The "warm shallow seas" trigger uses absolute latitude. But continents drift through latitude bands over time — should we use *historical* latitude (where the hex was when it was under water), or current latitude? Historical is harder to track but more accurate. v1 should probably use current and we revisit if it produces weird results.
+
+5. **Hot spot lifespan (§7.2):** 100M-1B years feels right but I'm pulling these numbers from Earth observation roughly. Worth empirical tuning.
+
+6. **Should the validation criteria (§11) be unit tests, or run only manually?** Implementing them as tests means they must pass in CI. If a seed produces an unusual result (no mountain ranges, sub-1000-hex ocean), CI breaks. Manual checks let us look at outputs flexibly.
+
+These get resolved during Phase 1 implementation. Right now they're noted as deliberately open.
+
+---
+
+*End of Doc 06 v0.1.*
+
+*Next step: implementation prompt 1.0 (Phase 1) — initial plate generation and partition.*

@@ -116,7 +116,11 @@ One per simulation subsystem. Written immediately before implementing that subsy
 
 **04. Data Layer Specification** — The ECS schema. Every component, every field, every unit and range. The hex grid definition. The branch and intervention log formats. The data contract everything else builds against.
 
-**05. Tick System & Time Management Specification** — How time works in Genesis Engine. Layer tick rates, ordering rules, branch divergence mechanics, snapshot intervals, buffer management, edit-mode behavior. Pseudo-code for the main loop.
+**05. Tick System & Time Management Specification** *(absorbed into Doc 04 §7)*
+
+The tick system, layer ordering rules, `WorldYear`/`Era`/`WorldTime` types, and the main lifecycle loop (`create_world`, `generate_full_history`) are specified in Doc 04 §7 and implemented in `genesis_core::time` and `genesis_core::lifecycle`. A separate document proved unnecessary — the tick system is small enough to specify alongside the data layer.
+
+Snapshot intervals, buffer management for branch rewinding, and edit-mode behavior during simulation will be specified in a future doc (likely paired with the persistence layer, Doc 13) once Phase 1+ surfaces concrete requirements. Stubbed snapshot infrastructure already exists in `genesis_core::persistence::snapshots`.
 
 **06. Tectonics Module Specification** — Plate generation, drift dynamics, collision and subduction, mountain building, volcanism, geological layering. Produces the elevation field and bedrock composition the rest of the simulation builds on.
 
