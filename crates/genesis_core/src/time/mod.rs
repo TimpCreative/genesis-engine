@@ -50,7 +50,7 @@ impl std::ops::Sub<WorldYear> for WorldYear {
 }
 
 /// Simulation era derived from [`WorldParameters`] boundary years.
-#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Serialize, Deserialize)]
 pub enum Era {
     /// Instant at world formation (`world_start_year` only).
     Formation,

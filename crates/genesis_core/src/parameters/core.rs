@@ -1,8 +1,11 @@
 //! Core (engine-defined) world parameters.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
-use crate::time::WorldYear;
+use crate::events::Significance;
+use crate::time::{Era, WorldYear};
 
 /// Canonical integer seed and optional original user input.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -117,14 +120,26 @@ pub struct TimeParameters {
 /// Initial geology settings.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct GeologyParameters {
-    /// Initial tectonic plate count. Immutable.
-    pub initial_plate_count: u8,
-    /// Fraction of surface as continental crust (0–1). Earth ~0.29. Immutable.
+    /// Fraction of plates that are continental at world formation. Default 0.29 (Earth).
     pub initial_continental_fraction: f32,
-    /// Plate velocity scale (1.0 = Earth-typical). Immutable.
+    /// Plate motion scale factor relative to Earth-like values. Default 1.0.
     pub plate_velocity_scale: f32,
-    /// Volcanism intensity scale. Immutable.
+    /// Volcanism intensity multiplier. Default 1.0.
     pub volcanism_scale: f32,
+    /// Number of major (large) plates at world formation. Default 7. Valid range 6-9.
+    pub initial_major_plate_count: u8,
+    /// Number of minor (smaller) plates at world formation. Default 8. Valid range 6-10.
+    pub initial_minor_plate_count: u8,
+    /// Minimum event significance to record during tectonic simulation.
+    /// Events below this threshold are computed and applied but NOT logged.
+    /// Default `Significance::Notable`.
+    pub event_granularity: Significance,
+    /// Admin/debug override for tick interval per era (years). None = use the
+    /// defaults from Doc 06 §4.1.
+    pub tick_interval_overrides_years: Option<BTreeMap<Era, i64>>,
+    /// Base erosion rate per year per meter of elevation above sea level.
+    /// Default 1e-7. Climate modifies via climate_modifier (Phase 2).
+    pub base_erosion_rate_per_year: f64,
 }
 
 /// Initial climate boundary conditions.

@@ -110,10 +110,31 @@ impl WorldParameters {
                 message: "must be in 0.0..=1.0".into(),
             });
         }
-        if self.core.geology.initial_plate_count < 1 {
+        if !(6..=9).contains(&self.core.geology.initial_major_plate_count) {
             return Err(ParameterValidationError::InvalidField {
-                field: "geology.initial_plate_count".into(),
-                message: "must be at least 1".into(),
+                field: "geology.initial_major_plate_count".into(),
+                message: format!(
+                    "must be 6-9, got {}",
+                    self.core.geology.initial_major_plate_count
+                ),
+            });
+        }
+
+        if !(6..=10).contains(&self.core.geology.initial_minor_plate_count) {
+            return Err(ParameterValidationError::InvalidField {
+                field: "geology.initial_minor_plate_count".into(),
+                message: format!(
+                    "must be 6-10, got {}",
+                    self.core.geology.initial_minor_plate_count
+                ),
+            });
+        }
+
+        let rate = self.core.geology.base_erosion_rate_per_year;
+        if !rate.is_finite() || rate <= 0.0 || rate >= 1e-3 {
+            return Err(ParameterValidationError::InvalidField {
+                field: "geology.base_erosion_rate_per_year".into(),
+                message: format!("must be positive, finite, and < 1e-3; got {rate}"),
             });
         }
 

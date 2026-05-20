@@ -17,6 +17,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::events::Significance;
 use crate::time::WorldYear;
 
 /// Immutable world recipe: core parameters plus mod extensions.
@@ -57,10 +58,14 @@ impl Default for WorldParameters {
                     simulation_end_year: WorldYear(4_500_000_000),
                 },
                 geology: GeologyParameters {
-                    initial_plate_count: 7,
                     initial_continental_fraction: 0.29,
                     plate_velocity_scale: 1.0,
                     volcanism_scale: 1.0,
+                    initial_major_plate_count: 7,
+                    initial_minor_plate_count: 8,
+                    event_granularity: Significance::Notable,
+                    tick_interval_overrides_years: None,
+                    base_erosion_rate_per_year: 1e-7,
                 },
                 climate_initial: ClimateInitialParameters {
                     initial_mean_temperature_c: 15.0,
@@ -210,6 +215,39 @@ mod tests {
         assert!(matches!(
             p.validate(),
             Err(ParameterValidationError::UnsupportedV1Feature { .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_major_plate_count_out_of_range() {
+        let mut p = WorldParameters::default();
+        p.core.geology.initial_major_plate_count = 5;
+        assert!(matches!(
+            p.validate(),
+            Err(ParameterValidationError::InvalidField { field, .. })
+            if field == "geology.initial_major_plate_count"
+        ));
+    }
+
+    #[test]
+    fn rejects_minor_plate_count_out_of_range() {
+        let mut p = WorldParameters::default();
+        p.core.geology.initial_minor_plate_count = 11;
+        assert!(matches!(
+            p.validate(),
+            Err(ParameterValidationError::InvalidField { field, .. })
+            if field == "geology.initial_minor_plate_count"
+        ));
+    }
+
+    #[test]
+    fn rejects_base_erosion_rate_out_of_range() {
+        let mut p = WorldParameters::default();
+        p.core.geology.base_erosion_rate_per_year = 1e-2;
+        assert!(matches!(
+            p.validate(),
+            Err(ParameterValidationError::InvalidField { field, .. })
+            if field == "geology.base_erosion_rate_per_year"
         ));
     }
 

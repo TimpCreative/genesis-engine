@@ -2607,6 +2607,14 @@ version = "0.1.0"
 [[package]]
 name = "genesis_tectonics"
 version = "0.1.0"
+dependencies = [
+ "genesis_core",
+ "glam",
+ "rand 0.8.6",
+ "serde",
+ "thiserror 2.0.18",
+ "tracing",
+]
 
 [[package]]
 name = "genesis_ui"

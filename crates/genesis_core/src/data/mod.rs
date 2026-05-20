@@ -62,6 +62,10 @@ pub struct WorldData {
     pub biome: Vec<BiomeId>,
     /// Total biomass in tons per hex.
     pub biomass: Vec<f32>,
+    /// Bio-deposit accumulator from shallow tropical seas. Monotonic; never decreases.
+    /// Phase 1 tectonics increments this for hexes in shallow tropical conditions.
+    /// Phase 4 biology will refine accumulation rate and drive bedrock transitions.
+    pub fertility: Vec<f32>,
 
     // ---- Civilizational Layer (Layer 2) ----
     /// Population count per hex (most hexes are zero).
@@ -97,6 +101,7 @@ impl WorldData {
             global_temperature_c: 15.0,
             biome: vec![BiomeId::NONE; n],
             biomass: vec![0.0; n],
+            fertility: vec![0.0; n],
             population: vec![0; n],
             settlement_id: vec![None; n],
             nation_id: vec![None; n],
@@ -168,6 +173,7 @@ mod tests {
         assert_eq!(world.soil_fertility.len(), n);
         assert_eq!(world.biome.len(), n);
         assert_eq!(world.biomass.len(), n);
+        assert_eq!(world.fertility.len(), n);
         assert_eq!(world.population.len(), n);
         assert_eq!(world.settlement_id.len(), n);
         assert_eq!(world.nation_id.len(), n);
@@ -191,6 +197,7 @@ mod tests {
         assert!(world.flow_direction.iter().all(|d| d.is_none()));
         assert!(world.settlement_id.iter().all(|s| s.is_none()));
         assert!(world.nation_id.iter().all(|n| n.is_none()));
+        assert!(world.fertility.iter().all(|&f| f == 0.0));
     }
 
     #[test]
