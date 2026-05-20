@@ -16,7 +16,6 @@ use genesis_core::{HexId, HotSpotId};
 use glam::DVec3;
 use rand::Rng;
 
-use crate::elevation::clamp_terrain;
 use crate::plate::{HotSpot, HotSpotRegistry, TectonicsState};
 
 /// One-shot Formation stream for initial hot spot positions and parameters (§4.4).
@@ -190,8 +189,6 @@ pub fn apply_hotspot_tick(
             cumulative_uplift_m: 0.0,
         });
     }
-
-    clamp_terrain(data);
 }
 
 fn hotspot_significance(cumulative_uplift_m: f32) -> Significance {

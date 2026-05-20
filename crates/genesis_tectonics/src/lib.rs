@@ -4,6 +4,7 @@
 
 pub mod boundary;
 pub mod elevation;
+pub mod erosion;
 pub mod events;
 pub mod history;
 pub mod hotspots;
@@ -23,6 +24,12 @@ pub use elevation::{
     CC_INLAND_HEXES, CONTINENTAL_RIFT_SUBSIDENCE_FACTOR, MAX_ELEVATION_M, MAX_RELIEF_M,
     MIN_ELEVATION_M, OC_INLAND_HEXES, OROGENY_RATE, SUBDUCTION_RATE, SUBSIDENCE_RATE,
     apply_boundary_elevation, clamp_terrain, subducting_plate_id,
+};
+pub use erosion::{
+    DEPOSITION_THRESHOLD_M, EROSION_NOISE_STREAM, FERTILITY_INCREMENT_PER_TICK,
+    SHALLOW_SEA_DEPTH_M, TROPICAL_LATITUDE_DEG, apply_erosion_tick, apply_land_erosion,
+    climate_modifier_phase1, ensure_deposition_buffer, increment_shallow_tropical_fertility,
+    lowest_elevation_neighbor, route_eroded_mass,
 };
 pub use events::flush_events_to_branch;
 pub use history::{generate_full_history_with_tectonics, run_formation};
@@ -142,6 +149,7 @@ mod integration_tests {
         assert_eq!(world_a.data.elevation_mean, world_b.data.elevation_mean);
         assert_eq!(world_a.data.elevation_relief, world_b.data.elevation_relief);
         assert_eq!(world_a.data.bedrock_type, world_b.data.bedrock_type);
+        assert_eq!(world_a.data.fertility, world_b.data.fertility);
     }
 
     #[test]
@@ -276,6 +284,79 @@ mod integration_tests {
                 assert_eq!(a.class, b.class);
             }
         }
+    }
+
+    fn mean_land_elevation_m(data: &genesis_core::data::WorldData) -> f32 {
+        let sea = data.sea_level_m;
+        let mut sum = 0.0_f64;
+        let mut count = 0_u64;
+        for &elev in &data.elevation_mean {
+            if elev > sea {
+                sum += f64::from(elev);
+                count += 1;
+            }
+        }
+        if count == 0 {
+            0.0
+        } else {
+            (sum / count as f64) as f32
+        }
+    }
+
+    #[test]
+    fn erosion_lowers_mean_land_elevation_over_one_million_years() {
+        let mut world_eroding = test_world();
+        let mut state_eroding = TectonicsState::new();
+        run_formation(&mut world_eroding, &mut state_eroding);
+        let mean_after_formation = mean_land_elevation_m(&world_eroding.data);
+
+        generate_full_history_with_tectonics(
+            &mut world_eroding,
+            &mut state_eroding,
+            WorldYear(1_000_000),
+            |_| {},
+        )
+        .expect("history with erosion");
+        let mean_after_history = mean_land_elevation_m(&world_eroding.data);
+
+        let mut world_no_erosion = test_world();
+        let mut state_no_erosion = TectonicsState::new();
+        world_no_erosion
+            .data
+            .parameters
+            .core
+            .geology
+            .base_erosion_rate_per_year = 0.0;
+        run_formation(&mut world_no_erosion, &mut state_no_erosion);
+        generate_full_history_with_tectonics(
+            &mut world_no_erosion,
+            &mut state_no_erosion,
+            WorldYear(1_000_000),
+            |_| {},
+        )
+        .expect("history without erosion");
+
+        assert!(
+            mean_after_history < mean_after_formation
+                || mean_after_history < mean_land_elevation_m(&world_no_erosion.data),
+            "erosion should lower land elevations over 1M years (with={mean_after_history}, formation={mean_after_formation}, without={})",
+            mean_land_elevation_m(&world_no_erosion.data)
+        );
+    }
+
+    #[test]
+    fn shallow_tropical_fertility_accumulates_by_one_million_years() {
+        let mut world = test_world();
+        let mut state = TectonicsState::new();
+        generate_full_history_with_tectonics(&mut world, &mut state, WorldYear(1_000_000), |_| {})
+            .expect("history");
+
+        let max_fertility = world.data.fertility.iter().copied().fold(0.0_f32, f32::max);
+        let fertile_count = world.data.fertility.iter().filter(|&&f| f > 0.0).count();
+        assert!(
+            max_fertility > 0.0 && fertile_count > 0,
+            "expected some shallow tropical fertility (max={max_fertility}, count={fertile_count})"
+        );
     }
 
     #[test]

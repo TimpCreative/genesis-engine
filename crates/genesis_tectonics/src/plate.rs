@@ -174,6 +174,8 @@ pub struct TectonicsState {
     pub boundaries: BoundaryInfo,
     /// Mantle hot spots; seeded at Formation, updated each Geological tick.
     pub hotspots: HotSpotRegistry,
+    /// Accumulated eroded mass deposited per hex (§8.3); not persisted in `WorldData`.
+    pub cumulative_deposition_m: Vec<f32>,
     /// Events queued during ticks; flushed to root branch at end of history generation.
     pub pending_events: Vec<genesis_core::events::Event>,
     /// Monotonic counter for [`EventId`](genesis_core::events::EventId) allocation.
