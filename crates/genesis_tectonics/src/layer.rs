@@ -8,6 +8,7 @@ use genesis_core::parameters::WorldParameters;
 use genesis_core::rng::WorldRng;
 use genesis_core::time::{Era, SimulationLayer, WorldYear};
 
+use crate::boundary::detect_and_classify_boundaries;
 use crate::initial_generation::generate_initial_plates_data;
 use crate::motion::advance_plate_motion;
 use crate::partition::repartition_hexes;
@@ -81,6 +82,12 @@ impl SimulationLayer for TectonicsLayer {
             }
 
             repartition_hexes(world, &state.registry);
+            state.boundaries = detect_and_classify_boundaries(world, &state.registry);
+            tracing::debug!(
+                year = world.current_year.value(),
+                boundary_hex_count = state.boundaries.boundary_hexes.len(),
+                "tectonics boundaries classified"
+            );
         }
 
         Vec::new()

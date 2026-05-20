@@ -27,6 +27,22 @@ pub fn advance_plate_motion(plate: &mut Plate, tick_interval_years: f64) {
     plate.accumulated_rotation_rad += plate.motion_rate_rad_per_year * tick_interval_years;
 }
 
+/// Surface velocity at a point on the sphere in meters per year (Doc 06 §3.4).
+///
+/// `ω = axis_unit * rate_rad_per_year`, `v = ω × p`, scaled by planet radius.
+pub fn surface_velocity_m_per_year(
+    center_dir: [f64; 3],
+    motion_axis: [f64; 3],
+    motion_rate_rad_per_year: f64,
+    planet_radius_km: f64,
+) -> DVec3 {
+    let p = DVec3::new(center_dir[0], center_dir[1], center_dir[2]);
+    let axis = DVec3::new(motion_axis[0], motion_axis[1], motion_axis[2]).normalize();
+    let omega = axis * motion_rate_rad_per_year;
+    let radius_m = planet_radius_km * 1000.0;
+    omega.cross(p) * radius_m
+}
+
 fn rotate_vector(vec: DVec3, axis: DVec3, angle_rad: f64) -> DVec3 {
     let q = DQuat::from_axis_angle(axis, angle_rad);
     q * vec
@@ -104,5 +120,22 @@ mod tests {
         plate.motion_rate_rad_per_year = 2e-8;
         advance_plate_motion(&mut plate, 500_000.0);
         assert!((plate.accumulated_rotation_rad - 2e-8 * 500_000.0).abs() < 1e-20);
+    }
+
+    #[test]
+    fn surface_velocity_scales_with_radius() {
+        let p = [0.0, 0.0, 1.0];
+        let axis = [1.0, 0.0, 0.0];
+        let rate = 1e-8;
+        let v = surface_velocity_m_per_year(p, axis, rate, EARTH_RADIUS_KM);
+        let expected_mag = rate * EARTH_RADIUS_KM * 1000.0;
+        assert!((v.length() - expected_mag).abs() < 1e-6);
+    }
+
+    #[test]
+    fn surface_velocity_zero_when_rate_zero() {
+        let p = [0.0, 1.0, 0.0];
+        let v = surface_velocity_m_per_year(p, [0.0, 0.0, 1.0], 0.0, EARTH_RADIUS_KM);
+        assert!(v.length() < 1e-12);
     }
 }

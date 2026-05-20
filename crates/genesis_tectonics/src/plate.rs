@@ -101,11 +101,15 @@ impl Default for PlateRegistry {
     }
 }
 
+use crate::boundary::BoundaryInfo;
+
 /// Runtime tectonics state held by the app or test harness (not in `genesis_core::World`).
 #[derive(Clone, Debug, Default)]
 pub struct TectonicsState {
     pub registry: PlateRegistry,
     pub formation_complete: bool,
+    /// Boundary hexes and classified edges; recomputed each Geological tick.
+    pub boundaries: BoundaryInfo,
 }
 
 impl TectonicsState {

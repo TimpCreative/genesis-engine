@@ -2,6 +2,7 @@
 //!
 //! Phase 1: initial plate generation, motion, and Voronoi re-partition per Geological-era ticks.
 
+pub mod boundary;
 pub mod history;
 pub mod initial_generation;
 pub mod layer;
@@ -9,10 +10,14 @@ pub mod motion;
 pub mod partition;
 pub mod plate;
 
+pub use boundary::{
+    BoundaryClass, BoundaryInfo, ClassifiedEdge, ConvergentSubtype, convergent_subtype,
+    detect_and_classify_boundaries,
+};
 pub use history::{generate_full_history_with_tectonics, run_formation};
 pub use initial_generation::{generate_initial_plates, generate_initial_plates_data};
 pub use layer::{DEFAULT_GEOLOGICAL_TICK_YEARS, TectonicsLayer, geological_tick_interval};
-pub use motion::{advance_plate_motion, effective_position_direction};
+pub use motion::{advance_plate_motion, effective_position_direction, surface_velocity_m_per_year};
 pub use partition::repartition_hexes;
 pub use plate::{Plate, PlateClass, PlateRegistry, PlateType, TectonicsState};
 
@@ -95,5 +100,79 @@ mod integration_tests {
         generate_full_history_with_tectonics(&mut world, &mut state, WorldYear(1_000_000), |_| {})
             .expect("history");
         assert_eq!(world.data.current_year, WorldYear(1_000_000));
+    }
+
+    #[test]
+    fn one_geological_tick_populates_boundaries() {
+        let mut world = test_world();
+        let mut state = TectonicsState::new();
+        run_formation(&mut world, &mut state);
+        generate_full_history_with_tectonics(&mut world, &mut state, WorldYear(500_000), |_| {})
+            .expect("one tick");
+        assert!(
+            !state.boundaries.boundary_hexes.is_empty(),
+            "expected boundary hexes after one geological tick"
+        );
+    }
+
+    #[test]
+    fn boundaries_are_deterministic_at_one_million_years() {
+        let mut world_a = test_world();
+        let mut world_b = test_world();
+        let mut state_a = TectonicsState::new();
+        let mut state_b = TectonicsState::new();
+
+        generate_full_history_with_tectonics(
+            &mut world_a,
+            &mut state_a,
+            WorldYear(1_000_000),
+            |_| {},
+        )
+        .expect("history a");
+        generate_full_history_with_tectonics(
+            &mut world_b,
+            &mut state_b,
+            WorldYear(1_000_000),
+            |_| {},
+        )
+        .expect("history b");
+
+        assert_eq!(
+            state_a.boundaries.boundary_hexes,
+            state_b.boundaries.boundary_hexes
+        );
+        assert_eq!(
+            state_a.boundaries.plate_contacts,
+            state_b.boundaries.plate_contacts
+        );
+
+        for hex in state_a.boundaries.boundary_hexes {
+            let edges_a = state_a.boundaries.edges.get(&hex).expect("edges");
+            let edges_b = state_b.boundaries.edges.get(&hex).expect("edges");
+            assert_eq!(edges_a.len(), edges_b.len());
+            for (a, b) in edges_a.iter().zip(edges_b.iter()) {
+                assert_eq!(a.neighbor_hex, b.neighbor_hex);
+                assert_eq!(a.other_plate, b.other_plate);
+                assert_eq!(a.class, b.class);
+            }
+        }
+    }
+
+    #[test]
+    fn full_history_has_boundary_hexes_at_one_million_years() {
+        let mut world = test_world();
+        let mut state = TectonicsState::new();
+        generate_full_history_with_tectonics(&mut world, &mut state, WorldYear(1_000_000), |_| {})
+            .expect("history");
+        let boundary_count = state.boundaries.boundary_hexes.len();
+        let total = world.data.plate_id.len();
+        assert!(
+            boundary_count > 0,
+            "default seed should produce plate boundaries at 1M years"
+        );
+        assert!(
+            boundary_count < total,
+            "boundary hexes should not cover entire grid (got {boundary_count}/{total})"
+        );
     }
 }
