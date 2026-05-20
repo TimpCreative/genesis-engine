@@ -103,92 +103,113 @@ impl SimulationLayer for TectonicsLayer {
         if era == Era::Geological {
             let interval_years = (world.current_year - self.last_tick_year.get()) as f64;
             self.last_tick_year.set(world.current_year);
+            let tick_year = world.current_year;
+            let volcanism_scale = world.parameters.core.geology.volcanism_scale;
+            let event_granularity = world.parameters.core.geology.event_granularity;
 
-            let plate_ids = state.registry.plate_ids();
-            for id in plate_ids {
-                if let Some(plate) = state.registry.plates_mut().get_mut(&id) {
-                    advance_plate_motion(plate, interval_years);
+            debug_tick_step("motion", || {
+                let plate_ids = state.registry.plate_ids();
+                for id in plate_ids {
+                    if let Some(plate) = state.registry.plates_mut().get_mut(&id) {
+                        advance_plate_motion(plate, interval_years);
+                    }
                 }
-            }
+            });
 
-            repartition_hexes(world, &state.registry);
-            state.boundaries = detect_and_classify_boundaries(world, &state.registry);
-            tracing::debug!(
-                year = world.current_year.value(),
-                boundary_hex_count = state.boundaries.boundary_hexes.len(),
-                "tectonics boundaries classified"
-            );
+            debug_tick_step("partition", || {
+                repartition_hexes(world, &state.registry);
+            });
+
+            debug_tick_step("boundaries", || {
+                state.boundaries = detect_and_classify_boundaries(world, &state.registry);
+            });
 
             state.elevation_at_tick_start = world.elevation_mean.clone();
 
-            apply_boundary_elevation(world, &state.registry, &state.boundaries, interval_years);
+            debug_tick_step("elevation", || {
+                apply_boundary_elevation(world, &state.registry, &state.boundaries, interval_years);
+            });
 
-            let volcanism_scale = world.parameters.core.geology.volcanism_scale;
-            let event_granularity = world.parameters.core.geology.event_granularity;
-            let tick_year = world.current_year;
-            apply_boundary_volcanism(
-                world,
-                &mut state,
-                rng,
-                volcanism_scale,
-                event_granularity,
-                tick_year,
-                BranchId::ROOT,
-            );
+            debug_tick_step("volcanism", || {
+                apply_boundary_volcanism(
+                    world,
+                    &mut state,
+                    rng,
+                    volcanism_scale,
+                    event_granularity,
+                    tick_year,
+                    BranchId::ROOT,
+                );
+            });
 
-            apply_hotspot_tick(
-                world,
-                &mut state,
-                rng,
-                tick_year,
-                event_granularity,
-                BranchId::ROOT,
-            );
+            debug_tick_step("hotspots", || {
+                apply_hotspot_tick(
+                    world,
+                    &mut state,
+                    rng,
+                    tick_year,
+                    event_granularity,
+                    BranchId::ROOT,
+                );
+            });
 
-            apply_erosion_tick(world, &mut state, rng, tick_year, interval_years);
+            debug_tick_step("erosion", || {
+                apply_erosion_tick(world, &mut state, rng, tick_year, interval_years);
+            });
 
-            let reorg_fired = maybe_reorganize(
-                world,
-                &mut state,
-                rng,
-                tick_year,
-                event_granularity,
-                BranchId::ROOT,
-            );
+            let reorg_fired = debug_tick_step("reorg", || {
+                maybe_reorganize(
+                    world,
+                    &mut state,
+                    rng,
+                    tick_year,
+                    event_granularity,
+                    BranchId::ROOT,
+                )
+            });
+
             if reorg_fired {
-                repartition_hexes(world, &state.registry);
-                state.boundaries = detect_and_classify_boundaries(world, &state.registry);
+                debug_tick_step("repartition_after_reorg", || {
+                    repartition_hexes(world, &state.registry);
+                    state.boundaries = detect_and_classify_boundaries(world, &state.registry);
+                });
             }
 
             let boundaries = state.boundaries.clone();
-            update_sea_level(
-                world,
-                &boundaries,
-                &mut state,
-                rng,
-                tick_year,
-                reorg_fired,
-                event_granularity,
-                BranchId::ROOT,
-            );
+            debug_tick_step("sea_level", || {
+                update_sea_level(
+                    world,
+                    &boundaries,
+                    &mut state,
+                    rng,
+                    tick_year,
+                    reorg_fired,
+                    event_granularity,
+                    BranchId::ROOT,
+                );
+            });
 
-            emit_boundary_events(
-                world,
-                &boundaries,
-                &mut state,
-                tick_year,
-                event_granularity,
-                BranchId::ROOT,
-            );
+            debug_tick_step("boundary_events", || {
+                emit_boundary_events(
+                    world,
+                    &boundaries,
+                    &mut state,
+                    tick_year,
+                    event_granularity,
+                    BranchId::ROOT,
+                );
+            });
 
-            clamp_terrain(world);
+            debug_tick_step("clamp", || {
+                clamp_terrain(world);
+            });
 
             let (min_elev, max_elev) = elevation_min_max(world);
             tracing::debug!(
-                year = world.current_year.value(),
+                year = tick_year.value(),
                 min_elevation_m = min_elev,
                 max_elevation_m = max_elev,
-                "tectonics terrain updated"
+                "tectonics geological tick complete"
             );
         }
 
@@ -208,6 +229,16 @@ fn elevation_min_max(world: &WorldData) -> (f32, f32) {
     } else {
         (min, max)
     }
+}
+
+/// Runs `f` and logs elapsed milliseconds when `RUST_LOG=genesis_tectonics=debug` (§9.3).
+fn debug_tick_step<T>(step: &'static str, f: impl FnOnce() -> T) -> T {
+    let start = tracing::enabled!(tracing::Level::DEBUG).then(std::time::Instant::now);
+    let out = f();
+    if let Some(t0) = start {
+        tracing::debug!(step, elapsed_ms = t0.elapsed().as_millis() as u64);
+    }
+    out
 }
 
 /// Geological tick interval from parameters or Doc 06 default.

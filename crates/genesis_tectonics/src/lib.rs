@@ -17,6 +17,7 @@ pub mod partition;
 pub mod plate;
 pub mod reorganization;
 pub mod sea_level;
+pub mod validation;
 pub mod volcanism;
 
 pub use boundary::{
@@ -59,6 +60,16 @@ pub use reorganization::{
     purge_extinct_plates, update_last_nonempty_years,
 };
 pub use sea_level::{total_divergent_boundary_length_km, update_sea_level};
+pub use validation::{
+    CONTINENTAL_FRACTION_MAX, CONTINENTAL_FRACTION_MIN, ELEVATION_MAX_BOUND_M,
+    ELEVATION_MIN_BOUND_M, EVENT_COUNT_NOTABLE_MAX_AT_FULL_YEAR, EVENT_COUNT_NOTABLE_MAX_DOC,
+    EVENT_COUNT_NOTABLE_MIN, MOUNTAIN_ELEVATION_THRESHOLD_M, OCEAN_BASIN_ELEVATION_THRESHOLD_M,
+    PERF_BUDGET_SECS, PERF_TARGET_YEAR, SEA_LEVEL_MAX_ABS_M, VALIDATION_SEED,
+    VALIDATION_SUBDIVISION_LEVEL, VALIDATION_TARGET_YEAR_FULL, VALIDATION_TARGET_YEAR_QUICK,
+    bedrock_types_present, check_phase1_bedrock_diversity, continental_fraction, elevation_bounds,
+    event_count_at_granularity, min_ocean_basin_hex_threshold, mountain_regions_above_elevation,
+    ocean_basins_below_elevation, run_validation_world, summarize_world, validation_parameters,
+};
 pub use volcanism::{
     ELEVATION_CHANGE_MAX_M, ELEVATION_CHANGE_MIN_M, ERUPTION_PROBABILITY_BASE,
     NOTABLE_PEAK_THRESHOLD_M, RELIEF_CHANGE_MAX_M, RELIEF_CHANGE_MIN_M, VOLCANISM_STREAM,
@@ -536,6 +547,200 @@ mod integration_tests {
         assert!(
             boundary_count < total,
             "boundary hexes should not cover entire grid (got {boundary_count}/{total})"
+        );
+    }
+
+    // --- P1-9 validation suite (seed 42, Doc 06 §11) ---
+
+    #[test]
+    fn validation_quick_suite_passes() {
+        let (world, state) = run_validation_world(WorldYear(VALIDATION_TARGET_YEAR_QUICK))
+            .expect("validation quick run");
+
+        let land_frac = continental_fraction(&world.data);
+        assert!(
+            (CONTINENTAL_FRACTION_MIN..=CONTINENTAL_FRACTION_MAX).contains(&land_frac),
+            "§11 #1 continental fraction: expected [{CONTINENTAL_FRACTION_MIN},{CONTINENTAL_FRACTION_MAX}], got {land_frac}"
+        );
+
+        let plate_count = state.registry.count();
+        assert!(
+            (5..=15).contains(&plate_count),
+            "§11 #2 plate count: expected [5,15], got {plate_count}"
+        );
+
+        let (min_e, max_e) = elevation_bounds(&world.data);
+        assert!(
+            min_e >= ELEVATION_MIN_BOUND_M && max_e <= ELEVATION_MAX_BOUND_M,
+            "§11 #6 elevation bounds: min={min_e} max={max_e} (clamp allows inclusive endpoints)"
+        );
+
+        assert!(
+            world.data.sea_level_m.abs() <= SEA_LEVEL_MAX_ABS_M,
+            "§11 #7 sea level: got {} m",
+            world.data.sea_level_m
+        );
+
+        let notable_events = event_count_at_granularity(&world, Significance::Notable);
+        assert!(
+            notable_events > 0,
+            "§11 #8 quick proxy: expected >0 Notable events at 1M years, got {notable_events}"
+        );
+    }
+
+    #[test]
+    #[ignore = "long history: §11 criteria 3–5 and event volume (run with cargo test -p genesis_tectonics -- --ignored)"]
+    fn validation_full_suite_passes() {
+        let (world, state) = run_validation_world(WorldYear(VALIDATION_TARGET_YEAR_FULL))
+            .expect("validation full run");
+
+        let mountains =
+            mountain_regions_above_elevation(&world.data, MOUNTAIN_ELEVATION_THRESHOLD_M);
+        assert!(
+            mountains.len() >= 3,
+            "§11 #3 mountain regions: expected >=3 above {MOUNTAIN_ELEVATION_THRESHOLD_M}m, got {} regions (sizes {:?})",
+            mountains.len(),
+            mountains
+        );
+
+        let ocean_min = min_ocean_basin_hex_threshold(world.data.cell_count());
+        let deep_oceans: Vec<_> =
+            ocean_basins_below_elevation(&world.data, OCEAN_BASIN_ELEVATION_THRESHOLD_M)
+                .into_iter()
+                .filter(|&s| s >= ocean_min)
+                .collect();
+        assert!(
+            !deep_oceans.is_empty(),
+            "§11 #4 ocean basin: expected at least one region >= {ocean_min} hexes below {OCEAN_BASIN_ELEVATION_THRESHOLD_M}m, got sizes {:?}",
+            ocean_basins_below_elevation(&world.data, OCEAN_BASIN_ELEVATION_THRESHOLD_M)
+        );
+
+        let bedrock = bedrock_types_present(&world.data);
+        check_phase1_bedrock_diversity(&bedrock)
+            .unwrap_or_else(|e| panic!("§11 #5 bedrock: {e} (types: {bedrock:?})"));
+
+        let notable_events = event_count_at_granularity(&world, Significance::Notable);
+        assert!(
+            notable_events >= EVENT_COUNT_NOTABLE_MIN,
+            "§11 #8 event count at Notable: expected >= {EVENT_COUNT_NOTABLE_MIN}, got {notable_events}"
+        );
+        assert!(
+            notable_events <= EVENT_COUNT_NOTABLE_MAX_AT_FULL_YEAR,
+            "§11 #8 event count at Notable: expected <= {EVENT_COUNT_NOTABLE_MAX_AT_FULL_YEAR} at \
+             {VALIDATION_TARGET_YEAR_FULL} years (doc nominal {EVENT_COUNT_NOTABLE_MAX_DOC} at 4.5B), got {notable_events}"
+        );
+
+        eprintln!("validation full: {}", summarize_world(&world, &state));
+    }
+
+    #[test]
+    fn validation_summary_logged_quick() {
+        let (world, state) =
+            run_validation_world(WorldYear(VALIDATION_TARGET_YEAR_QUICK)).expect("quick run");
+        eprintln!("validation quick: {}", summarize_world(&world, &state));
+    }
+
+    #[test]
+    fn world_data_identical_after_validation_run() {
+        let (world_a, _) =
+            run_validation_world(WorldYear(VALIDATION_TARGET_YEAR_QUICK)).expect("run a");
+        let (world_b, _) =
+            run_validation_world(WorldYear(VALIDATION_TARGET_YEAR_QUICK)).expect("run b");
+
+        assert_eq!(world_a.data.elevation_mean, world_b.data.elevation_mean);
+        assert_eq!(world_a.data.elevation_relief, world_b.data.elevation_relief);
+        assert_eq!(world_a.data.bedrock_type, world_b.data.bedrock_type);
+        assert_eq!(world_a.data.plate_id, world_b.data.plate_id);
+        assert_eq!(world_a.data.fertility, world_b.data.fertility);
+        assert_eq!(world_a.data.sea_level_m, world_b.data.sea_level_m);
+    }
+
+    #[test]
+    fn event_granularity_pivotal_logs_only_pivotal_events() {
+        let mut params = validation_parameters();
+        params.core.geology.event_granularity = Significance::Pivotal;
+
+        let mut world = create_world(params.clone()).expect("world");
+        let mut state = TectonicsState::new();
+        generate_full_history_with_tectonics(
+            &mut world,
+            &mut state,
+            WorldYear(VALIDATION_TARGET_YEAR_QUICK),
+            |_| {},
+        )
+        .expect("history pivotal");
+
+        for event in world.branch_tree.root().event_log.iter() {
+            assert_eq!(
+                event.significance,
+                Significance::Pivotal,
+                "§12.5: expected only Pivotal events, got {:?} ({:?})",
+                event.significance,
+                event.kind
+            );
+        }
+
+        let mut control = create_world(validation_parameters()).expect("control world");
+        let mut control_state = TectonicsState::new();
+        run_formation(&mut control, &mut control_state);
+        let formation_elev = control.data.elevation_mean.clone();
+
+        generate_full_history_with_tectonics(
+            &mut control,
+            &mut control_state,
+            WorldYear(VALIDATION_TARGET_YEAR_QUICK),
+            |_| {},
+        )
+        .expect("history notable");
+
+        let changed = formation_elev
+            .iter()
+            .zip(control.data.elevation_mean.iter())
+            .filter(|(a, b)| a != b)
+            .count();
+        assert!(
+            changed > 0,
+            "§12.5: simulation must change terrain even when only Pivotal events are logged"
+        );
+    }
+
+    #[test]
+    fn tectonics_full_history_completes_within_budget() {
+        let start = std::time::Instant::now();
+        run_validation_world(WorldYear(PERF_TARGET_YEAR)).expect("perf run");
+        let elapsed = start.elapsed();
+        eprintln!(
+            "tectonics perf: {:?} for {} years at subdiv {}",
+            elapsed, PERF_TARGET_YEAR, VALIDATION_SUBDIVISION_LEVEL
+        );
+        assert!(
+            elapsed.as_secs_f64() < PERF_BUDGET_SECS,
+            "§9.3 perf budget: {:.2}s >= {PERF_BUDGET_SECS}s for {PERF_TARGET_YEAR} years",
+            elapsed.as_secs_f64()
+        );
+    }
+
+    #[test]
+    #[ignore = "local profiling: subdiv 7 perf budget"]
+    fn tectonics_full_history_subdiv_seven_within_budget() {
+        let mut params = validation_parameters();
+        params.core.grid.subdivision_level = 7;
+        let start = std::time::Instant::now();
+        let mut world = create_world(params).expect("world");
+        let mut state = TectonicsState::new();
+        generate_full_history_with_tectonics(
+            &mut world,
+            &mut state,
+            WorldYear(PERF_TARGET_YEAR),
+            |_| {},
+        )
+        .expect("perf subdiv 7");
+        let elapsed = start.elapsed();
+        eprintln!("tectonics perf subdiv 7: {:?}", elapsed);
+        assert!(
+            elapsed.as_secs_f64() < 60.0,
+            "submotion 7 should complete 10M years in under 60s locally, took {:.2}s",
+            elapsed.as_secs_f64()
         );
     }
 }
