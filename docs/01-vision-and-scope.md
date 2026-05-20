@@ -166,6 +166,51 @@ Updated continuously throughout development.
 
 **20. Roadmap & Risk Register** — Current priorities, known risks with mitigations, near-term and far-term goals. The operational document that drives what gets worked on next.
 
+## 9.5 Deferred Concepts
+
+Ideas raised during planning that don't yet have a home in the doc tree. Listed here so they're not lost; each will eventually become part of an existing doc or get its own when its phase comes up.
+
+### 9.5.1 Planetary Formation Sequence
+
+Before tectonics begins, a real planet goes through:
+- Molten phase (initial heat from accretion)
+- Crustal solidification
+- Outgassing → atmospheric formation
+- Water vapor condensation → oceans
+- Sea level rise from initial −5000m or so to current
+
+This is genuinely cool worldbuilding material and should produce its own Formation-era events ("the seas are filling"). Currently scoped:
+- Phase 1 (Tectonics) treats world year 0 as already past this — instantaneous setup of initial elevations and sea level.
+- A future doc, likely paired with Doc 07 (Climate) since cooling and ocean formation are climate-tectonics interactions, will specify the multi-tick cooling sequence.
+- Goes into the Formation era in the time system (Doc 04 §7.2); the existing era boundary handles this naturally.
+
+### 9.5.2 Origin of Life Mechanism
+
+When and how does life emerge? Currently scoped:
+- Doc 04 §4.10 has `life_emergence_year` as a `WorldYear` parameter — life emerges deterministically at this year.
+- Doc 09 (Biology, future) will specify a probabilistic model: once oceans exist (post-formation sequence above), emergence probability ramps up; when life emerges, probability drops to zero to prevent multiple independent biogenesis events.
+- The deterministic year may become a *target* year while the actual emergence happens within ±X million years based on probability rolls.
+- Chaos mode (below) could relax the "drops to zero" constraint and produce worlds with multiple independent life trees.
+
+### 9.5.3 Chaos Mode
+
+A global toggle (or per-system intensity scale) that relaxes physics constraints:
+- **Tectonics chaos:** wild plate motion, axes that don't satisfy normal stability constraints, rapid plate reorganization
+- **Climate chaos:** unusual circulation patterns, dramatic temperature swings, non-physical atmospheric composition effects
+- **Biology chaos:** multiple independent life origins, radical mutation rates, weird trophic structures
+
+Defaults to off. When enabled, produces worlds for fiction that doesn't need to obey physics ("a planet with three suns and reverse-flowing rivers"). Implementation: likely a `chaos_intensity: f32` parameter per system in `WorldParameters`. Each system decides which constraints to relax at high intensity. Not scoped to any specific phase — added when a system needs it.
+
+### 9.5.4 Fertility Field
+
+A per-hex monotonic accumulator tracking biological/chemical deposit history. Originally proposed as part of limestone formation but generalized to "this hex has been a productive environment for a long time."
+
+- Phase 1 (Tectonics): introduces the field and increments it in shallow tropical seas. See Doc 06 §8.4.
+- Phase 4 (Biology): refines accumulation based on actual biomass, drives bedrock transitions to `Limestone`, influences biome assignment.
+- Phase 5 (Civilization): influences population carrying capacity, settlement attractiveness.
+
+The key invariant: fertility never decreases. Continental drift carries a hex out of its tropical sea origin, but the deposits stay.
+
 ## 10. The Author's Stake
 
 Genesis Engine is a passion project. It is being built because it would be cool to exist, because no existing tool does what it should do, and because the author wants to use it for his own writing. It will progress as time allows alongside other commitments. Its success is measured by whether it eventually produces worlds worth exploring, not by timeline or revenue.

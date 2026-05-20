@@ -1,12 +1,13 @@
 # 06 — Tectonics Module Specification
 
 **Document Type:** Tier 2 — System Specification
-**Status:** Draft v0.1
+**Status:** Draft v0.2
 **Last Updated:** May 2026
 **Owner:** Brax Johnson
 **Implementing Phase:** 1 (Geology Prototype)
 
 **Changelog:**
+- v0.2 (May 2026): Incorporated Brax's review feedback. Added planetary rotation influence on plate motion (§2.1). Added motion axis constraints to prevent geometrically weird plate drift (§2.1). Replaced pure Voronoi initial generation with growth-based seeding (§2.2). Split plate count into major (default 7) + minor (default 8) (§2.2). Made plate velocity distribution log-normal with continental-velocity multiplier (§2.4). Added climate-feedback hook for erosion in Phase 2 (§8.2). Replaced limestone bedrock assignment with fertility accumulator field (§8.4) — `BedrockType::Limestone` transition deferred to Phase 4 Biology. Updated open questions; resolved items 2 and 4; added items 7 (planetary formation deferred to future doc) and 8 (chaos mode deferred).
 - v0.1 (May 2026): Initial draft. Defines plate model, boundary dynamics, hot spots, erosion, event schema, and the user-tunable event granularity system.
 
 ## 1. Purpose and Scope
@@ -51,6 +52,7 @@ Writes to:
 - `WorldData.elevation_relief` (per-hex, meters)
 - `WorldData.bedrock_type` (per-hex)
 - `WorldData.plate_id` (per-hex)
+- `WorldData.fertility` (per-hex, 0.0-1.0; **new field added in Phase 1, see §8.4**)
 - `WorldData.sea_level_m` (global, slowly drifts as ocean basins change)
 
 Produces:
@@ -70,15 +72,22 @@ Does not write to:
 pub struct Plate {
     pub id: PlateId,
     pub plate_type: PlateType,
-    pub seed_hex: HexId,           // Geographic anchor; doesn't move
-    pub motion_axis: Vec3,          // Unit vector; rotation axis on the sphere
+    pub plate_class: PlateClass,        // Major vs Minor — affects target size
+    pub seed_hex: HexId,                // Geographic anchor; doesn't move (see §2.2)
+    pub motion_axis: Vec3,              // Unit vector; rotation axis on the sphere
     pub motion_rate_rad_per_year: f64,  // Angular velocity in radians/year
-    pub age_year: WorldYear,        // When this plate was created (or last reorganized)
+    pub age_year: WorldYear,            // When this plate was created (or last reorganized)
+    pub target_fraction: f32,           // Target fraction of sphere this plate covers (used during growth seeding)
 }
 
 pub enum PlateType {
     Continental,
     Oceanic,
+}
+
+pub enum PlateClass {
+    Major,    // Earth-scale continent or major ocean (Pacific, Eurasia)
+    Minor,    // Smaller plate (Arabia, Caribbean, Juan de Fuca)
 }
 ```
 
@@ -86,14 +95,52 @@ pub enum PlateType {
 
 The motion axis is a unit `Vec3` representing the rotation pole. Each tick, the plate's hex membership shifts as the plate "rotates" by `motion_rate_rad_per_year * tick_interval_years`.
 
-### 2.2 Plate Membership
+**Motion axis constraints.** To avoid plates that drift in geometrically weird ways (e.g., circling a pole repeatedly), motion axes are sampled with two constraints:
+1. The axis must not be exactly aligned with the planet's rotation axis (z-axis in our coordinate frame). Reason: such axes produce purely east-west drift, which over geological time produces no continental rearrangement.
+2. The axis should be a reasonable distance from the plate's own centroid — neither passing through it (plate spins in place) nor exactly antipodal to it (plate makes great-circle laps). We sample axes uniformly on the sphere, then reject any whose angular distance from the plate's centroid is less than 30° or more than 150°.
 
-Each hex has a `PlateId`. Membership is determined by **nearest-seed Voronoi partitioning** on the sphere:
+**Planetary rotation influence (light science).** Real plate motion is driven by mantle convection, which is weakly influenced by planetary rotation rate. We model this loosely: the median plate velocity scales gently with `WorldParameters.core.planet.rotation_period_hours` relative to Earth's 24-hour day:
+
+```
+rotation_factor = sqrt(24.0 / rotation_period_hours)  // faster planet → faster mantle → faster plates
+effective_velocity_scale = plate_velocity_scale * rotation_factor
+```
+
+This produces noticeably faster plate motion on a 12-hour-day planet (factor ≈ 1.41), slower on a 48-hour-day planet (factor ≈ 0.71). The relationship is loose; we don't pretend it's physically derivable. It's a hand-wavy bridge to give the rotation parameter geological consequence.
+
+### 2.2 Plate Membership and Generation
+
+Each hex has a `PlateId`. Membership is determined by **growth-based seeding** at world formation, then by **rotated-seed Voronoi re-partition** for ongoing simulation.
+
+#### Initial generation (year 0 only): seed-then-grow
+
+1. **Place major plate seeds.** Sample `initial_major_plate_count` seed hexes using Poisson-disk-like distribution to prevent two seeds from spawning too close. Each major plate gets a `target_fraction` sampled from a distribution centered on `0.50 / initial_major_plate_count` with ±50% variation. This produces some larger plates and some smaller ones (Earth-like variation: Pacific Plate is huge, North American is medium, etc.).
+
+2. **Grow major plates to ~50% coverage.** Each plate has a "growth budget" equal to `target_fraction * total_cells`. Growth proceeds in rounds: each plate picks one of its boundary hexes (a hex it already owns whose neighbor is unowned) and claims a random unowned neighbor. Tie-breaking is deterministic by HexId for unowned candidates within the same plate's expansion. Plates that have hit their growth budget skip their turn.
+
+3. **Stop major plate growth at 50% coverage** of the total sphere. The remaining ~50% is unassigned.
+
+4. **Place minor plate seeds in unassigned territory.** Sample `initial_minor_plate_count` minor plate seeds from unowned hexes, again with Poisson-disk-like spacing. Each minor plate gets a smaller `target_fraction` (~0.03-0.07 of the sphere).
+
+5. **Grow all plates simultaneously** until every hex has an owner. Stochastic per-round expansion using the `tectonics.plate_seeds` stream determines which plate gets to grow in which round, weighted by remaining target_fraction (plates further from their target grow more often).
+
+This produces organic-looking plate boundaries (not perfectly geometric like pure Voronoi), with deliberate size variation between major and minor plates.
+
+**Default plate counts** (via `WorldParameters.core.geology`):
+- `initial_major_plate_count`: 7 (range 6-9; matches Earth's 7 major plates)
+- `initial_minor_plate_count`: 8 (range 6-10; matches Earth's roughly 8 minor plates)
+- Total: 13-19 plates, Earth-like richness
+
+#### Ongoing simulation: rotated-seed Voronoi
+
+After initial generation, the simple Voronoi rule applies for re-partitioning as plates move:
 
 ```
 for each hex h:
-    plate[h] = argmin over plates p of: angular_distance(h.center, p.seed_hex.center)
+    plate[h] = argmin over plates p of: angular_distance(h.center, p.effective_position)
 ```
+
+Where `effective_position` is computed by rotating the original seed position by the plate's accumulated rotation about its motion axis.
 
 Critically: **plate seeds rotate with the plate** in the abstract sense, but we don't actually move the seed hex (it's a fixed `HexId`). Instead, we conceptually treat each plate as having a "current position" derived from its motion axis and total elapsed motion. The Voronoi partition is recomputed when plate motion has accumulated enough that boundaries would visibly move.
 
@@ -104,35 +151,42 @@ For implementation, this means each tick we:
 
 The re-partition uses the rotated seed positions, not the original ones. Over 4.5 billion years, plates wander significantly across the sphere even though the `seed_hex` field never changes.
 
+**Why grow-based for initial, Voronoi for ongoing?** Initial generation only happens once per world, and the organic boundaries matter for the world's "character." Ongoing re-partition happens every tick and needs to be fast — Voronoi from rotated positions is O(n*p) per tick which is acceptable. The initial grow phase establishes the organic boundary character; subsequent Voronoi recomputation preserves it approximately as plates drift.
+
 ### 2.3 Plate Type Distribution
 
 Per `WorldParameters.core.geology.initial_continental_fraction` (default 0.29, matching Earth):
 
 - Roughly that fraction of plates start as `Continental`
 - The rest are `Oceanic`
-- Specifically: `num_continental = round(initial_plate_count * initial_continental_fraction)`
+- Specifically: `num_continental = round(total_plates * initial_continental_fraction)`
 - Continental plates have higher initial elevation (~500m mean), oceanic plates lower (~-3500m mean)
 
-Initial plate seed selection uses Poisson-disk-like sampling to avoid two plates spawning in nearly the same hex (which would produce a tiny plate immediately swallowed by neighbors).
+Continental plates preferentially get assigned to *major* plate slots (so most continents are big), with smaller continental plates as minor (Arabian-style). Oceanic plates fill the remaining slots; the largest oceanic plate often ends up as a "Pacific" — a major oceanic plate covering 15-25% of the sphere.
 
 ### 2.4 Plate Velocity
 
-Real Earth plates move at 2-15 cm/year. Over 4.5 billion years, that's 90,000 to 675,000 km of travel — many times around the planet. Our simulation needs plates to traverse significant distances within our tick budget.
+Real Earth plates move at 0.5-15 cm/year. The Pacific Plate moves ~10 cm/year; the African Plate moves ~1-2 cm/year; the Antarctic Plate is nearly stationary. We want this variation, not uniform motion.
 
-Each plate's `motion_rate_rad_per_year` is sampled from a distribution centered on **Earth-like values scaled by `WorldParameters.core.geology.plate_velocity_scale`**:
-
-- Default scale = 1.0 produces Earth-like rates (slow, realistic)
-- Scale > 1.0 produces faster motion (interesting for highly-active worlds)
-- Scale < 1.0 produces slower motion (stable worlds with old continental cores)
-
-Rate distribution: log-normal with median ~5 cm/year converted to radians/year on the planet's radius. Specifically:
+Each plate's `motion_rate_rad_per_year` is sampled from a **log-normal distribution** centered on Earth-like values scaled by `WorldParameters.core.geology.plate_velocity_scale` and the rotation factor from §2.1:
 
 ```
-median_cm_per_year = 5.0 * plate_velocity_scale
-median_rad_per_year = (median_cm_per_year * 1e-5) / planet_radius_km
+effective_velocity_scale = plate_velocity_scale * sqrt(24.0 / rotation_period_hours)
+median_cm_per_year = 5.0 * effective_velocity_scale
+sigma = 0.6  // log-normal sigma, produces 0.5x-15x variation per plate
 ```
 
-Plate motion axes are sampled uniformly on the sphere. Different plates rotate about different axes, producing the relative motion that drives boundary interactions.
+In radians per year on the planet's surface:
+
+```
+plate_rate_rad_per_year = sample_log_normal(median_cm_per_year, sigma) * 1e-5 / planet_radius_km
+```
+
+Why log-normal: it produces realistic skew. Most plates near the median, some much faster, rare ones very slow — matching observed Earth dynamics. Pure uniform or Gaussian distributions don't capture this.
+
+**Plate type also biases velocity.** Continental plates carry more mass and tend to move slower; oceanic plates can move faster. Apply a 0.7x multiplier to continental plate rates after sampling. This is the simplification that gives us "Africa moves slowly, Pacific moves quickly."
+
+
 
 ## 3. Boundary Detection and Classification
 
@@ -232,14 +286,17 @@ Each step uses a distinct RNG stream (§4.4) for any randomness, ensuring tick d
 
 At year 0 (Formation era, one-time tick), tectonics performs:
 
-1. Sample `initial_plate_count` seed hexes via Poisson-disk-like distribution
-2. Assign each plate a type per `initial_continental_fraction`
-3. Sample each plate's motion axis (uniform on sphere) and rate (log-normal scaled by `plate_velocity_scale`)
-4. Compute initial Voronoi partition → `plate_id` for every hex
-5. Set initial elevation: continental plates ~500m, oceanic plates ~-3500m, with small per-hex random variation (~±200m)
-6. Set initial `bedrock_type`: continental plates start as `Igneous` (basement rock), oceanic plates as `OceanicCrust`
-7. Set initial `sea_level_m` to 0 (calibrated so that ocean basins fill but continents emerge)
-8. Emit one `EventKind::WorldFormation` event
+1. Place `initial_major_plate_count` + `initial_minor_plate_count` seed hexes via the growth-based seeding algorithm in §2.2.
+2. Assign each plate a type per `initial_continental_fraction`, biasing continental plates toward major slots.
+3. Sample each plate's motion axis (uniform on sphere with constraints from §2.1) and rate (log-normal scaled by effective velocity scale from §2.4).
+4. Grow plates outward as described in §2.2 to produce the initial partition → `plate_id` for every hex.
+5. Set initial elevation: continental plates ~500m, oceanic plates ~-3500m, with small per-hex random variation (~±200m).
+6. Set initial `bedrock_type`: continental plates start as `Igneous` (basement rock), oceanic plates as `OceanicCrust`.
+7. Set initial `sea_level_m` to 0 (calibrated so that ocean basins fill but continents emerge).
+8. Initialize `fertility` to 0.0 for all hexes.
+9. Emit one `EventKind::WorldFormation` event.
+
+(Note: planetary formation/cooling sequences — molten phase, ocean condensation — are deferred to a future doc per §17 item 7. Phase 1's first tick treats the world as already past those stages.)
 
 ### 4.4 RNG Streams
 
@@ -448,16 +505,41 @@ Add to `WorldParameters.core.geology`:
 
 ```rust
 pub struct GeologyParameters {
-    // ... existing fields ...
+    // ---- Existing (from Doc 04 §4.7) ----
+    pub initial_continental_fraction: f32,    // Default 0.29 (Earth)
+    pub plate_velocity_scale: f32,             // Default 1.0
+    pub volcanism_scale: f32,                  // Default 1.0
+    
+    // ---- New for Phase 1 ----
+    
+    /// Number of major (large) plates. Default 7. Valid 6-9.
+    pub initial_major_plate_count: u8,
+    
+    /// Number of minor (smaller) plates. Default 8. Valid 6-10.
+    pub initial_minor_plate_count: u8,
     
     /// Minimum event significance to log during tectonic simulation.
     /// Events below this threshold are computed and applied to world state
-    /// but NOT recorded in the event log.
+    /// but NOT recorded in the event log. Default `Notable`.
     pub event_granularity: Significance,
+    
+    /// Admin/debug override for tick interval per era. None = use defaults
+    /// from §4.1 table. Not exposed in user UI for v1.
+    pub tick_interval_overrides_years: Option<BTreeMap<Era, i64>>,
+    
+    /// Base erosion rate per year per meter of elevation above sea level.
+    /// Default 1e-7. Climate modifies via climate_modifier (Phase 2).
+    pub base_erosion_rate_per_year: f64,
 }
 ```
 
-Default value: `Significance::Notable`.
+Default values are calibrated for Earth-analog worlds. Validation rules (added to `parameters/validation.rs`):
+
+- `initial_major_plate_count`: 6..=9
+- `initial_minor_plate_count`: 6..=10
+- `base_erosion_rate_per_year`: positive, finite, < 1e-3
+
+(`initial_plate_count` from the existing schema is removed in favor of major/minor split. Note in changelog.)
 
 Effect:
 - At `Significance::Trace`: log everything. Save file grows substantially. Useful for debugging or for users who want every detail.
@@ -546,41 +628,74 @@ Each tick:
 
 Hot spot tracks (island chains like Hawaii) emerge naturally from the model: as plates move over the hot spot, the eruption location relative to the plate shifts, producing a linear chain of volcanic features in the plate's frame of reference. We don't need to explicitly model "tracks" — they're an emergent consequence.
 
-## 8. Erosion
+## 8. Erosion and Sediment Tracking
 
 ### 8.1 Why Erosion Matters
 
 Without erosion, every continental collision adds elevation forever. Earth's mountains have been eroding since they formed; the Appalachians used to be Himalayan-scale. A world without erosion would have implausibly tall mountains everywhere there's ever been a convergent boundary.
 
-### 8.2 Erosion Model (v1: simplified)
+### 8.2 Erosion Model
 
 Per tick, each hex with elevation above sea level erodes:
 
 ```
-erosion_amount_m = elevation_above_sea * erosion_rate * tick_interval_years
+erosion_amount_m = elevation_above_sea * base_erosion_rate * climate_modifier(hex) * tick_interval_years
 ```
 
 Where:
-- `erosion_rate ≈ 1e-9` per year (calibrated so 5 km of elevation erodes to negligible over a few hundred million years)
+- `base_erosion_rate ≈ 1e-7` per year (calibrated so 5 km of mountain erodes meaningfully over ~100 million years; see open question 3)
 - `elevation_above_sea = elevation_mean - sea_level_m`
-- Hexes below sea level don't erode (erosion model only handles above-water for v1)
+- `climate_modifier(hex)` is a multiplier from precipitation; default 1.0 when climate is not yet active
+- Hexes below sea level don't erode (handled by sediment deposition instead)
 
-The eroded material is distributed to lower-elevation neighbors (the simplest "downhill flow" model). Phase 2 (Hydrology) will refine this with proper drainage networks. For now: each tick, eroded mass moves one hex toward the lowest neighbor.
+**Climate feedback (active in Phase 2):** Once climate is simulated (Phase 2), it ticks before tectonics each Geological-era cycle. Climate writes to `WorldData.precipitation` and `WorldData.temperature_mean`. Tectonics reads these to compute `climate_modifier`:
+
+```
+climate_modifier = (precipitation_mm_per_year / 800.0)  // 800 mm/yr is Earth global average
+                 * temperature_factor                    // hot or freeze-thaw accelerates erosion
+```
+
+In Phase 1 (no climate yet), `climate_modifier = 1.0` uniformly. The tectonics implementation reads from `precipitation` and `temperature_mean` regardless — the field is just always at default values in Phase 1. Phase 2 makes them dynamic, and erosion responds without any code change to tectonics.
+
+Eroded material is distributed to lower-elevation neighbors (the simplest "downhill flow" model). Phase 2 (Hydrology) will refine this with proper drainage networks. For now: each tick, eroded mass moves one hex toward the lowest neighbor.
 
 ### 8.3 Sedimentary Bedrock Formation
 
 When eroded material accumulates on a hex with `BedrockType::Igneous` or `BedrockType::Metamorphic`, the bedrock changes to `BedrockType::Sedimentary` over time. Specifically:
 
-- Track cumulative deposition per hex (transient state, not in `WorldData`)
+- Track cumulative deposition per hex (transient state in the tectonics layer, not stored in `WorldData`)
 - When cumulative > threshold (e.g., 500m of accumulated material), bedrock transitions to `Sedimentary`
-- This is what creates "fertile ancient seabeds" — areas now above water that used to be below it, with thick sediment.
+- This is what creates "fertile ancient seabeds" — areas now above water that used to be below it, with thick sediment
 
-### 8.4 Limestone Formation (Special Case)
+### 8.4 Limestone, Fertility, and the Cretaceous Beach Mechanic
 
-`BedrockType::Limestone` represents carbonate rock that forms in warm shallow seas. For v1:
+Per the design discussion, **proper limestone formation requires biological deposition (corals, shells)** — which is a Phase 4 (Biology) concern, not tectonics. Tectonics cannot meaningfully decide "this is limestone" without knowing whether sufficient marine biology was present.
 
-- Hexes that have been below sea level for an extended period (> 100 million years) AND are in equatorial-to-tropical latitudes (|lat| < 30°) acquire `BedrockType::Limestone` instead of generic sedimentary.
-- This is the "Cretaceous beach" mechanic mentioned in Doc 04 §3.3 — when later tectonic uplift raises these hexes above sea level, they have distinctive limestone bedrock that affects soil fertility chains.
+What Phase 1 tectonics CAN do:
+
+1. **Track per-hex fertility as a static accumulator.** Add to `WorldData`:
+   ```rust
+   /// Bio-deposit accumulator. Increased per tick when hex is below sea level
+   /// in warm latitudes (the conditions where carbonates and organic matter
+   /// accumulate). Static once set — represents historical conditions.
+   /// Phase 4 (Biology) refines accumulation rate based on actual biomass.
+   pub fertility: Vec<f32>,  // 0.0 to 1.0, monotonically increasing
+   ```
+
+2. **Increment fertility per tick** for hexes that are:
+   - Below sea level (`elevation_mean < sea_level_m`)
+   - In tropical/subtropical latitudes (current |lat| < 30°)
+   - Shallow (water depth < 200m above the hex — proxy for "shallow shelf seas")
+   
+   Increment by a small per-tick amount (e.g., 0.001 per tick). After ~1000 ticks (500 million years) of these conditions, fertility approaches 1.0.
+
+3. **Do not change `BedrockType` to `Limestone` in Phase 1.** Bedrock stays `Sedimentary` for these accumulating shelf-sea hexes. Phase 4 will introduce the bedrock transition based on full biology dynamics — by the time those hexes drift inland, they'll have the high fertility tag indicating "this region was a shallow sea for a long time."
+
+The key property your design wants: **fertility is monotonic and static**. Once a hex has accumulated fertility, drifting north out of the tropics doesn't decrease it. The biological deposits are already there. This is correctly modeled by "increment per tick, never decrement" — exactly the historical-latitude tracking you described.
+
+Phase 4 will use the fertility field to make biology and biome decisions ("this region has rich soil because it was a shallow sea long ago"). Phase 5 (Civilization) will use it for settlement and population — the "fertile crescent" hexes are where civilizations cluster.
+
+
 
 ## 9. Performance Targets
 
@@ -735,24 +850,28 @@ Per Doc 04 §16, this section addresses agents implementing the spec.
 
 ## 17. Open Questions for Doc Review
 
-Items I'm uncertain about and want input on:
+Items deliberately deferred or still uncertain:
 
-1. **Tick intervals (§4.1):** Are 500K-year Geological ticks the right granularity? Faster ticks → more events, more accurate boundary motion, more cost. Slower ticks → coarser. Real worldbuilding probably wants somewhere in 200K-1M range.
+1. **Tick intervals (§4.1):** Default 500K-year Geological ticks. May need adjustment based on observed quality. **Tunable via parameters as an admin/debug knob; not exposed in user UI for v1.** Plan: add `WorldParameters.core.geology.tick_interval_overrides_years: Option<BTreeMap<Era, i64>>` so devs can experiment, default `None` uses the table above. (Status: noted, implement in Phase 1.)
 
-2. **Plate count default (§2):** Default `initial_plate_count = 7` per Doc 04 §4.7. Earth has 7 major + 8 minor = 15. Should we default higher for richer geography?
+2. **Plate count defaults (§2):** ✅ Resolved. 7 major + 8 minor (configurable 6-9 major, 6-10 minor).
 
-3. **Erosion rate calibration (§8.2):** Earth's mountains erode at ~1mm/year average. Our rate of `1e-9 per year` multiplied by 5km of elevation gives 5e-6 m/year = 0.005mm/year. That's too slow. Probably should be 1e-7 or 1e-6 — calibrate during Phase 1 implementation.
+3. **Erosion rate calibration (§8.2):** Bumped to `1e-7` per year as a starting estimate. **Climate-aware in Phase 2** via `climate_modifier`. Calibrate during Phase 1 implementation by checking that mountain ranges erode visibly but don't disappear in geological-era timeframes.
 
-4. **Limestone formation (§8.4):** The "warm shallow seas" trigger uses absolute latitude. But continents drift through latitude bands over time — should we use *historical* latitude (where the hex was when it was under water), or current latitude? Historical is harder to track but more accurate. v1 should probably use current and we revisit if it produces weird results.
+4. **Limestone formation (§8.4):** ✅ Resolved. Phase 1 tracks fertility (a static monotonic accumulator); Phase 4 handles biological deposition and the `Limestone` bedrock transition.
 
-5. **Hot spot lifespan (§7.2):** 100M-1B years feels right but I'm pulling these numbers from Earth observation roughly. Worth empirical tuning.
+5. **Hot spot lifespan (§7.2):** Still rough. 100M-1B years feels right; empirical tuning during Phase 1.
 
-6. **Should the validation criteria (§11) be unit tests, or run only manually?** Implementing them as tests means they must pass in CI. If a seed produces an unusual result (no mountain ranges, sub-1000-hex ocean), CI breaks. Manual checks let us look at outputs flexibly.
+6. **Should the validation criteria (§11) be unit tests, or run only manually?** Recommendation: **both**. Implement as tests with loose tolerances (e.g., "continental fraction is 0.20-0.40" rather than "exactly 0.29"). This catches drastic regressions without false positives from seed variation. Manual review for visual sanity.
+
+7. **Planetary formation / cooling sequence (new):** Pre-tectonic state setup — molten planet cooling, ocean condensation, initial sea level rise from ~−5000m to current — is a real worldbuilding concern but not strictly tectonics. **Deferred to its own future doc (likely paired with Doc 07 Climate, since cooling and ocean formation are climate-tectonics interactions).** The first Formation-era tick in Phase 1 can include placeholder logic: instantaneously set initial elevations and sea level; future doc replaces with a multi-tick cooling sequence.
+
+8. **Chaos mode (new):** Worth considering as a global toggle that relaxes physics constraints — wild plate motion, multiple life-emergence events, etc. **Deferred to its own future doc**, noted here so we don't lose it. Likely a `chaos_intensity: f32` parameter in core geology, climate, biology each.
 
 These get resolved during Phase 1 implementation. Right now they're noted as deliberately open.
 
 ---
 
-*End of Doc 06 v0.1.*
+*End of Doc 06 v0.2.*
 
 *Next step: implementation prompt 1.0 (Phase 1) — initial plate generation and partition.*

@@ -431,12 +431,23 @@ The phases below proceed strictly in order. Each phase must be functionally comp
 
 **Goal:** Validate the riskiest assumption — that multi-scale simulation can run at acceptable speed on target hardware.
 
-1. Plate tectonics — plate generation, drift, collisions, divergence, subduction
-2. Mountain building and volcanism
-3. Bedrock layering (the limestone-deposition mechanic that enables future fertility chains)
-4. Performance benchmarking against Performance Budget targets
+1. Plate tectonics — plate generation (growth-based seeding, major + minor plates), drift via Euler-pole rotation, collisions, divergence, subduction
+2. Mountain building and volcanism (boundary-driven and hot-spot)
+3. Bedrock typing (igneous, oceanic crust, sedimentary, metamorphic) — limestone deferred to Phase 4 (Biology) since carbonate rock requires biological deposition
+4. Per-hex fertility tracking (monotonic accumulator) for shallow tropical seas — feeds into Phase 4 biome and bedrock decisions and Phase 5 civilization placement
+5. Erosion with climate-feedback hook (uniform in Phase 1, climate-aware in Phase 2)
+6. Plate reorganization events (split, merge, motion change) for varied geological history
+7. Event emission with user-tunable granularity (Trace through Pivotal)
+8. Performance benchmarking against Performance Budget targets
+
+See Doc 06 for full specification.
 
 **Exit criteria:** A 4-billion-year geological history can be generated and replayed deterministically on target hardware within the performance budget. If this exit criterion fails, the project's viability is in question and architectural rethinking is needed before continuing.
+
+**Deferred to future docs (see Doc 01 §9.5):**
+- Planetary formation/cooling sequence (pre-tectonic; pairs with Doc 07 Climate)
+- Origin of life mechanism (Doc 09 Biology)
+- Chaos mode (own future doc)
 
 ### Phase 2: Climate and Hydrology
 
