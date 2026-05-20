@@ -84,7 +84,7 @@ impl TickCoordinator {
         for state in &mut self.layers {
             let interval = state.layer.tick_interval(start, params);
             state.next_tick_year = if interval > 0 {
-                start + interval
+                start
             } else {
                 WorldYear(i64::MAX)
             };
@@ -175,6 +175,7 @@ mod tests {
         assert_eq!(
             years,
             vec![
+                WorldYear(0),
                 WorldYear(100),
                 WorldYear(200),
                 WorldYear(300),
@@ -187,6 +188,23 @@ mod tests {
                 WorldYear(1000),
             ]
         );
+    }
+
+    #[test]
+    fn first_tick_occurs_at_world_start_year() {
+        let layer = RecordingLayer::new("formation", 500_000);
+        let recorded = Arc::clone(&layer.tick_years);
+
+        let mut coord = TickCoordinator::new();
+        coord.add_layer(Box::new(layer));
+
+        let mut world = world_at(WorldYear::FORMATION);
+        let rng = WorldRng::from_effective_seed(1);
+        let params = WorldParameters::default();
+        coord.advance_to(WorldYear(500_000), &mut world, &rng, &params);
+
+        let years = recorded.lock().unwrap();
+        assert_eq!(years.first().copied(), Some(WorldYear::FORMATION));
     }
 
     #[test]
@@ -207,8 +225,11 @@ mod tests {
 
         assert_eq!(
             *fast_log.lock().unwrap(),
-            vec![WorldYear(50), WorldYear(100)]
+            vec![WorldYear(0), WorldYear(50), WorldYear(100)]
         );
-        assert_eq!(*slow_log.lock().unwrap(), vec![WorldYear(100)]);
+        assert_eq!(
+            *slow_log.lock().unwrap(),
+            vec![WorldYear(0), WorldYear(100)]
+        );
     }
 }

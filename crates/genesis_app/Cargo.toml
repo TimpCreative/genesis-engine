@@ -12,3 +12,4 @@ path = "src/main.rs"
 bevy = { workspace = true }
 genesis_core = { path = "../genesis_core" }
 genesis_render = { path = "../genesis_render" }
+genesis_tectonics = { path = "../genesis_tectonics" }

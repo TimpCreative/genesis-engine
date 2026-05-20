@@ -2,6 +2,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use genesis_core::data::WorldData;
+use genesis_core::rng::WorldRng;
 use genesis_core::time::WorldYear;
 use genesis_core::{HexGrid, HexId, PlateId, World};
 use glam::DVec3;
@@ -17,20 +19,18 @@ const PLATE_AXES_STREAM: &str = "tectonics.plate_axes";
 /// Doc 06 §4.4 — log-normal motion rate sampling.
 const PLATE_RATES_STREAM: &str = "tectonics.plate_rates";
 
-/// Performs initial plate generation. Mutates `world.data.plate_id` for every hex
-/// and returns the `PlateRegistry` containing the generated plates.
-///
-/// Should be called exactly once per world, at year 0.
-pub fn generate_initial_plates(world: &mut World) -> PlateRegistry {
-    let params = &world.data.parameters.core.geology;
+/// Performs initial plate generation. Mutates `data.plate_id` for every hex and returns
+/// the `PlateRegistry`. Should be called exactly once per world, at year 0.
+pub fn generate_initial_plates_data(data: &mut WorldData, rng: &WorldRng) -> PlateRegistry {
+    let params = &data.parameters.core.geology;
     let major_count = params.initial_major_plate_count as usize;
     let minor_count = params.initial_minor_plate_count as usize;
-    let total_cells = world.data.grid.cell_count() as usize;
+    let total_cells = data.grid.cell_count() as usize;
 
     let mut registry = PlateRegistry::new();
-    let mut seeds_rng = world.rng.stream(PLATE_SEEDS_STREAM);
+    let mut seeds_rng = rng.stream(PLATE_SEEDS_STREAM);
 
-    let major_seeds = place_seeds_poisson_disk(world, major_count, None, &mut seeds_rng);
+    let major_seeds = place_seeds_poisson_disk(data, major_count, None, &mut seeds_rng);
 
     let major_target_fractions = sample_major_target_fractions(major_count, 0.50, &mut seeds_rng);
 
@@ -51,13 +51,14 @@ pub fn generate_initial_plates(world: &mut World) -> PlateRegistry {
             motion_rate_rad_per_year: 0.0,
             age_year: WorldYear::FORMATION,
             target_fraction: major_target_fractions[i],
+            accumulated_rotation_rad: 0.0,
         };
         registry.insert(plate);
     }
 
     let major_growth_target = (total_cells as f64 * 0.50) as usize;
     grow_plates_to_coverage(
-        world,
+        data,
         &registry,
         &mut plate_id_for_hex,
         &major_plate_ids,
@@ -71,7 +72,7 @@ pub fn generate_initial_plates(world: &mut World) -> PlateRegistry {
         .map(|i| HexId(i as u32))
         .collect();
 
-    let minor_seeds = place_seeds_in_pool(world, &unowned_hexes, minor_count, &mut seeds_rng);
+    let minor_seeds = place_seeds_in_pool(data, &unowned_hexes, minor_count, &mut seeds_rng);
 
     let minor_target_fractions = sample_minor_target_fractions(minor_count, &mut seeds_rng);
 
@@ -90,6 +91,7 @@ pub fn generate_initial_plates(world: &mut World) -> PlateRegistry {
             motion_rate_rad_per_year: 0.0,
             age_year: WorldYear::FORMATION,
             target_fraction: minor_target_fractions[i],
+            accumulated_rotation_rad: 0.0,
         };
         registry.insert(plate);
     }
@@ -100,7 +102,7 @@ pub fn generate_initial_plates(world: &mut World) -> PlateRegistry {
         .copied()
         .collect();
     grow_plates_to_coverage(
-        world,
+        data,
         &registry,
         &mut plate_id_for_hex,
         &all_plate_ids,
@@ -111,11 +113,11 @@ pub fn generate_initial_plates(world: &mut World) -> PlateRegistry {
 
     debug_assert!(plate_id_for_hex.iter().all(|p| p.is_some()));
 
-    assign_plate_types(world, &mut registry);
-    assign_plate_motion(world, &mut registry, &plate_id_for_hex);
+    assign_plate_types(data, &mut registry);
+    assign_plate_motion(data, rng, &mut registry, &plate_id_for_hex);
 
     for (i, plate_opt) in plate_id_for_hex.iter().enumerate() {
-        world.data.plate_id[i] = plate_opt.expect("all hexes have plates after growth");
+        data.plate_id[i] = plate_opt.expect("all hexes have plates after growth");
     }
 
     tracing::info!(
@@ -128,16 +130,21 @@ pub fn generate_initial_plates(world: &mut World) -> PlateRegistry {
     registry
 }
 
+/// Convenience wrapper using a full [`World`].
+pub fn generate_initial_plates(world: &mut World) -> PlateRegistry {
+    generate_initial_plates_data(&mut world.data, &world.rng)
+}
+
 /// Poisson-disk-like seed placement with relaxed spacing fallback, then deterministic
 /// `HexId`-ordered fill. Never inserts duplicate seeds.
 fn place_seeds_poisson_disk(
-    world: &World,
+    data: &WorldData,
     count: usize,
     exclude: Option<&BTreeSet<HexId>>,
     rng: &mut rand::rngs::SmallRng,
 ) -> Vec<HexId> {
-    let total = world.data.grid.cell_count() as usize;
-    let grid = &world.data.grid;
+    let total = data.grid.cell_count() as usize;
+    let grid = &data.grid;
 
     let mut min_dist_rad = (1.0_f64 - 2.0 / count as f64).acos() * 0.6;
     let mut seeds: Vec<HexId> = Vec::with_capacity(count);
@@ -179,12 +186,12 @@ fn place_seeds_poisson_disk(
 }
 
 fn place_seeds_in_pool(
-    world: &World,
+    data: &WorldData,
     pool: &[HexId],
     count: usize,
     rng: &mut rand::rngs::SmallRng,
 ) -> Vec<HexId> {
-    let grid = &world.data.grid;
+    let grid = &data.grid;
     let mut available: Vec<HexId> = pool.to_vec();
     available.shuffle(rng);
 
@@ -294,7 +301,7 @@ fn sample_minor_target_fractions(count: usize, rng: &mut rand::rngs::SmallRng) -
 }
 
 fn grow_plates_to_coverage(
-    world: &World,
+    data: &WorldData,
     registry: &PlateRegistry,
     plate_id_for_hex: &mut [Option<PlateId>],
     active_plate_ids: &[PlateId],
@@ -302,7 +309,7 @@ fn grow_plates_to_coverage(
     rng: &mut rand::rngs::SmallRng,
     enforce_per_plate_budget: bool,
 ) {
-    let grid = &world.data.grid;
+    let grid = &data.grid;
     let total_cells = plate_id_for_hex.len();
 
     let mut owned_hexes: BTreeMap<PlateId, Vec<HexId>> = active_plate_ids
@@ -456,13 +463,8 @@ fn find_growth_candidate(
     Some(candidates[rng.gen_range(0..candidates.len())])
 }
 
-fn assign_plate_types(world: &World, registry: &mut PlateRegistry) {
-    let continental_fraction = world
-        .data
-        .parameters
-        .core
-        .geology
-        .initial_continental_fraction;
+fn assign_plate_types(data: &WorldData, registry: &mut PlateRegistry) {
+    let continental_fraction = data.parameters.core.geology.initial_continental_fraction;
     let total = registry.count();
     let num_continental = ((total as f32) * continental_fraction).round() as usize;
 
@@ -496,15 +498,16 @@ fn assign_plate_types(world: &World, registry: &mut PlateRegistry) {
 }
 
 fn assign_plate_motion(
-    world: &World,
+    data: &WorldData,
+    rng: &WorldRng,
     registry: &mut PlateRegistry,
     plate_id_for_hex: &[Option<PlateId>],
 ) {
-    let mut axes_rng = world.rng.stream(PLATE_AXES_STREAM);
-    let mut rates_rng = world.rng.stream(PLATE_RATES_STREAM);
-    let params = &world.data.parameters.core.geology;
-    let planet_params = &world.data.parameters.core.planet;
-    let grid = &world.data.grid;
+    let mut axes_rng = rng.stream(PLATE_AXES_STREAM);
+    let mut rates_rng = rng.stream(PLATE_RATES_STREAM);
+    let params = &data.parameters.core.geology;
+    let planet_params = &data.parameters.core.planet;
+    let grid = &data.grid;
 
     let rotation_factor = (24.0 / planet_params.rotation_period_hours).sqrt();
     let effective_scale = params.plate_velocity_scale as f64 * rotation_factor;
@@ -856,13 +859,13 @@ mod tests {
         let world = create_world(params).expect("valid");
         let mut rng = world.rng.stream(PLATE_SEEDS_STREAM);
 
-        let seeds = place_seeds_poisson_disk(&world, 9, None, &mut rng);
+        let seeds = place_seeds_poisson_disk(&world.data, 9, None, &mut rng);
         assert_eq!(seeds.len(), 9);
         let unique: BTreeSet<HexId> = seeds.iter().copied().collect();
         assert_eq!(unique.len(), 9, "seeds must be unique");
 
         let grid = &world.data.grid;
-        let min_dist = (1.0_f64 - 2.0 / 9.0).acos() * 0.6 * 0.85_f64.powi(5);
+        let min_dist = (1.0_f64 - 2.0 / 9.0).acos() * 0.6 * 0.85_f64.powi(3);
         for i in 0..seeds.len() {
             for j in (i + 1)..seeds.len() {
                 let a = grid.cell_center_direction(seeds[i]);
@@ -887,7 +890,7 @@ mod tests {
         let world = create_world(params).expect("valid");
         let pool: Vec<HexId> = (100..200).map(HexId).collect();
         let mut rng = world.rng.stream(PLATE_SEEDS_STREAM);
-        let seeds = place_seeds_in_pool(&world, &pool, 8, &mut rng);
+        let seeds = place_seeds_in_pool(&world.data, &pool, 8, &mut rng);
         assert_eq!(seeds.len(), 8);
         assert!(seeds.iter().all(|h| pool.contains(h)));
         let unique: BTreeSet<_> = seeds.iter().copied().collect();

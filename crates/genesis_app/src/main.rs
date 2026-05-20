@@ -1,18 +1,25 @@
 use bevy::prelude::*;
-use genesis_core::{WorldParameters, create_world};
+use genesis_core::{WorldParameters, WorldYear, create_world};
 use genesis_render::{GenesisRenderPlugin, WorldResource};
+use genesis_tectonics::{TectonicsState, generate_full_history_with_tectonics};
 
 fn main() {
     let mut parameters = WorldParameters::default();
     // Level 6 (~7.3k hexes) keeps first-frame mesh build reasonable for the smoke test.
     parameters.core.grid.subdivision_level = 6;
 
-    let world = create_world(parameters).expect("default world creates successfully");
+    let mut world = create_world(parameters).expect("default world creates successfully");
+    let mut tectonics = TectonicsState::new();
+
+    // Formation at year 0 plus two Geological ticks (500k + 500k) for visible plate motion.
+    generate_full_history_with_tectonics(&mut world, &mut tectonics, WorldYear(1_000_000), |_| {})
+        .expect("tectonic formation and geological ticks");
 
     info!(
-        "Genesis Engine Phase 0 smoke test: subdivision level {}, {} hexes",
+        "Genesis Engine smoke test: subdivision level {}, {} hexes, {} plates",
         world.data.grid.subdivision_level(),
         world.data.grid.cell_count(),
+        tectonics.registry.count(),
     );
 
     App::new()

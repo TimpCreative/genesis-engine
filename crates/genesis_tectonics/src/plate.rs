@@ -47,6 +47,9 @@ pub struct Plate {
     /// Target fraction of the sphere this plate covers. Used during growth
     /// seeding; informational thereafter.
     pub target_fraction: f32,
+
+    /// Total rotation about `motion_axis` since formation, in radians (`f64`).
+    pub accumulated_rotation_rad: f64,
 }
 
 /// All plates in a world, keyed by `PlateId`.
@@ -95,5 +98,29 @@ impl PlateRegistry {
 impl Default for PlateRegistry {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Runtime tectonics state held by the app or test harness (not in `genesis_core::World`).
+#[derive(Clone, Debug, Default)]
+pub struct TectonicsState {
+    pub registry: PlateRegistry,
+    pub formation_complete: bool,
+}
+
+impl TectonicsState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl PlateRegistry {
+    /// Sorted plate ids for deterministic iteration.
+    pub fn plate_ids(&self) -> Vec<PlateId> {
+        self.plates.keys().copied().collect()
+    }
+
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut Plate> {
+        self.plates.values_mut()
     }
 }

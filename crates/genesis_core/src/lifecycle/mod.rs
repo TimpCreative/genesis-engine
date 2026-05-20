@@ -71,13 +71,8 @@ pub fn generate_full_history(
         total_events: 0,
     });
 
-    let parameters = world.data.parameters.clone();
     let mut coordinator = TickCoordinator::new();
-    coordinator.advance_to(target_year, &mut world.data, &world.rng, &parameters);
-
-    if world.data.current_year < target_year {
-        world.data.current_year = target_year;
-    }
+    advance_with_coordinator(world, &mut coordinator, target_year)?;
 
     progress(GenerationProgress {
         current_year: world.data.current_year,
@@ -85,6 +80,36 @@ pub fn generate_full_history(
         recent_events: &[],
         total_events: 0,
     });
+
+    Ok(())
+}
+
+/// Advances `world` to `target_year` using a pre-configured [`TickCoordinator`].
+///
+/// Keeps `genesis_core` independent of domain crates while allowing `genesis_tectonics`
+/// (and tests) to register simulation layers.
+pub fn advance_with_coordinator(
+    world: &mut World,
+    coordinator: &mut TickCoordinator,
+    target_year: WorldYear,
+) -> Result<(), GenerationError> {
+    let current = world.data.current_year;
+    if target_year < current {
+        return Err(GenerationError::TargetInPast {
+            target: target_year.value(),
+            current: current.value(),
+        });
+    }
+    if target_year == current {
+        return Ok(());
+    }
+
+    let parameters = world.data.parameters.clone();
+    coordinator.advance_to(target_year, &mut world.data, &world.rng, &parameters);
+
+    if world.data.current_year < target_year {
+        world.data.current_year = target_year;
+    }
 
     Ok(())
 }

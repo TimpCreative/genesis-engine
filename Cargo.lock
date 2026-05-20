@@ -2551,6 +2551,7 @@ dependencies = [
  "bevy",
  "genesis_core",
  "genesis_render",
+ "genesis_tectonics",
 ]
 
 [[package]]

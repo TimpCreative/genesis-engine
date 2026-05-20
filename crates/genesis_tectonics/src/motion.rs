@@ -1,0 +1,108 @@
+//! Plate motion: accumulated rotation and effective seed positions.
+
+use glam::{DQuat, DVec3};
+
+use genesis_core::HexGrid;
+
+use crate::plate::Plate;
+
+/// Rotates the seed hex center direction about `plate.motion_axis` by
+/// `plate.accumulated_rotation_rad`, returning a unit direction.
+pub fn effective_position_direction(grid: &HexGrid, plate: &Plate) -> [f64; 3] {
+    let seed = grid.cell_center_direction(plate.seed_hex);
+    let v = DVec3::new(seed[0], seed[1], seed[2]);
+    let axis = DVec3::new(
+        plate.motion_axis[0],
+        plate.motion_axis[1],
+        plate.motion_axis[2],
+    )
+    .normalize();
+    let rotated = rotate_vector(v, axis, plate.accumulated_rotation_rad);
+    let out = rotated.normalize();
+    [out.x, out.y, out.z]
+}
+
+/// Increments `accumulated_rotation_rad` for one tick interval.
+pub fn advance_plate_motion(plate: &mut Plate, tick_interval_years: f64) {
+    plate.accumulated_rotation_rad += plate.motion_rate_rad_per_year * tick_interval_years;
+}
+
+fn rotate_vector(vec: DVec3, axis: DVec3, angle_rad: f64) -> DVec3 {
+    let q = DQuat::from_axis_angle(axis, angle_rad);
+    q * vec
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use genesis_core::time::WorldYear;
+    use genesis_core::{HexGrid, HexId, PlateId};
+
+    use crate::plate::{Plate, PlateClass, PlateType};
+
+    const EARTH_RADIUS_KM: f64 = 6371.0;
+
+    fn sample_plate() -> Plate {
+        Plate {
+            id: PlateId(0),
+            plate_type: PlateType::Oceanic,
+            plate_class: PlateClass::Major,
+            seed_hex: HexId(100),
+            motion_axis: [0.0, 0.0, 1.0],
+            motion_rate_rad_per_year: 1e-8,
+            age_year: WorldYear::FORMATION,
+            target_fraction: 0.1,
+            accumulated_rotation_rad: 0.0,
+        }
+    }
+
+    #[test]
+    fn zero_rotation_matches_seed_direction() {
+        let grid = HexGrid::new(4, EARTH_RADIUS_KM).expect("grid");
+        let plate = sample_plate();
+        let seed = grid.cell_center_direction(plate.seed_hex);
+        let effective = effective_position_direction(&grid, &plate);
+        let seed_v = DVec3::new(seed[0], seed[1], seed[2]);
+        let eff_v = DVec3::new(effective[0], effective[1], effective[2]);
+        let dot = seed_v.dot(eff_v).clamp(-1.0, 1.0);
+        assert!((dot - 1.0).abs() < 1e-9, "dot = {dot}");
+    }
+
+    #[test]
+    fn known_rotation_changes_effective_position() {
+        let grid = HexGrid::new(4, EARTH_RADIUS_KM).expect("grid");
+        let mut plate = sample_plate();
+        plate.motion_axis = [1.0, 0.0, 0.0];
+        plate.accumulated_rotation_rad = std::f64::consts::FRAC_PI_2;
+
+        let seed = grid.cell_center_direction(plate.seed_hex);
+        let seed_v = DVec3::new(seed[0], seed[1], seed[2]).normalize();
+        let effective = effective_position_direction(&grid, &plate);
+        let eff_v = DVec3::new(effective[0], effective[1], effective[2]).normalize();
+
+        let dot = seed_v.dot(eff_v).clamp(-1.0, 1.0);
+        assert!(
+            (dot - 1.0).abs() > 0.01,
+            "rotation should move effective position away from seed (dot = {dot})"
+        );
+    }
+
+    #[test]
+    fn effective_position_is_unit_length() {
+        let grid = HexGrid::new(4, EARTH_RADIUS_KM).expect("grid");
+        let mut plate = sample_plate();
+        plate.accumulated_rotation_rad = 0.5;
+        plate.motion_axis = [0.1, 0.7, 0.71];
+        let effective = effective_position_direction(&grid, &plate);
+        let v = DVec3::new(effective[0], effective[1], effective[2]);
+        assert!((v.length() - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn advance_plate_motion_accumulates() {
+        let mut plate = sample_plate();
+        plate.motion_rate_rad_per_year = 2e-8;
+        advance_plate_motion(&mut plate, 500_000.0);
+        assert!((plate.accumulated_rotation_rad - 2e-8 * 500_000.0).abs() < 1e-20);
+    }
+}

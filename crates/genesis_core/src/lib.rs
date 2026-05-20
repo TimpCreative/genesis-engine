@@ -23,8 +23,8 @@ pub use interventions::{
     Intervention, InterventionAction, InterventionId, InterventionLog, InterventionScope,
 };
 pub use lifecycle::{
-    CreateWorldError, GenerationError, GenerationProgress, ProgressCallback, create_world,
-    generate_full_history,
+    CreateWorldError, GenerationError, GenerationProgress, ProgressCallback,
+    advance_with_coordinator, create_world, generate_full_history,
 };
 pub use parameters::{
     BiologyParameters, CivilizationParameters, ClimateInitialParameters, CoreParameters,
