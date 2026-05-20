@@ -2549,6 +2549,8 @@ name = "genesis_app"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "genesis_core",
+ "genesis_render",
 ]
 
 [[package]]
@@ -2594,6 +2596,8 @@ name = "genesis_render"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "genesis_core",
+ "glam",
 ]
 
 [[package]]

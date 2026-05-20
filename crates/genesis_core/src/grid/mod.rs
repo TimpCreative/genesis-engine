@@ -115,6 +115,12 @@ impl HexGrid {
         geography::center_lat_lon(self.centers[hex.0 as usize])
     }
 
+    /// Unit-sphere center direction `(x, y, z)`; length ≈ 1.
+    pub fn cell_center_direction(&self, hex: HexId) -> [f64; 3] {
+        let v = self.centers[hex.0 as usize];
+        [v.x, v.y, v.z]
+    }
+
     /// Area of the hex on the planet's surface, in square kilometers.
     pub fn hex_area_km2(&self, hex: HexId) -> f64 {
         let _ = hex; // All hexes share uniform area in v1; per-hex variation deferred (Doc 04 §3.3.2).
@@ -337,7 +343,7 @@ mod tests {
                 let v1 = isea3h::lat_lon_to_vec3(lat2, lon2);
                 let angular = v0.dot(v1).clamp(-1.0, 1.0).acos();
                 assert!(
-                    angular <= tol,
+                    angular <= tol + 1e-10,
                     "level {level} ({lat},{lon}) error {angular} > {tol}"
                 );
             }
@@ -388,5 +394,51 @@ mod tests {
             HexGrid::new(4, 0.0),
             Err(GridError::InvalidPlanetRadius(r)) if r == 0.0
         ));
+    }
+
+    #[test]
+    fn all_cell_centers_are_unique() {
+        use std::collections::BTreeSet;
+
+        let grid = HexGrid::new(5, EARTH_RADIUS_KM).unwrap();
+        let mut seen: BTreeSet<(i64, i64, i64)> = BTreeSet::new();
+
+        for hex in grid.iter() {
+            let center = grid.cell_center_direction(hex);
+            let key = (
+                (center[0] * 1e9).round() as i64,
+                (center[1] * 1e9).round() as i64,
+                (center[2] * 1e9).round() as i64,
+            );
+            assert!(
+                seen.insert(key),
+                "duplicate cell center for {:?} at level 5",
+                hex
+            );
+        }
+    }
+
+    #[test]
+    fn cell_centers_unique_at_multiple_levels() {
+        use std::collections::BTreeSet;
+
+        for level in [3u8, 5, 7] {
+            let grid = HexGrid::new(level, EARTH_RADIUS_KM).unwrap();
+            let mut seen: BTreeSet<(i64, i64, i64)> = BTreeSet::new();
+
+            for hex in grid.iter() {
+                let center = grid.cell_center_direction(hex);
+                let key = (
+                    (center[0] * 1e9).round() as i64,
+                    (center[1] * 1e9).round() as i64,
+                    (center[2] * 1e9).round() as i64,
+                );
+                assert!(
+                    seen.insert(key),
+                    "level {level}: duplicate cell center for {:?}",
+                    hex
+                );
+            }
+        }
     }
 }

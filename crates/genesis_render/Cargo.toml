@@ -8,3 +8,5 @@ publish.workspace = true
 
 [dependencies]
 bevy = { workspace = true }
+genesis_core = { path = "../genesis_core" }
+glam = "0.30"

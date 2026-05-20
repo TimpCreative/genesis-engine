@@ -85,7 +85,7 @@ pub fn cell_center_vec3(coord: Isea3hCoord, level: u8) -> Vec3 {
         Isea3hCoord::Pentagon { vertex } => ico_vertices()[vertex as usize],
         Isea3hCoord::Edge { v_i, v_j, h_i, h_j } => {
             let h_hat = h_hat(level) as f64;
-            let face = face_for_edge(v_i, v_j);
+            let face = oriented_face_for_edge(v_i, v_j);
             let bary = Barycentric {
                 a: h_i as f64 / h_hat,
                 b: h_j as f64 / h_hat,
@@ -207,6 +207,19 @@ fn faces_containing_edge(v_i: u8, v_j: u8) -> [usize; 2] {
 
 fn face_for_edge(v_i: u8, v_j: u8) -> [usize; 3] {
     ico_faces()[faces_containing_edge(v_i, v_j)[0]]
+}
+
+/// Face corners ordered `[v_i, v_j, v_k]` so barycentric `h_i`/`h_j` attach to the correct vertices.
+fn oriented_face_for_edge(v_i: u8, v_j: u8) -> [usize; 3] {
+    let face = face_for_edge(v_i, v_j);
+    let vi = v_i as usize;
+    let vj = v_j as usize;
+    let vk = face
+        .iter()
+        .copied()
+        .find(|&v| v != vi && v != vj)
+        .expect("icosahedron face has a third vertex");
+    [vi, vj, vk]
 }
 
 fn h_hat(level: u8) -> i32 {
@@ -534,75 +547,168 @@ fn build_ico_faces() -> [[usize; 3]; 20] {
     arr
 }
 
+fn raw_golden_ratio_vertices() -> [Vec3; 12] {
+    [
+        Vec3 {
+            x: 0.0,
+            y: 1.0,
+            z: PHI,
+        },
+        Vec3 {
+            x: 0.0,
+            y: -1.0,
+            z: PHI,
+        },
+        Vec3 {
+            x: 0.0,
+            y: 1.0,
+            z: -PHI,
+        },
+        Vec3 {
+            x: 0.0,
+            y: -1.0,
+            z: -PHI,
+        },
+        Vec3 {
+            x: 1.0,
+            y: PHI,
+            z: 0.0,
+        },
+        Vec3 {
+            x: -1.0,
+            y: PHI,
+            z: 0.0,
+        },
+        Vec3 {
+            x: 1.0,
+            y: -PHI,
+            z: 0.0,
+        },
+        Vec3 {
+            x: -1.0,
+            y: -PHI,
+            z: 0.0,
+        },
+        Vec3 {
+            x: PHI,
+            y: 0.0,
+            z: 1.0,
+        },
+        Vec3 {
+            x: -PHI,
+            y: 0.0,
+            z: 1.0,
+        },
+        Vec3 {
+            x: PHI,
+            y: 0.0,
+            z: -1.0,
+        },
+        Vec3 {
+            x: -PHI,
+            y: 0.0,
+            z: -1.0,
+        },
+    ]
+}
+
+const EDGE_COS: f64 = 0.447_213_595_499_957_9; // 1 / sqrt(5)
+
+fn permutation_matches_kristensen(verts: &[Vec3; 12], perm: &[usize; 12]) -> bool {
+    for v in 0..12usize {
+        let pv = perm[v];
+        let pa = perm[(v + 6) % 12];
+        if (verts[pv].dot(verts[pa]) + 1.0).abs() > 1e-9 {
+            return false;
+        }
+        for n in vertex_neighbors(v as u8) {
+            let pn = perm[n as usize];
+            if (verts[pv].dot(verts[pn]) - EDGE_COS).abs() > 1e-9 {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+fn partial_permutation_valid(
+    verts: &[Vec3; 12],
+    perm: &[usize; 12],
+    assigned_through: usize,
+) -> bool {
+    for v in 0..=assigned_through {
+        let partner = (v + 6) % 12;
+        if partner < v {
+            let dot = verts[perm[v]].dot(verts[perm[partner]]);
+            if (dot + 1.0).abs() > 1e-9 {
+                return false;
+            }
+        }
+        for n in vertex_neighbors(v as u8) {
+            let n = n as usize;
+            if n < v {
+                let dot = verts[perm[v]].dot(verts[perm[n]]);
+                if (dot - EDGE_COS).abs() > 1e-9 {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
+fn search_kristensen_permutation(
+    verts: &[Vec3; 12],
+    perm: &mut [usize; 12],
+    used: &mut [bool; 12],
+    kristensen_index: usize,
+) -> bool {
+    if kristensen_index == 12 {
+        return permutation_matches_kristensen(verts, perm);
+    }
+    for g in 0..12 {
+        if used[g] {
+            continue;
+        }
+        perm[kristensen_index] = g;
+        used[g] = true;
+        if partial_permutation_valid(verts, perm, kristensen_index)
+            && search_kristensen_permutation(verts, perm, used, kristensen_index + 1)
+        {
+            return true;
+        }
+        used[g] = false;
+    }
+    false
+}
+
+/// Permute raw golden-ratio vertex indices so `ico_vertices()[k]` matches Kristensen topology.
+fn find_kristensen_permutation(verts: &[Vec3; 12]) -> [usize; 12] {
+    let mut perm = [0usize; 12];
+    let mut used = [false; 12];
+    if search_kristensen_permutation(verts, &mut perm, &mut used, 0) {
+        return perm;
+    }
+    panic!("no Kristensen permutation found for golden-ratio vertices");
+}
+
 fn ico_vertices() -> &'static [Vec3; 12] {
     static VERTS: OnceLock<[Vec3; 12]> = OnceLock::new();
     VERTS.get_or_init(|| {
-        let raw = [
-            Vec3 {
-                x: 0.0,
-                y: 1.0,
-                z: PHI,
-            },
-            Vec3 {
-                x: 0.0,
-                y: -1.0,
-                z: PHI,
-            },
-            Vec3 {
-                x: 0.0,
-                y: 1.0,
-                z: -PHI,
-            },
-            Vec3 {
-                x: 0.0,
-                y: -1.0,
-                z: -PHI,
-            },
-            Vec3 {
-                x: 1.0,
-                y: PHI,
-                z: 0.0,
-            },
-            Vec3 {
-                x: -1.0,
-                y: PHI,
-                z: 0.0,
-            },
-            Vec3 {
-                x: 1.0,
-                y: -PHI,
-                z: 0.0,
-            },
-            Vec3 {
-                x: -1.0,
-                y: -PHI,
-                z: 0.0,
-            },
-            Vec3 {
-                x: PHI,
-                y: 0.0,
-                z: 1.0,
-            },
-            Vec3 {
-                x: -PHI,
-                y: 0.0,
-                z: 1.0,
-            },
-            Vec3 {
-                x: PHI,
-                y: 0.0,
-                z: -1.0,
-            },
-            Vec3 {
-                x: -PHI,
-                y: 0.0,
-                z: -1.0,
-            },
-        ];
-        let mut verts = raw.map(normalize);
+        let raw_normalized = raw_golden_ratio_vertices().map(normalize);
+        let perm = find_kristensen_permutation(&raw_normalized);
+
+        let mut verts = [Vec3 {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        }; 12];
+        for i in 0..12 {
+            verts[i] = raw_normalized[perm[i]];
+        }
+
         let target = lat_lon_to_vec3(58.28_f64.to_radians(), 11.25_f64.to_radians());
-        verts = rotate_vertex_to(verts, 0, target);
-        verts
+        rotate_vertex_to(verts, 0, target)
     })
 }
 
@@ -826,5 +932,38 @@ mod tests {
         let level = 4;
         let coords: BTreeSet<Isea3hCoord> = all_cells(level).collect();
         assert_eq!(coords.len() as u64, cell_count(level));
+    }
+
+    #[test]
+    fn kristensen_permutation_is_deterministic() {
+        let raw = raw_golden_ratio_vertices().map(normalize);
+        let perm = find_kristensen_permutation(&raw);
+        // Golden-ratio index assigned to each Kristensen vertex label.
+        assert_eq!(perm, [0, 1, 8, 4, 10, 6, 3, 2, 11, 7, 9, 5]);
+    }
+
+    #[test]
+    fn icosahedron_vertices_match_kristensen_topology() {
+        let verts = ico_vertices();
+
+        for v in 0..12 {
+            let antipode = (v + 6) % 12;
+            let dot = verts[v].dot(verts[antipode]);
+            assert!(
+                (dot - (-1.0)).abs() < 1e-9,
+                "vertex {v} and {antipode} should be antipodes (dot = {dot})"
+            );
+        }
+
+        for v in 0..12u8 {
+            let neighbors = vertex_neighbors(v);
+            for &n in &neighbors {
+                let dot = verts[usize::from(v)].dot(verts[usize::from(n)]);
+                assert!(
+                    (dot - EDGE_COS).abs() < 1e-9,
+                    "vertex {v} and {n} should be edge-adjacent (dot = {dot}, expected {EDGE_COS})"
+                );
+            }
+        }
     }
 }

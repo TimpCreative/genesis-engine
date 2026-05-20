@@ -10,3 +10,5 @@ path = "src/main.rs"
 
 [dependencies]
 bevy = { workspace = true }
+genesis_core = { path = "../genesis_core" }
+genesis_render = { path = "../genesis_render" }
