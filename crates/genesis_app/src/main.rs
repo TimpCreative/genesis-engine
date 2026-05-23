@@ -335,6 +335,145 @@ mod tests {
         assert!(distinct_directions.len() >= 4);
     }
 
+    /// Manual P2-6 report: `cargo test -p genesis_app p2_6_temperature_field_stats -- --ignored --nocapture`
+    #[test]
+    #[ignore = "manual P2-6 temperature field verification"]
+    fn p2_6_temperature_field_stats() {
+        use genesis_core::parameters::WorldParameters;
+
+        let mut params = WorldParameters::default();
+        params.core.grid.subdivision_level = 7;
+
+        let mut world = create_world(params).expect("world");
+        let mut tectonics = TectonicsState::new();
+        let mut climate = ClimateState::new();
+        generate_full_history(
+            &mut world,
+            &mut tectonics,
+            &mut climate,
+            WorldYear(1_000_000_000),
+            |_| {},
+        )
+        .expect("history");
+
+        let data = &world.data;
+        let n = data.cell_count() as usize;
+        let sea = data.sea_level_m;
+
+        let mut sum_all = 0.0_f64;
+        let mut min_temp = f32::INFINITY;
+        let mut max_temp = f32::NEG_INFINITY;
+
+        let mut sum_tropical = 0.0_f64;
+        let mut count_tropical = 0_u64;
+        let mut sum_polar = 0.0_f64;
+        let mut count_polar = 0_u64;
+        let mut sum_sea_level = 0.0_f64;
+        let mut count_sea_level = 0_u64;
+        let mut sum_high_elev = 0.0_f64;
+        let mut count_high_elev = 0_u64;
+
+        let mut sum_range_equator = 0.0_f64;
+        let mut count_range_equator = 0_u64;
+        let mut sum_range_mid = 0.0_f64;
+        let mut count_range_mid = 0_u64;
+        let mut sum_range_polar = 0.0_f64;
+        let mut count_range_polar = 0_u64;
+
+        for i in 0..n {
+            let t = data.temperature_mean[i];
+            let elev = data.elevation_mean[i];
+            let range = data.temperature_range[i];
+            let (lat, _) = data.grid.center_lat_lon(genesis_core::HexId(i as u32));
+            let abs_lat_deg = lat.abs().to_degrees();
+
+            sum_all += f64::from(t);
+            min_temp = min_temp.min(t);
+            max_temp = max_temp.max(t);
+
+            if abs_lat_deg < 23.0 {
+                sum_tropical += f64::from(t);
+                count_tropical += 1;
+            }
+            if abs_lat_deg > 60.0 {
+                sum_polar += f64::from(t);
+                count_polar += 1;
+            }
+            if elev < sea + 100.0 {
+                sum_sea_level += f64::from(t);
+                count_sea_level += 1;
+            }
+            if elev > 3000.0 {
+                sum_high_elev += f64::from(t);
+                count_high_elev += 1;
+            }
+
+            if abs_lat_deg < 10.0 {
+                sum_range_equator += f64::from(range);
+                count_range_equator += 1;
+            } else if (40.0..50.0).contains(&abs_lat_deg) {
+                sum_range_mid += f64::from(range);
+                count_range_mid += 1;
+            } else if abs_lat_deg > 60.0 {
+                sum_range_polar += f64::from(range);
+                count_range_polar += 1;
+            }
+        }
+
+        let global_mean = sum_all / n as f64;
+        let mean_tropical = if count_tropical > 0 {
+            sum_tropical / count_tropical as f64
+        } else {
+            0.0
+        };
+        let mean_polar = if count_polar > 0 {
+            sum_polar / count_polar as f64
+        } else {
+            0.0
+        };
+        let mean_sea_level = if count_sea_level > 0 {
+            sum_sea_level / count_sea_level as f64
+        } else {
+            0.0
+        };
+        let mean_high_elev = if count_high_elev > 0 {
+            sum_high_elev / count_high_elev as f64
+        } else {
+            0.0
+        };
+        let mean_range_equator = if count_range_equator > 0 {
+            sum_range_equator / count_range_equator as f64
+        } else {
+            0.0
+        };
+        let mean_range_mid = if count_range_mid > 0 {
+            sum_range_mid / count_range_mid as f64
+        } else {
+            0.0
+        };
+        let mean_range_polar = if count_range_polar > 0 {
+            sum_range_polar / count_range_polar as f64
+        } else {
+            0.0
+        };
+
+        eprintln!("=== temperature field at 1B years (subdiv=7) ===");
+        eprintln!("global_mean_c: {global_mean}");
+        eprintln!("min_c: {min_temp}");
+        eprintln!("max_c: {max_temp}");
+        eprintln!("mean_tropical_c (|lat|<23°): {mean_tropical}");
+        eprintln!("mean_polar_c (|lat|>60°): {mean_polar}");
+        eprintln!("mean_sea_level_c (elev < sea+100m): {mean_sea_level}");
+        eprintln!("mean_high_elev_c (elev > 3000m): {mean_high_elev}");
+        eprintln!("mean_range_equator_c: {mean_range_equator}");
+        eprintln!("mean_range_45deg_c: {mean_range_mid}");
+        eprintln!("mean_range_polar_c: {mean_range_polar}");
+
+        assert!(min_temp >= -60.0);
+        assert!(max_temp <= 50.0);
+        assert!(mean_tropical > mean_polar);
+    }
+
     #[test]
     fn empty_climate_layer_does_not_change_tectonic_world_at_1m() {
         let mut params = WorldParameters::default();

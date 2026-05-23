@@ -87,6 +87,8 @@ pub struct PlanetParameters {
     pub gravity_g: f32,
     /// Axial tilt in degrees. Earth: 23.4. Immutable.
     pub axial_tilt_degrees: f32,
+    /// Solar luminosity relative to Sol (Earth = 1.0). Scales insolation baseline.
+    pub solar_luminosity_relative_to_sol: f32,
     /// Rotation period in hours. Earth: 24.0. Immutable.
     pub rotation_period_hours: f64,
     /// Orbital period in Earth-days. Earth: 365.25. Immutable.

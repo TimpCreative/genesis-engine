@@ -39,6 +39,14 @@ impl WorldParameters {
                 p.axial_tilt_degrees,
             ));
         }
+        if !p.solar_luminosity_relative_to_sol.is_finite()
+            || p.solar_luminosity_relative_to_sol <= 0.0
+        {
+            return Err(ParameterValidationError::InvalidField {
+                field: "planet.solar_luminosity_relative_to_sol".into(),
+                message: "must be positive and finite".into(),
+            });
+        }
         if !p.rotation_period_hours.is_finite() || p.rotation_period_hours <= 0.0 {
             return Err(ParameterValidationError::InvalidField {
                 field: "planet.rotation_period_hours".into(),

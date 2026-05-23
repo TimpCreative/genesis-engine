@@ -140,6 +140,17 @@ impl SimulationLayer for ClimateLayer {
                 );
             }
 
+            let temp_start = std::time::Instant::now();
+            crate::temperature::compute_temperature_field(world, &state);
+            let temp_elapsed = temp_start.elapsed();
+            if temp_elapsed.as_millis() > 50 {
+                eprintln!(
+                    "[climate] temperature tick at year {} took {}ms",
+                    world.current_year.value(),
+                    temp_elapsed.as_millis()
+                );
+            }
+
             let era = Era::for_year(world.current_year, &world.parameters);
             if state.formation_complete && !state.circulation_logged_once && era != Era::Formation {
                 eprintln!(
@@ -162,7 +173,7 @@ mod tests {
     use super::*;
     use genesis_core::parameters::WorldParameters;
     use genesis_core::time::TickCoordinator;
-    use genesis_core::{WorldYear, create_world};
+    use genesis_core::{HexId, WorldYear, create_world};
 
     #[test]
     fn climate_layer_ticks_at_formation_interval_during_formation_period() {
@@ -300,6 +311,50 @@ mod tests {
             distinct_directions.len() >= 4,
             "expected at least 4 distinct wind directions, got {}",
             distinct_directions.len()
+        );
+    }
+
+    #[test]
+    fn temperature_field_populated_with_reasonable_values() {
+        let params = WorldParameters::default();
+        let mut world = create_world(params).expect("world");
+        let mut climate = ClimateState::new();
+
+        let (layer, shared) = ClimateLayer::attach(&mut climate);
+        let mut coordinator = TickCoordinator::new();
+        coordinator.add_layer(Box::new(layer));
+
+        let params = world.data.parameters.clone();
+        coordinator.advance_to(WorldYear(500_000_000), &mut world.data, &world.rng, &params);
+        drop(coordinator);
+
+        let _climate = ClimateLayer::detach_state(shared);
+
+        for &t in &world.data.temperature_mean {
+            assert!(
+                t >= -60.0 && t <= 50.0,
+                "temperature {t}°C out of expected [-60, 50] range"
+            );
+        }
+
+        let mut equator_temp = None;
+        let mut polar_temp = None;
+        for i in 0..world.data.cell_count() as usize {
+            let (lat, _) = world.data.grid.center_lat_lon(HexId(i as u32));
+            let abs_lat_deg = lat.abs().to_degrees();
+            if abs_lat_deg < 5.0 && equator_temp.is_none() {
+                equator_temp = Some(world.data.temperature_mean[i]);
+            }
+            if abs_lat_deg > 70.0 && polar_temp.is_none() {
+                polar_temp = Some(world.data.temperature_mean[i]);
+            }
+        }
+
+        let eq = equator_temp.expect("found equator hex");
+        let pole = polar_temp.expect("found polar hex");
+        assert!(
+            eq > pole,
+            "equator ({eq}°C) should be warmer than pole ({pole}°C)"
         );
     }
 }

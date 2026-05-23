@@ -43,6 +43,7 @@ impl Default for WorldParameters {
                     radius_km: 6371.0,
                     gravity_g: 1.0,
                     axial_tilt_degrees: 23.4,
+                    solar_luminosity_relative_to_sol: 1.0,
                     rotation_period_hours: 24.0,
                     orbital_period_days: 365.25,
                     star_count: 1,
