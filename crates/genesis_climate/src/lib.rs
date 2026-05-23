@@ -8,7 +8,10 @@
 pub mod events;
 pub mod formation;
 pub mod layer;
+pub mod ocean_distance;
 pub mod state;
+
+pub use ocean_distance::compute_distance_to_ocean;
 
 pub use events::flush_events_to_branch;
 pub use formation::{

@@ -69,44 +69,59 @@ impl SimulationLayer for ClimateLayer {
     }
 
     fn advance(&mut self, world: &mut WorldData, _rng: &WorldRng) -> Vec<()> {
-        let mut state = self.state.borrow_mut();
-        let params = &world.parameters;
-        let current_year_value = world.current_year.value();
+        {
+            let mut state = self.state.borrow_mut();
+            let params = &world.parameters;
+            let current_year_value = world.current_year.value();
 
-        if params.core.climate.skip_planetary_formation {
-            if !state.formation_complete {
-                state.formation_complete = true;
-                state.formation_sub_phase = FormationSubPhase::Complete;
-            }
-        } else if formation_period_active(current_year_value, params) && !state.formation_complete {
-            let new_phase = FormationSubPhase::for_year(current_year_value);
-            let prev_phase = state.formation_sub_phase;
+            if params.core.climate.skip_planetary_formation {
+                if !state.formation_complete {
+                    state.formation_complete = true;
+                    state.formation_sub_phase = FormationSubPhase::Complete;
+                }
+            } else if formation_period_active(current_year_value, params)
+                && !state.formation_complete
+            {
+                let new_phase = FormationSubPhase::for_year(current_year_value);
+                let prev_phase = state.formation_sub_phase;
 
-            world.global_temperature_c = cooling_temperature_c(current_year_value);
-            world.sea_level_m = sea_level_at_year(current_year_value);
-            state.atmospheric_composition = composition_at_year(current_year_value);
+                world.global_temperature_c = cooling_temperature_c(current_year_value);
+                world.sea_level_m = sea_level_at_year(current_year_value);
+                state.atmospheric_composition = composition_at_year(current_year_value);
 
-            if new_phase != prev_phase {
-                emit_phase_transition_event(
+                if new_phase != prev_phase {
+                    emit_phase_transition_event(
+                        &mut state,
+                        world,
+                        prev_phase,
+                        new_phase,
+                        world.current_year,
+                        params.core.climate.event_granularity,
+                    );
+                    state.formation_sub_phase = new_phase;
+                }
+
+                if new_phase == FormationSubPhase::Complete {
+                    state.formation_complete = true;
+                }
+
+                maybe_emit_cooling_milestone(
                     &mut state,
-                    world,
-                    prev_phase,
-                    new_phase,
+                    world.global_temperature_c,
                     world.current_year,
                     params.core.climate.event_granularity,
                 );
-                state.formation_sub_phase = new_phase;
             }
+        }
 
-            if new_phase == FormationSubPhase::Complete {
-                state.formation_complete = true;
-            }
-
-            maybe_emit_cooling_milestone(
-                &mut state,
-                world.global_temperature_c,
-                world.current_year,
-                params.core.climate.event_granularity,
+        let dist_start = std::time::Instant::now();
+        crate::ocean_distance::compute_distance_to_ocean(world);
+        let dist_elapsed = dist_start.elapsed();
+        if dist_elapsed.as_millis() > 50 {
+            eprintln!(
+                "[climate] ocean_distance tick at year {} took {}ms",
+                world.current_year.value(),
+                dist_elapsed.as_millis()
             );
         }
 

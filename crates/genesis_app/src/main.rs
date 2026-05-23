@@ -196,6 +196,65 @@ mod tests {
         }
     }
 
+    /// Manual P2-3 report: `cargo test -p genesis_app p2_3_distance_to_ocean_stats -- --ignored --nocapture`
+    #[test]
+    #[ignore = "manual P2-3 distance-to-ocean verification"]
+    fn p2_3_distance_to_ocean_stats() {
+        use genesis_core::parameters::WorldParameters;
+
+        let mut params = WorldParameters::default();
+        params.core.grid.subdivision_level = 7;
+
+        let mut world = create_world(params).expect("world");
+        let mut tectonics = TectonicsState::new();
+        let mut climate = ClimateState::new();
+        generate_full_history(
+            &mut world,
+            &mut tectonics,
+            &mut climate,
+            WorldYear(1_000_000_000),
+            |_| {},
+        )
+        .expect("history");
+
+        let dist = &world.data.distance_to_ocean_km;
+        let mut min_nonzero = f32::INFINITY;
+        let mut max_finite = 0.0_f32;
+        let mut count_zero = 0_u64;
+        let mut count_deep_interior = 0_u64;
+
+        for &d in dist {
+            if d == 0.0 {
+                count_zero += 1;
+            }
+            if d.is_finite() && d > 0.0 {
+                min_nonzero = min_nonzero.min(d);
+            }
+            if d.is_finite() {
+                max_finite = max_finite.max(d);
+            }
+            if d > 1000.0 {
+                count_deep_interior += 1;
+            }
+        }
+
+        eprintln!("=== distance_to_ocean_km at 1B years (subdiv=7) ===");
+        eprintln!("min_nonzero_km: {min_nonzero}");
+        eprintln!("max_finite_km: {max_finite}");
+        eprintln!("count_at_zero (ocean): {count_zero}");
+        eprintln!("count_gt_1000km (deep interior): {count_deep_interior}");
+        eprintln!(
+            "count_infinity: {}",
+            dist.iter().filter(|d| d.is_infinite()).count()
+        );
+
+        assert!(count_zero > 0, "expected some ocean hexes at 1B");
+        assert!(
+            max_finite > 0.0 && max_finite < f32::INFINITY,
+            "expected finite interior distances"
+        );
+    }
+
     #[test]
     fn empty_climate_layer_does_not_change_tectonic_world_at_1m() {
         let mut params = WorldParameters::default();
