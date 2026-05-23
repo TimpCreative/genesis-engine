@@ -35,3 +35,14 @@ impl BiomeId {
     /// Sentinel value indicating no biome assignment.
     pub const NONE: BiomeId = BiomeId(u16::MAX);
 }
+
+/// Identifies a single ocean basin. Land hexes have [`BasinId::NONE`].
+#[derive(
+    Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Default, Serialize, Deserialize,
+)]
+pub struct BasinId(pub u16);
+
+impl BasinId {
+    /// Sentinel value for land hexes (not in any ocean basin).
+    pub const NONE: BasinId = BasinId(u16::MAX);
+}

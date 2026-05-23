@@ -9,12 +9,14 @@ pub mod circulation;
 pub mod events;
 pub mod formation;
 pub mod layer;
+pub mod ocean_basins;
 pub mod ocean_distance;
 pub mod state;
 pub mod temperature;
 pub mod wind;
 
 pub use circulation::compute_circulation;
+pub use ocean_basins::identify_ocean_basins;
 pub use ocean_distance::compute_distance_to_ocean;
 pub use temperature::compute_temperature_field;
 pub use wind::compute_wind_field;
@@ -31,6 +33,6 @@ pub use layer::{
 };
 pub use state::{
     AtmosphericComposition, CirculationCell, CirculationCells, ClimateRegime, ClimateState,
-    FormationSubPhase, GlaciationState, STABILIZATION_END_YEAR, T_EQUILIBRIUM_C,
-    T_INITIAL_MOLTEN_C, formation_period_active,
+    FormationSubPhase, GlaciationState, OceanBasin, OceanBasins, STABILIZATION_END_YEAR,
+    T_EQUILIBRIUM_C, T_INITIAL_MOLTEN_C, formation_period_active,
 };

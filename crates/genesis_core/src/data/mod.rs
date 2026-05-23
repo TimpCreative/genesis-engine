@@ -12,7 +12,7 @@ mod ids;
 pub use crate::grid::Direction;
 pub use climate_placeholder::ClimateRegimePlaceholder;
 pub use enums::BedrockType;
-pub use ids::{BiomeId, HotSpotId, NationId, PlateId, SettlementId, SpeciesId};
+pub use ids::{BasinId, BiomeId, HotSpotId, NationId, PlateId, SettlementId, SpeciesId};
 
 use crate::HexGrid;
 use crate::parameters::WorldParameters;
@@ -102,6 +102,8 @@ pub struct WorldData {
     pub ocean_current_vec: Vec<[f32; 2]>,
     /// Per-hex distance to nearest ocean hex in km. `f32::INFINITY` if no ocean exists.
     pub distance_to_ocean_km: Vec<f32>,
+    /// Ocean basin assignment per hex. Land hexes have [`BasinId::NONE`].
+    pub basin_id: Vec<BasinId>,
     /// Per-hex climate regime label (Köppen-like). Unset until P2-12.
     pub climate_regime: Vec<ClimateRegimePlaceholder>,
 
@@ -156,6 +158,7 @@ impl WorldData {
             wind_speed_m_s: vec![0.0; n],
             ocean_current_vec: vec![[0.0, 0.0]; n],
             distance_to_ocean_km: vec![f32::INFINITY; n],
+            basin_id: vec![BasinId::NONE; n],
             climate_regime: vec![ClimateRegimePlaceholder::Unset; n],
             sea_level_m: 0.0,
             global_temperature_c: 15.0,
@@ -236,6 +239,7 @@ mod tests {
         assert_eq!(world.wind_speed_m_s.len(), n);
         assert_eq!(world.ocean_current_vec.len(), n);
         assert_eq!(world.distance_to_ocean_km.len(), n);
+        assert_eq!(world.basin_id.len(), n);
         assert_eq!(world.climate_regime.len(), n);
         assert_eq!(world.biome.len(), n);
         assert_eq!(world.biomass.len(), n);
@@ -273,6 +277,7 @@ mod tests {
                 .iter()
                 .all(|&d| d == f32::INFINITY)
         );
+        assert!(world.basin_id.iter().all(|&b| b == BasinId::NONE));
         assert!(
             world
                 .climate_regime
@@ -296,6 +301,7 @@ mod tests {
     fn sentinel_ids_are_max() {
         assert_eq!(PlateId::NONE.0, u16::MAX);
         assert_eq!(BiomeId::NONE.0, u16::MAX);
+        assert_eq!(BasinId::NONE.0, u16::MAX);
     }
 
     #[test]

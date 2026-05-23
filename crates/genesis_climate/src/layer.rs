@@ -151,6 +151,17 @@ impl SimulationLayer for ClimateLayer {
                 );
             }
 
+            let basins_start = std::time::Instant::now();
+            state.ocean_basins = crate::ocean_basins::identify_ocean_basins(world);
+            let basins_elapsed = basins_start.elapsed();
+            if basins_elapsed.as_millis() > 50 {
+                eprintln!(
+                    "[climate] ocean_basins tick at year {} took {}ms",
+                    world.current_year.value(),
+                    basins_elapsed.as_millis()
+                );
+            }
+
             let era = Era::for_year(world.current_year, &world.parameters);
             if state.formation_complete && !state.circulation_logged_once && era != Era::Formation {
                 eprintln!(
@@ -356,5 +367,64 @@ mod tests {
             eq > pole,
             "equator ({eq}°C) should be warmer than pole ({pole}°C)"
         );
+    }
+
+    #[test]
+    fn ocean_basins_identified_after_formation() {
+        let params = WorldParameters::default();
+        let mut world = create_world(params).expect("world");
+        let mut climate = ClimateState::new();
+
+        let (layer, shared) = ClimateLayer::attach(&mut climate);
+        let mut coordinator = TickCoordinator::new();
+        coordinator.add_layer(Box::new(layer));
+
+        let params = world.data.parameters.clone();
+        coordinator.advance_to(WorldYear(500_000_000), &mut world.data, &world.rng, &params);
+        drop(coordinator);
+
+        let mut climate = ClimateLayer::detach_state(shared);
+
+        // `create_world` leaves elevation at 0; at sea level 0 there is no ocean until
+        // tectonics shapes terrain. Sculpt mixed ocean/land to verify basin wiring.
+        world.data.sea_level_m = 0.0;
+        for (i, elev) in world.data.elevation_mean.iter_mut().enumerate() {
+            *elev = if i % 4 == 0 { 200.0 } else { -100.0 };
+        }
+
+        let (mut layer, shared) = ClimateLayer::attach(&mut climate);
+        layer.advance(&mut world.data, &world.rng);
+        drop(layer);
+        climate = ClimateLayer::detach_state(shared);
+
+        let basin_count = climate.ocean_basins.basins.len();
+        assert!(basin_count >= 1, "expected at least one basin, got {basin_count}");
+
+        let mut ocean_hexes = 0_u64;
+        for (i, &elev) in world.data.elevation_mean.iter().enumerate() {
+            if elev < world.data.sea_level_m {
+                ocean_hexes += 1;
+                assert_ne!(
+                    world.data.basin_id[i],
+                    genesis_core::BasinId::NONE,
+                    "ocean hex {i} missing basin_id"
+                );
+            } else {
+                assert_eq!(
+                    world.data.basin_id[i],
+                    genesis_core::BasinId::NONE,
+                    "land hex {i} should be NONE"
+                );
+            }
+        }
+
+        assert!(ocean_hexes > 0, "expected some ocean hexes");
+        if !climate.ocean_basins.basins.is_empty() {
+            let largest = climate.ocean_basins.basins[0].hex_count;
+            assert!(
+                f64::from(largest) >= f64::from(ocean_hexes as u32) * 0.3,
+                "largest basin {largest} should cover >=30% of {ocean_hexes} ocean hexes"
+            );
+        }
     }
 }

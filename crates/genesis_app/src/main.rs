@@ -474,6 +474,53 @@ mod tests {
         assert!(mean_tropical > mean_polar);
     }
 
+    /// Manual P2-7 report: `cargo test -p genesis_app p2_7_ocean_basin_stats -- --ignored --nocapture`
+    #[test]
+    #[ignore = "manual P2-7 ocean basin verification"]
+    fn p2_7_ocean_basin_stats() {
+        use genesis_core::parameters::WorldParameters;
+
+        let mut params = WorldParameters::default();
+        params.core.grid.subdivision_level = 7;
+
+        let mut world = create_world(params).expect("world");
+        let mut tectonics = TectonicsState::new();
+        let mut climate = ClimateState::new();
+        generate_full_history(
+            &mut world,
+            &mut tectonics,
+            &mut climate,
+            WorldYear(1_000_000_000),
+            |_| {},
+        )
+        .expect("history");
+
+        let basins = &climate.ocean_basins.basins;
+        let count = basins.len();
+
+        eprintln!("=== ocean basins at 1B years (subdiv=7) ===");
+        eprintln!("total_basin_count: {count}");
+
+        if let Some(largest) = basins.first() {
+            let lat_span_deg = (largest.lat_max_rad - largest.lat_min_rad).to_degrees();
+            eprintln!("largest_basin_hex_count: {}", largest.hex_count);
+            eprintln!("largest_basin_lat_span_deg: {lat_span_deg}");
+        }
+        if let Some(smallest) = basins.last() {
+            eprintln!("smallest_basin_hex_count: {}", smallest.hex_count);
+        }
+        if basins.len() >= 5 {
+            eprintln!("fifth_largest_hex_count: {}", basins[4].hex_count);
+        }
+
+        assert!(count > 0, "expected at least one ocean basin");
+        assert!(basins.first().is_some_and(|b| b.hex_count > 0));
+        assert!(
+            basins[0].hex_count >= basins.last().map(|b| b.hex_count).unwrap_or(0),
+            "basins should be sorted largest-first"
+        );
+    }
+
     #[test]
     fn empty_climate_layer_does_not_change_tectonic_world_at_1m() {
         let mut params = WorldParameters::default();

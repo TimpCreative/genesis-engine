@@ -6,6 +6,7 @@
 use std::collections::BTreeMap;
 
 use genesis_core::HexId;
+use genesis_core::data::BasinId;
 use genesis_core::events::Event;
 use genesis_core::parameters::WorldParameters;
 
@@ -158,6 +159,28 @@ impl CirculationCells {
     }
 }
 
+/// Metadata for a single ocean basin (Doc 07 §8.1).
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct OceanBasin {
+    /// Unique identifier within the world's basin set.
+    pub id: BasinId,
+    /// Hex closest to the basin's geographic centroid (used by P2-8 for gyre seed).
+    pub centroid_hex: HexId,
+    /// Number of hexes in this basin.
+    pub hex_count: u32,
+    /// Minimum (southernmost) latitude in radians.
+    pub lat_min_rad: f64,
+    /// Maximum (northernmost) latitude in radians.
+    pub lat_max_rad: f64,
+}
+
+/// Set of ocean basins on the planet. Recomputed each climate tick.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct OceanBasins {
+    /// All identified basins, sorted by descending hex_count (largest = `BasinId(0)`).
+    pub basins: Vec<OceanBasin>,
+}
+
 /// Glaciation state (Doc 07 §12.2).
 #[derive(Copy, Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub enum GlaciationState {
@@ -193,6 +216,8 @@ pub struct ClimateState {
     pub circulation_cells: CirculationCells,
     /// True after the one-time circulation diagnostic has been logged to stderr.
     pub circulation_logged_once: bool,
+    /// Ocean basin configuration. Recomputed each climate tick.
+    pub ocean_basins: OceanBasins,
 }
 
 impl Default for ClimateState {
@@ -209,6 +234,7 @@ impl Default for ClimateState {
             last_cooling_milestone_temp_c: f32::INFINITY,
             circulation_cells: CirculationCells::default(),
             circulation_logged_once: false,
+            ocean_basins: OceanBasins::default(),
         }
     }
 }
