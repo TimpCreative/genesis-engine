@@ -78,4 +78,15 @@ pub enum EventKind {
     },
     /// Global sea level adjustment (Doc 06 §4.6).
     SeaLevelChange { delta_m: f32, new_sea_level_m: f32 },
+    /// Surface temperature crossed a cooling threshold during Formation (Doc 07 §15).
+    PlanetaryCoolingMilestone { surface_temp_c: f32 },
+    /// Condensation sub-phase began; oceans start forming (Doc 07 §15).
+    OceansBeginForming { sea_level_m: f32 },
+    /// Condensation ended; stabilization sub-phase began (Doc 07 §15).
+    OceansStabilized { sea_level_m: f32 },
+    /// Formation sequence complete (Doc 07 §15).
+    FormationComplete {
+        final_temperature_c: f32,
+        final_co2_ppm: f32,
+    },
 }

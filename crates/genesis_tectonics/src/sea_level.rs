@@ -60,6 +60,14 @@ pub fn update_sea_level(
     event_granularity: Significance,
     branch_id: BranchId,
 ) {
+    // Climate layer owns sea level during Formation period (Doc 07 §3.5).
+    const FORMATION_END_YEAR: i64 = 500_000_000;
+    if !data.parameters.core.climate.skip_planetary_formation
+        && tick_year.value() <= FORMATION_END_YEAR
+    {
+        return;
+    }
+
     let current_div_km = total_divergent_boundary_length_km(data, boundaries);
 
     if state.baseline_divergent_length_km.is_none() {
@@ -141,12 +149,13 @@ mod tests {
         );
 
         let before = world.data.sea_level_m;
+        // Post-formation year: climate owns sea level during 0–500M (Doc 07 §3.5).
         update_sea_level(
             &mut world.data,
             &boundaries,
             &mut state,
             &world.rng,
-            genesis_core::time::WorldYear(500_000),
+            genesis_core::time::WorldYear(600_000_000),
             false,
             Significance::Trace,
             genesis_core::branches::BranchId::ROOT,
@@ -168,7 +177,7 @@ mod tests {
                 &boundaries,
                 &mut state,
                 &world.rng,
-                genesis_core::time::WorldYear(tick * 500_000),
+                genesis_core::time::WorldYear(600_000_000 + tick * 500_000),
                 false,
                 Significance::Trace,
                 genesis_core::branches::BranchId::ROOT,

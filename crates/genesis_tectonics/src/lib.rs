@@ -468,16 +468,22 @@ mod integration_tests {
     }
 
     #[test]
-    fn sea_level_bounded_at_one_million_years() {
+    fn sea_level_bounded_after_formation() {
+        // Tectonic sea-level drift is suppressed during 0–500M (climate owns it).
         let mut world = test_world();
         world.data.parameters.core.geology.event_granularity = Significance::Trace;
         let mut state = TectonicsState::new();
-        generate_full_history_with_tectonics(&mut world, &mut state, WorldYear(1_000_000), |_| {})
-            .expect("history");
+        generate_full_history_with_tectonics(
+            &mut world,
+            &mut state,
+            WorldYear(600_000_000),
+            |_| {},
+        )
+        .expect("history");
 
         assert!(
             world.data.sea_level_m.abs() <= 200.0,
-            "sea level should stay within ±200 m (got {})",
+            "post-formation tectonic sea level should stay within ±200 m (got {})",
             world.data.sea_level_m
         );
 

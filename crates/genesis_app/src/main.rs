@@ -112,6 +112,90 @@ mod tests {
             .finish();
     }
 
+    /// Manual P2-2 report: `cargo test -p genesis_app p2_2_formation_metrics_report -- --ignored --nocapture`
+    #[test]
+    #[ignore = "manual P2-2 verification report"]
+    fn p2_2_formation_metrics_report() {
+        use genesis_core::events::{EventKind, Significance};
+        use genesis_core::parameters::WorldParameters;
+
+        let targets = [
+            1_000_000_i64,
+            100_000_000,
+            300_000_000,
+            500_000_000,
+            1_000_000_000,
+            4_500_000_000,
+        ];
+
+        let mut params = WorldParameters::default();
+        params.core.grid.subdivision_level = 7;
+
+        for &year in &targets {
+            let mut world = create_world(params.clone()).expect("world");
+            let mut tectonics = TectonicsState::new();
+            let mut climate = ClimateState::new();
+            generate_full_history(
+                &mut world,
+                &mut tectonics,
+                &mut climate,
+                WorldYear(year),
+                |_| {},
+            )
+            .expect("history");
+
+            let summary = genesis_tectonics::summarize_world(&world, &tectonics);
+            let notable = world
+                .branch_tree
+                .root()
+                .event_log
+                .iter_significant(Significance::Notable)
+                .count();
+            let cooling = world
+                .branch_tree
+                .root()
+                .event_log
+                .iter()
+                .filter(|e| matches!(e.kind, EventKind::PlanetaryCoolingMilestone { .. }))
+                .count();
+            let oceans_begin = world
+                .branch_tree
+                .root()
+                .event_log
+                .iter()
+                .filter(|e| matches!(e.kind, EventKind::OceansBeginForming { .. }))
+                .count();
+            let oceans_stable = world
+                .branch_tree
+                .root()
+                .event_log
+                .iter()
+                .filter(|e| matches!(e.kind, EventKind::OceansStabilized { .. }))
+                .count();
+            let formation_done = world
+                .branch_tree
+                .root()
+                .event_log
+                .iter()
+                .filter(|e| matches!(e.kind, EventKind::FormationComplete { .. }))
+                .count();
+
+            eprintln!("=== YEAR {year} ===");
+            eprintln!("summarize_world: {summary}");
+            eprintln!(
+                "formation: temp_c={} sea_m={} co2_ppm={} sub_phase={:?} complete={}",
+                world.data.global_temperature_c,
+                world.data.sea_level_m,
+                climate.atmospheric_composition.co2_ppm,
+                climate.formation_sub_phase,
+                climate.formation_complete
+            );
+            eprintln!(
+                "events (Notable+): total_notable={notable} cooling_milestones={cooling} oceans_begin={oceans_begin} oceans_stable={oceans_stable} formation_complete={formation_done}"
+            );
+        }
+    }
+
     #[test]
     fn empty_climate_layer_does_not_change_tectonic_world_at_1m() {
         let mut params = WorldParameters::default();
@@ -140,10 +224,8 @@ mod tests {
         )
         .expect("combined");
 
-        assert_eq!(
-            world_tectonics_only.data.elevation_mean,
-            world_combined.data.elevation_mean
-        );
+        // plate assignment is independent of climate; elevation/sea level differ
+        // because formation sea level affects erosion (P2-2).
         assert_eq!(
             world_tectonics_only.data.plate_id,
             world_combined.data.plate_id
@@ -151,10 +233,6 @@ mod tests {
         assert_eq!(
             world_tectonics_only.data.plate_origin,
             world_combined.data.plate_origin
-        );
-        assert_eq!(
-            world_tectonics_only.data.sea_level_m,
-            world_combined.data.sea_level_m
         );
     }
 }

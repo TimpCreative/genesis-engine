@@ -1,10 +1,12 @@
 //! Full-world history generation with tectonics and climate layers.
 
-use genesis_climate::{ClimateLayer, ClimateState};
+use genesis_climate::{ClimateLayer, ClimateState, flush_events_to_branch as flush_climate_events};
 use genesis_core::World;
 use genesis_core::lifecycle::{GenerationError, GenerationProgress, advance_with_coordinator};
 use genesis_core::time::{TickCoordinator, WorldYear};
-use genesis_tectonics::{TectonicsLayer, TectonicsState, flush_events_to_branch};
+use genesis_tectonics::{
+    TectonicsLayer, TectonicsState, flush_events_to_branch as flush_tectonic_events,
+};
 
 /// Advances simulation to `target_year` with tectonics and climate registered on the coordinator.
 ///
@@ -45,7 +47,8 @@ pub fn generate_full_history(
 
     *tectonics = TectonicsLayer::detach_state(tectonics_shared);
     *climate = ClimateLayer::detach_state(climate_shared);
-    flush_events_to_branch(world, tectonics);
+    flush_tectonic_events(world, tectonics);
+    flush_climate_events(world, climate);
 
     progress(GenerationProgress {
         current_year: world.data.current_year,

@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 
 use genesis_core::HexId;
 use genesis_core::events::Event;
+use genesis_core::parameters::WorldParameters;
 
 /// Per-hex climate regime label (Doc 07 §10).
 ///
@@ -34,8 +35,6 @@ impl Default for ClimateRegime {
 }
 
 /// Global atmospheric composition (Doc 07 §3.4, §11).
-///
-/// Placeholder for P2-1. Filled out in P2-2 (formation) and P2-13 (drift).
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct AtmosphericComposition {
     pub co2_ppm: f32,
@@ -46,8 +45,7 @@ pub struct AtmosphericComposition {
 
 impl Default for AtmosphericComposition {
     fn default() -> Self {
-        // Earth pre-industrial baseline, used as Phase 1-compatible default
-        // until P2-2 implements Formation properly.
+        // Earth pre-industrial baseline; overwritten on first formation tick.
         Self {
             co2_ppm: 280.0,
             water_vapor_index: 0.4,
@@ -55,6 +53,65 @@ impl Default for AtmosphericComposition {
             greenhouse_forcing: 0.0,
         }
     }
+}
+
+/// Planetary formation sub-phase (Doc 07 §3.2).
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum FormationSubPhase {
+    /// Pre-formation initial state. Surface molten, atmosphere is dense steam.
+    #[default]
+    Molten,
+    /// Surface cooling toward 100°C threshold.
+    Cooling,
+    /// Water vapor condensing; oceans forming.
+    Condensation,
+    /// Approaching modern equilibrium; final settling.
+    Stabilization,
+    /// Formation complete; Geological era can begin.
+    Complete,
+}
+
+/// Year boundaries between formation sub-phases (Doc 07 §3.2).
+/// All values in years since world start.
+pub const MOLTEN_END_YEAR: i64 = 50_000_000;
+pub const COOLING_END_YEAR: i64 = 200_000_000;
+pub const CONDENSATION_END_YEAR: i64 = 350_000_000;
+pub const STABILIZATION_END_YEAR: i64 = 500_000_000;
+
+/// Initial molten surface temperature in °C (Doc 07 §3.3).
+pub const T_INITIAL_MOLTEN_C: f32 = 2000.0;
+
+/// Equilibrium target temperature in °C after Formation completes (Doc 07 §3.3).
+pub const T_EQUILIBRIUM_C: f32 = 15.0;
+
+/// Cooling time constant in years (Doc 07 §3.3). Tuned so most cooling
+/// occurs over ~500M years.
+pub const COOLING_TAU_YEARS: f64 = 80_000_000.0;
+
+impl FormationSubPhase {
+    /// Returns the sub-phase appropriate for the given year, assuming the
+    /// default Formation timeline. Used at world reload to reconstruct state.
+    pub fn for_year(year_value: i64) -> Self {
+        if year_value < MOLTEN_END_YEAR {
+            Self::Molten
+        } else if year_value < COOLING_END_YEAR {
+            Self::Cooling
+        } else if year_value < CONDENSATION_END_YEAR {
+            Self::Condensation
+        } else if year_value < STABILIZATION_END_YEAR {
+            Self::Stabilization
+        } else {
+            Self::Complete
+        }
+    }
+}
+
+/// Returns true when the climate formation period is active (Doc 07 §3).
+///
+/// Inclusive of `STABILIZATION_END_YEAR` so the coordinator schedules a final
+/// formation tick at year 500M.
+pub fn formation_period_active(year: i64, params: &WorldParameters) -> bool {
+    !params.core.climate.skip_planetary_formation && year <= STABILIZATION_END_YEAR
 }
 
 /// Glaciation state (Doc 07 §12.2).
@@ -67,7 +124,7 @@ pub enum GlaciationState {
 }
 
 /// State held by [`ClimateLayer`](crate::layer::ClimateLayer) across ticks.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct ClimateState {
     /// Events queued for emission this tick (cleared on flush).
     pub pending_events: Vec<Event>,
@@ -81,6 +138,29 @@ pub struct ClimateState {
     pub glaciation: GlaciationState,
     /// Previous regime per hex for regime-shift event emission (P2-12+).
     pub previous_regime: BTreeMap<HexId, ClimateRegime>,
+    /// Current formation sub-phase (Doc 07 §3.2).
+    pub formation_sub_phase: FormationSubPhase,
+    /// True once Formation is complete and Geological era can begin.
+    pub formation_complete: bool,
+    /// Last temperature at which a cooling milestone was emitted.
+    /// `INFINITY` until first tick (no emissions before then).
+    pub last_cooling_milestone_temp_c: f32,
+}
+
+impl Default for ClimateState {
+    fn default() -> Self {
+        Self {
+            pending_events: Vec::new(),
+            next_event_id: 0,
+            atmospheric_composition: AtmosphericComposition::default(),
+            cumulative_orbital_phase_rad: 0.0,
+            glaciation: GlaciationState::default(),
+            previous_regime: BTreeMap::new(),
+            formation_sub_phase: FormationSubPhase::Molten,
+            formation_complete: false,
+            last_cooling_milestone_temp_c: f32::INFINITY,
+        }
+    }
 }
 
 impl ClimateState {
