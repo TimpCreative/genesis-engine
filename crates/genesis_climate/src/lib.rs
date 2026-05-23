@@ -1,13 +1,16 @@
-pub fn hello() -> &'static str {
-    "genesis_climate"
-}
+//! Climate simulation layer for Genesis Engine.
+//!
+//! Implements Doc 07. Phase 2 builds out the layer in stages:
+//! formation sequence, temperature, circulation, ocean currents,
+//! precipitation, regimes, atmospheric composition, variability,
+//! and climate-tectonics feedback.
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+pub mod layer;
+pub mod state;
 
-    #[test]
-    fn hello_returns_crate_name() {
-        assert_eq!(hello(), "genesis_climate");
-    }
-}
+pub use layer::{
+    ClimateLayer, DEFAULT_ANCIENT_CLIMATE_TICK_YEARS, DEFAULT_FORMATION_CLIMATE_TICK_YEARS,
+    DEFAULT_GEOLOGICAL_CLIMATE_TICK_YEARS, DEFAULT_PREHISTORIC_CLIMATE_TICK_YEARS,
+    DEFAULT_RECENT_CLIMATE_TICK_YEARS,
+};
+pub use state::{AtmosphericComposition, ClimateRegime, ClimateState, GlaciationState};

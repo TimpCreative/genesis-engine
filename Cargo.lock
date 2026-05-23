@@ -2549,6 +2549,7 @@ name = "genesis_app"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "genesis_climate",
  "genesis_core",
  "genesis_render",
  "genesis_tectonics",
@@ -2565,6 +2566,11 @@ version = "0.1.0"
 [[package]]
 name = "genesis_climate"
 version = "0.1.0"
+dependencies = [
+ "genesis_core",
+ "serde",
+ "tracing",
+]
 
 [[package]]
 name = "genesis_core"

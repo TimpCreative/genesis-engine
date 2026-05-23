@@ -5,10 +5,15 @@
 //     GENESIS_TARGET_YEAR=10000000 cargo run -p genesis_app   # 10M years
 //     GENESIS_TARGET_YEAR=100000000 cargo run -p genesis_app  # 100M years
 
+mod history;
+
 use bevy::prelude::*;
+use genesis_climate::ClimateState;
 use genesis_core::{WorldParameters, WorldYear, create_world};
 use genesis_render::{GenesisRenderPlugin, WorldResource};
-use genesis_tectonics::{TectonicsState, generate_full_history_with_tectonics};
+use genesis_tectonics::TectonicsState;
+
+use crate::history::generate_full_history;
 
 fn target_year_from_env() -> WorldYear {
     const DEFAULT_TARGET_YEAR: i64 = 1_000_000;
@@ -45,10 +50,17 @@ fn main() {
 
     let mut world = create_world(parameters).expect("default world creates successfully");
     let mut tectonics = TectonicsState::new();
+    let mut climate = ClimateState::new();
 
     let target_year = target_year_from_env();
-    generate_full_history_with_tectonics(&mut world, &mut tectonics, target_year, |_| {})
-        .expect("tectonic formation and geological ticks");
+    generate_full_history(
+        &mut world,
+        &mut tectonics,
+        &mut climate,
+        target_year,
+        |_| {},
+    )
+    .expect("tectonic and climate history generation");
 
     let summary = genesis_tectonics::summarize_world(&world, &tectonics);
     info!(
@@ -84,7 +96,13 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use bevy::prelude::*;
+    use genesis_climate::ClimateState;
+    use genesis_core::parameters::{WorldParameters, WorldSeed};
+    use genesis_core::{WorldYear, create_world};
     use genesis_render::GenesisRenderPlugin;
+    use genesis_tectonics::{TectonicsState, generate_full_history_with_tectonics};
+
+    use crate::history::generate_full_history;
 
     #[test]
     fn app_plugins_build_without_panicking() {
@@ -92,5 +110,51 @@ mod tests {
             .add_plugins(MinimalPlugins)
             .add_plugins(GenesisRenderPlugin)
             .finish();
+    }
+
+    #[test]
+    fn empty_climate_layer_does_not_change_tectonic_world_at_1m() {
+        let mut params = WorldParameters::default();
+        params.core.seed = WorldSeed::from_integer(42);
+        params.core.grid.subdivision_level = 5;
+
+        let mut world_tectonics_only = create_world(params.clone()).expect("world");
+        let mut world_combined = create_world(params).expect("world");
+        let mut tectonics_only = TectonicsState::new();
+        let mut tectonics_combined = TectonicsState::new();
+        let mut climate = ClimateState::new();
+
+        generate_full_history_with_tectonics(
+            &mut world_tectonics_only,
+            &mut tectonics_only,
+            WorldYear(1_000_000),
+            |_| {},
+        )
+        .expect("tectonics only");
+        generate_full_history(
+            &mut world_combined,
+            &mut tectonics_combined,
+            &mut climate,
+            WorldYear(1_000_000),
+            |_| {},
+        )
+        .expect("combined");
+
+        assert_eq!(
+            world_tectonics_only.data.elevation_mean,
+            world_combined.data.elevation_mean
+        );
+        assert_eq!(
+            world_tectonics_only.data.plate_id,
+            world_combined.data.plate_id
+        );
+        assert_eq!(
+            world_tectonics_only.data.plate_origin,
+            world_combined.data.plate_origin
+        );
+        assert_eq!(
+            world_tectonics_only.data.sea_level_m,
+            world_combined.data.sea_level_m
+        );
     }
 }

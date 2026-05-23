@@ -106,6 +106,17 @@ impl WorldParameters {
             self.core.climate_initial.greenhouse_intensity,
             "climate_initial.greenhouse_intensity",
         )?;
+        let ecc = self.core.climate.orbital_eccentricity;
+        if !ecc.is_finite() || !(0.0..1.0).contains(&ecc) {
+            return Err(ParameterValidationError::InvalidField {
+                field: "climate.orbital_eccentricity".into(),
+                message: "must be finite and in 0.0..1.0".into(),
+            });
+        }
+        validate_scale(
+            self.core.climate.climate_chaos_intensity,
+            "climate.climate_chaos_intensity",
+        )?;
 
         let frac = self.core.geology.initial_continental_fraction;
         if !frac.is_finite() || !(0.0..=1.0).contains(&frac) {

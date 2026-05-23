@@ -144,6 +144,30 @@ pub struct GeologyParameters {
     pub base_erosion_rate_per_year: f64,
 }
 
+/// Climate simulation parameters (Doc 07).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ClimateParameters {
+    /// Significance threshold for climate event emission.
+    pub event_granularity: Significance,
+    /// Whether to skip Formation era (start at stable planet for fast worldbuilding).
+    pub skip_planetary_formation: bool,
+    /// Orbital eccentricity (Doc 07 §14.1). 0.0 = circular. Default 0.0.
+    pub orbital_eccentricity: f32,
+    /// Climate chaos intensity (Doc 07 §14.2). 0.0 = off. Default 0.0.
+    pub climate_chaos_intensity: f32,
+}
+
+impl Default for ClimateParameters {
+    fn default() -> Self {
+        Self {
+            event_granularity: Significance::Notable,
+            skip_planetary_formation: false,
+            orbital_eccentricity: 0.0,
+            climate_chaos_intensity: 0.0,
+        }
+    }
+}
+
 /// Initial climate boundary conditions.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ClimateInitialParameters {
@@ -191,6 +215,7 @@ pub struct CoreParameters {
     pub time: TimeParameters,
     pub geology: GeologyParameters,
     pub climate_initial: ClimateInitialParameters,
+    pub climate: ClimateParameters,
     pub biology: BiologyParameters,
     pub civilization: CivilizationParameters,
 }

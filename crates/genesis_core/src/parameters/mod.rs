@@ -6,9 +6,9 @@ mod serialization;
 mod validation;
 
 pub use core::{
-    BiologyParameters, CivilizationParameters, ClimateInitialParameters, CoreParameters,
-    GeologyParameters, GridParameters, ModEntry, ModManifest, PlanetParameters, TimeParameters,
-    WorldSeed,
+    BiologyParameters, CivilizationParameters, ClimateInitialParameters, ClimateParameters,
+    CoreParameters, GeologyParameters, GridParameters, ModEntry, ModManifest, PlanetParameters,
+    TimeParameters, WorldSeed,
 };
 pub use extensions::{ParameterExtensions, ParameterValue, ParameterValueData};
 pub use validation::ParameterValidationError;
@@ -74,6 +74,7 @@ impl Default for WorldParameters {
                     surface_pressure_hpa: 1013.25,
                     greenhouse_intensity: 1.0,
                 },
+                climate: ClimateParameters::default(),
                 biology: BiologyParameters {
                     life_emergence_year: WorldYear(500_000_000),
                     mutation_rate_scale: 1.0,

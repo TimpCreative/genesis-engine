@@ -4,10 +4,13 @@
 //! plus the [`HexGrid`](crate::HexGrid) they align with. Simulation modules (Phase 1+)
 //! populate these arrays; Phase 0 initializes them to deterministic defaults.
 
+pub mod climate_placeholder;
+
 mod enums;
 mod ids;
 
 pub use crate::grid::Direction;
+pub use climate_placeholder::ClimateRegimePlaceholder;
 pub use enums::BedrockType;
 pub use ids::{BiomeId, HotSpotId, NationId, PlateId, SettlementId, SpeciesId};
 
@@ -90,6 +93,18 @@ pub struct WorldData {
     /// Soil fertility from 0.0 to 1.0.
     pub soil_fertility: Vec<f32>,
 
+    // ---- Climate Layer (populated by genesis_climate; Phase 2) ----
+    /// Per-hex prevailing wind direction in radians (0 = north, π/2 = east).
+    pub wind_direction_rad: Vec<f32>,
+    /// Per-hex prevailing wind speed in m/s.
+    pub wind_speed_m_s: Vec<f32>,
+    /// Per-hex ocean surface current vector (east, north) in m/s. Land hexes are (0, 0).
+    pub ocean_current_vec: Vec<[f32; 2]>,
+    /// Per-hex distance to nearest ocean hex in km. `f32::INFINITY` if no ocean exists.
+    pub distance_to_ocean_km: Vec<f32>,
+    /// Per-hex climate regime label (Köppen-like). Unset until P2-12.
+    pub climate_regime: Vec<ClimateRegimePlaceholder>,
+
     // ---- Global Physical State ----
     /// Global sea level in meters relative to baseline.
     pub sea_level_m: f32,
@@ -137,6 +152,11 @@ impl WorldData {
             flow_direction: vec![None; n],
             flow_volume: vec![0.0; n],
             soil_fertility: vec![0.0; n],
+            wind_direction_rad: vec![0.0; n],
+            wind_speed_m_s: vec![0.0; n],
+            ocean_current_vec: vec![[0.0, 0.0]; n],
+            distance_to_ocean_km: vec![f32::INFINITY; n],
+            climate_regime: vec![ClimateRegimePlaceholder::Unset; n],
             sea_level_m: 0.0,
             global_temperature_c: 15.0,
             biome: vec![BiomeId::NONE; n],
@@ -212,6 +232,11 @@ mod tests {
         assert_eq!(world.flow_direction.len(), n);
         assert_eq!(world.flow_volume.len(), n);
         assert_eq!(world.soil_fertility.len(), n);
+        assert_eq!(world.wind_direction_rad.len(), n);
+        assert_eq!(world.wind_speed_m_s.len(), n);
+        assert_eq!(world.ocean_current_vec.len(), n);
+        assert_eq!(world.distance_to_ocean_km.len(), n);
+        assert_eq!(world.climate_regime.len(), n);
         assert_eq!(world.biome.len(), n);
         assert_eq!(world.biomass.len(), n);
         assert_eq!(world.fertility.len(), n);
@@ -239,6 +264,21 @@ mod tests {
         assert!(world.settlement_id.iter().all(|s| s.is_none()));
         assert!(world.nation_id.iter().all(|n| n.is_none()));
         assert!(world.fertility.iter().all(|&f| f == 0.0));
+        assert!(world.wind_direction_rad.iter().all(|&v| v == 0.0));
+        assert!(world.wind_speed_m_s.iter().all(|&v| v == 0.0));
+        assert!(world.ocean_current_vec.iter().all(|&v| v == [0.0, 0.0]));
+        assert!(
+            world
+                .distance_to_ocean_km
+                .iter()
+                .all(|&d| d == f32::INFINITY)
+        );
+        assert!(
+            world
+                .climate_regime
+                .iter()
+                .all(|&r| r == ClimateRegimePlaceholder::Unset)
+        );
     }
 
     #[test]
