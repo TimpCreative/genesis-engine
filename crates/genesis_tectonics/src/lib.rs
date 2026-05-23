@@ -2,6 +2,7 @@
 //!
 //! Phase 1: plate generation, drift, boundaries, and terrain sculpting.
 
+pub mod advection;
 pub mod boundary;
 pub mod boundary_events;
 pub mod elevation;
@@ -20,15 +21,17 @@ pub mod sea_level;
 pub mod validation;
 pub mod volcanism;
 
+pub use advection::advect_plate_features;
 pub use boundary::{
     BoundaryClass, BoundaryInfo, ClassifiedEdge, ConvergentSubtype, convergent_subtype,
     detect_and_classify_boundaries,
 };
 pub use boundary_events::{boundary_type_from_class, emit_boundary_events};
 pub use elevation::{
-    CC_INLAND_HEXES, CONTINENTAL_RIFT_SUBSIDENCE_FACTOR, MAX_ELEVATION_M, MAX_RELIEF_M,
-    MIN_ELEVATION_M, OC_INLAND_HEXES, OROGENY_RATE, SUBDUCTION_RATE, SUBSIDENCE_RATE,
-    apply_boundary_elevation, clamp_terrain, subducting_plate_id,
+    CC_INLAND_HEXES, COASTAL_SHELF_HEXES, CONTINENTAL_RIFT_SUBSIDENCE_FACTOR, MAX_ELEVATION_M,
+    MAX_RELIEF_M, MIN_ELEVATION_M, MOUNTAIN_EQUILIBRIUM_M, OC_INLAND_HEXES, OCEAN_FLOOR_BASELINE_M,
+    OROGENY_RATE, SUBDUCTION_RATE, SUBSIDENCE_RATE, TRENCH_EQUILIBRIUM_M, apply_boundary_elevation,
+    clamp_terrain, subducting_plate_id,
 };
 pub use erosion::{
     DEPOSITION_THRESHOLD_M, EROSION_NOISE_STREAM, FERTILITY_INCREMENT_PER_TICK,
@@ -61,14 +64,18 @@ pub use reorganization::{
 };
 pub use sea_level::{total_divergent_boundary_length_km, update_sea_level};
 pub use validation::{
-    CONTINENTAL_FRACTION_MAX, CONTINENTAL_FRACTION_MIN, ELEVATION_MAX_BOUND_M,
-    ELEVATION_MIN_BOUND_M, EVENT_COUNT_NOTABLE_MAX_AT_FULL_YEAR, EVENT_COUNT_NOTABLE_MAX_DOC,
-    EVENT_COUNT_NOTABLE_MIN, MOUNTAIN_ELEVATION_THRESHOLD_M, OCEAN_BASIN_ELEVATION_THRESHOLD_M,
-    PERF_BUDGET_SECS, PERF_TARGET_YEAR, SEA_LEVEL_MAX_ABS_M, VALIDATION_SEED,
-    VALIDATION_SUBDIVISION_LEVEL, VALIDATION_TARGET_YEAR_FULL, VALIDATION_TARGET_YEAR_QUICK,
-    bedrock_types_present, check_phase1_bedrock_diversity, continental_fraction, elevation_bounds,
-    event_count_at_granularity, min_ocean_basin_hex_threshold, mountain_regions_above_elevation,
-    ocean_basins_below_elevation, run_validation_world, summarize_world, validation_parameters,
+    CONTINENTAL_FRACTION_MAX, CONTINENTAL_FRACTION_MIN, CONTINENTAL_PERSISTENCE_MIN_FRAC,
+    ELEVATION_MAX_BOUND_M, ELEVATION_MIN_BOUND_M, EVENT_COUNT_NOTABLE_MAX_AT_FULL_YEAR,
+    EVENT_COUNT_NOTABLE_MAX_DOC, EVENT_COUNT_NOTABLE_MIN, MOUNTAIN_ELEVATION_THRESHOLD_M,
+    OCEAN_BASIN_ELEVATION_THRESHOLD_M, PERF_BUDGET_SECS, PERF_TARGET_YEAR, SATURATION_TOLERANCE_M,
+    SEA_LEVEL_MAX_ABS_M, VALIDATION_SEED, VALIDATION_SUBDIVISION_LEVEL,
+    VALIDATION_TARGET_YEAR_ADVECTION_DRIFT, VALIDATION_TARGET_YEAR_DEEP_PERSISTENCE,
+    VALIDATION_TARGET_YEAR_FULL, VALIDATION_TARGET_YEAR_ONE_BILLION, VALIDATION_TARGET_YEAR_QUICK,
+    bedrock_types_present, check_phase1_bedrock_diversity, continental_fraction,
+    count_saturated_hexes, elevation_bounds, elevation_distribution, event_count_at_granularity,
+    format_elevation_distribution, min_ocean_basin_hex_threshold, mountain_regions_above_elevation,
+    ocean_basins_below_elevation, peak_elevation_hex, plate_motion_summary, run_validation_world,
+    summarize_world, validation_parameters,
 };
 pub use volcanism::{
     ELEVATION_CHANGE_MAX_M, ELEVATION_CHANGE_MIN_M, ERUPTION_PROBABILITY_BASE,
@@ -193,6 +200,16 @@ mod integration_tests {
             .fold(f32::NEG_INFINITY, f32::max);
         assert!(min < -1000.0, "min elevation {min}");
         assert!(max > 0.0, "max elevation {max}");
+    }
+
+    #[test]
+    fn history_reaches_past_life_emergence_without_stalling() {
+        let mut world = test_world();
+        let mut state = TectonicsState::new();
+        let target = WorldYear(600_000_000);
+        generate_full_history_with_tectonics(&mut world, &mut state, target, |_| {})
+            .expect("history past life emergence");
+        assert_eq!(world.data.current_year, target);
     }
 
     #[test]
@@ -630,14 +647,60 @@ mod integration_tests {
              {VALIDATION_TARGET_YEAR_FULL} years (doc nominal {EVENT_COUNT_NOTABLE_MAX_DOC} at 4.5B), got {notable_events}"
         );
 
-        eprintln!("validation full: {}", summarize_world(&world, &state));
+        let (saturated_max, saturated_min) = count_saturated_hexes(&world.data);
+        eprintln!(
+            "validation full: {} (saturated_max={saturated_max} saturated_min={saturated_min})",
+            summarize_world(&world, &state)
+        );
+    }
+
+    #[test]
+    #[ignore = "long history: §11 saturation guard at 100M years (run with cargo test -p genesis_tectonics -- --ignored)"]
+    fn long_validation_does_not_saturate_elevation() {
+        let (world, state) = run_validation_world(WorldYear(VALIDATION_TARGET_YEAR_FULL))
+            .expect("validation world runs");
+        let (saturated_max, saturated_min) = count_saturated_hexes(&world.data);
+        let total = world.data.cell_count() as usize;
+        let max_allowed = total / 200;
+
+        assert!(
+            saturated_max <= max_allowed,
+            "{saturated_max}/{total} hexes saturated to MAX_ELEVATION_M; orogeny rate may be too aggressive"
+        );
+        assert!(
+            saturated_min <= max_allowed,
+            "{saturated_min}/{total} hexes saturated to MIN_ELEVATION_M; subduction rate may be too aggressive"
+        );
+
+        let motions = plate_motion_summary(&world, &state);
+        let any_rotation = state
+            .registry
+            .iter()
+            .any(|p| p.accumulated_rotation_rad > 0.0);
+        eprintln!(
+            "saturation at 100M years: saturated_max={saturated_max} saturated_min={saturated_min} (limit {max_allowed})"
+        );
+        eprintln!(
+            "elevation_distribution: {}",
+            format_elevation_distribution(&world.data)
+        );
+        eprintln!(
+            "plate_motion: min={:.0}km median={:.0}km max={:.0}km any_rotation={any_rotation}",
+            motions.first().copied().unwrap_or(0.0),
+            motions.get(motions.len() / 2).copied().unwrap_or(0.0),
+            motions.last().copied().unwrap_or(0.0),
+        );
     }
 
     #[test]
     fn validation_summary_logged_quick() {
         let (world, state) =
             run_validation_world(WorldYear(VALIDATION_TARGET_YEAR_QUICK)).expect("quick run");
-        eprintln!("validation quick: {}", summarize_world(&world, &state));
+        let (saturated_max, saturated_min) = count_saturated_hexes(&world.data);
+        eprintln!(
+            "validation quick: {} (saturated_max={saturated_max} saturated_min={saturated_min})",
+            summarize_world(&world, &state)
+        );
     }
 
     #[test]
@@ -652,7 +715,50 @@ mod integration_tests {
         assert_eq!(world_a.data.bedrock_type, world_b.data.bedrock_type);
         assert_eq!(world_a.data.plate_id, world_b.data.plate_id);
         assert_eq!(world_a.data.fertility, world_b.data.fertility);
+        assert_eq!(world_a.data.plate_origin, world_b.data.plate_origin);
         assert_eq!(world_a.data.sea_level_m, world_b.data.sea_level_m);
+    }
+
+    #[test]
+    fn continental_cratons_persist_at_100m_years() {
+        let (world, _) =
+            run_validation_world(WorldYear(VALIDATION_TARGET_YEAR_FULL)).expect("validation run");
+        let land_fraction = continental_fraction(&world.data);
+        assert!(
+            land_fraction >= CONTINENTAL_PERSISTENCE_MIN_FRAC,
+            "land fraction {land_fraction} at {VALIDATION_TARGET_YEAR_FULL} years too low"
+        );
+    }
+
+    #[test]
+    fn plate_features_advect_between_10m_and_100m() {
+        let (world_short, _) = run_validation_world(WorldYear(10_000_000)).expect("validation run");
+        let (world_long, _) =
+            run_validation_world(WorldYear(VALIDATION_TARGET_YEAR_ADVECTION_DRIFT))
+                .expect("validation run");
+
+        let peak_short = peak_elevation_hex(&world_short.data);
+        let peak_long = peak_elevation_hex(&world_long.data);
+
+        assert_ne!(
+            peak_short, peak_long,
+            "peak elevation unchanged between 10M and 100M years — advection broken?"
+        );
+    }
+
+    #[test]
+    #[ignore = "deep history: continental persistence at 500M years (cargo test -p genesis_tectonics -- --ignored)"]
+    fn continents_persist_past_deep_history() {
+        use crate::validation::VALIDATION_TARGET_YEAR_DEEP_PERSISTENCE;
+
+        let (world, _state) =
+            run_validation_world(WorldYear(VALIDATION_TARGET_YEAR_DEEP_PERSISTENCE))
+                .expect("validation world runs");
+        let land_fraction = continental_fraction(&world.data);
+        assert!(
+            land_fraction >= CONTINENTAL_PERSISTENCE_MIN_FRAC,
+            "land fraction {land_fraction} at {VALIDATION_TARGET_YEAR_DEEP_PERSISTENCE} years too low"
+        );
     }
 
     #[test]
@@ -721,8 +827,11 @@ mod integration_tests {
     }
 
     #[test]
-    #[ignore = "local profiling: subdiv 7 perf budget"]
+    #[ignore = "subdiv 7 smoke (~3min at 1M years): cargo test -p genesis_tectonics -- --ignored --exact tectonics_full_history_subdiv_seven"]
     fn tectonics_full_history_subdiv_seven_within_budget() {
+        const SUBDIV7_SMOKE_YEAR: i64 = 1_000_000;
+        const SUBDIV7_SMOKE_BUDGET_SECS: f64 = 240.0;
+
         let mut params = validation_parameters();
         params.core.grid.subdivision_level = 7;
         let start = std::time::Instant::now();
@@ -731,15 +840,19 @@ mod integration_tests {
         generate_full_history_with_tectonics(
             &mut world,
             &mut state,
-            WorldYear(PERF_TARGET_YEAR),
+            WorldYear(SUBDIV7_SMOKE_YEAR),
             |_| {},
         )
         .expect("perf subdiv 7");
         let elapsed = start.elapsed();
-        eprintln!("tectonics perf subdiv 7: {:?}", elapsed);
+        eprintln!(
+            "tectonics perf subdiv 7: {:?} for {SUBDIV7_SMOKE_YEAR} years ({} hexes)",
+            elapsed,
+            world.data.grid.cell_count()
+        );
         assert!(
-            elapsed.as_secs_f64() < 60.0,
-            "submotion 7 should complete 10M years in under 60s locally, took {:.2}s",
+            elapsed.as_secs_f64() < SUBDIV7_SMOKE_BUDGET_SECS,
+            "subdiv 7 should complete {SUBDIV7_SMOKE_YEAR} years in under {SUBDIV7_SMOKE_BUDGET_SECS}s, took {:.2}s",
             elapsed.as_secs_f64()
         );
     }

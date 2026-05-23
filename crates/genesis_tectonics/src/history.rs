@@ -46,6 +46,12 @@ pub fn generate_full_history_with_tectonics(
     drop(coordinator);
 
     *state = TectonicsLayer::detach_state(shared);
+    eprintln!(
+        "[tectonics] generation complete at year {}: reorg_count={}",
+        world.data.current_year.value(),
+        state.reorg_count
+    );
+    let _ = std::io::Write::flush(&mut std::io::stderr());
     flush_events_to_branch(world, state);
 
     progress(GenerationProgress {

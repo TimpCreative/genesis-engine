@@ -35,6 +35,19 @@ pub fn climate_modifier_phase1(_data: &WorldData, _hex: HexId) -> f64 {
     1.0
 }
 
+/// Erosion rate multiplier per bedrock type. Continental cratons resist erosion;
+/// sedimentary basins erode faster. Oceanic crust is underwater (no surface erosion).
+fn bedrock_erosion_multiplier(bedrock: BedrockType) -> f64 {
+    match bedrock {
+        BedrockType::Igneous => 0.15,
+        BedrockType::Metamorphic => 0.3,
+        BedrockType::Sedimentary => 1.5,
+        BedrockType::Limestone => 1.2,
+        BedrockType::OceanicCrust => 0.0,
+        BedrockType::Unknown => 1.0,
+    }
+}
+
 /// Ensures `TectonicsState::cumulative_deposition_m` matches grid cell count.
 pub fn ensure_deposition_buffer(state: &mut TectonicsState, cell_count: usize) {
     if state.cumulative_deposition_m.len() != cell_count {
@@ -59,14 +72,20 @@ pub fn apply_land_erosion(
         let idx = hex.0 as usize;
         let elev = data.elevation_mean[idx];
         let elev_above = elev - sea;
+        // Submerged hexes do not erode.
         if elev_above <= 0.0 {
             continue;
         }
 
+        let bedrock_mult = bedrock_erosion_multiplier(data.bedrock_type[idx]);
         let climate = climate_modifier_phase1(data, hex);
         let noise = noise_factors.get(&hex).copied().unwrap_or(1.0);
-        let raw =
-            f64::from(elev_above) * base_rate_per_year * climate * tick_interval_years * noise;
+        let raw = f64::from(elev_above)
+            * base_rate_per_year
+            * climate
+            * tick_interval_years
+            * noise
+            * bedrock_mult;
         let amount = raw.min(f64::from(elev_above));
         if amount <= 0.0 {
             continue;
@@ -420,6 +439,31 @@ mod tests {
             return;
         }
         panic!("no tropical hex for test");
+    }
+
+    #[test]
+    fn igneous_erodes_less_than_sedimentary() {
+        let mut world = small_world();
+        let hex = HexId(25);
+        world.data.sea_level_m = 0.0;
+        world.data.elevation_mean[hex.0 as usize] = 2000.0;
+        world.data.bedrock_type[hex.0 as usize] = BedrockType::Igneous;
+
+        let mut world_sed = small_world();
+        world_sed.data.sea_level_m = 0.0;
+        world_sed.data.elevation_mean[hex.0 as usize] = 2000.0;
+        world_sed.data.bedrock_type[hex.0 as usize] = BedrockType::Sedimentary;
+
+        let factors = BTreeMap::from([(hex, 1.0)]);
+        apply_land_erosion(&mut world.data, 500_000.0, 1e-7, &factors);
+        apply_land_erosion(&mut world_sed.data, 500_000.0, 1e-7, &factors);
+
+        let igneous_elev = world.data.elevation_mean[hex.0 as usize];
+        let sedimentary_elev = world_sed.data.elevation_mean[hex.0 as usize];
+        assert!(
+            igneous_elev > sedimentary_elev,
+            "igneous {igneous_elev} should erode less than sedimentary {sedimentary_elev}"
+        );
     }
 
     #[test]

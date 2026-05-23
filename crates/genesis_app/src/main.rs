@@ -1,27 +1,71 @@
+// Environment variables read by the app:
+// - GENESIS_TARGET_YEAR (i64): simulated year to advance to. Default 1_000_000.
+//   Examples:
+//     cargo run -p genesis_app                       # 1M years (default)
+//     GENESIS_TARGET_YEAR=10000000 cargo run -p genesis_app   # 10M years
+//     GENESIS_TARGET_YEAR=100000000 cargo run -p genesis_app  # 100M years
+
 use bevy::prelude::*;
 use genesis_core::{WorldParameters, WorldYear, create_world};
 use genesis_render::{GenesisRenderPlugin, WorldResource};
 use genesis_tectonics::{TectonicsState, generate_full_history_with_tectonics};
 
+fn target_year_from_env() -> WorldYear {
+    const DEFAULT_TARGET_YEAR: i64 = 1_000_000;
+
+    match std::env::var("GENESIS_TARGET_YEAR") {
+        Ok(s) => match s.parse::<i64>() {
+            Ok(year) if year >= 0 => {
+                info!("Using GENESIS_TARGET_YEAR={} from environment", year);
+                WorldYear(year)
+            }
+            Ok(year) => {
+                warn!(
+                    "GENESIS_TARGET_YEAR={} is negative; using default {}",
+                    year, DEFAULT_TARGET_YEAR
+                );
+                WorldYear(DEFAULT_TARGET_YEAR)
+            }
+            Err(e) => {
+                warn!(
+                    "GENESIS_TARGET_YEAR='{}' could not be parsed ({}); using default {}",
+                    s, e, DEFAULT_TARGET_YEAR
+                );
+                WorldYear(DEFAULT_TARGET_YEAR)
+            }
+        },
+        Err(_) => WorldYear(DEFAULT_TARGET_YEAR),
+    }
+}
+
 fn main() {
     let mut parameters = WorldParameters::default();
-    // Level 6 (~7.3k hexes) keeps first-frame mesh build reasonable for the smoke test.
-    parameters.core.grid.subdivision_level = 6;
+    // Level 7 (~21.9k hexes) per Doc 06 §9.1 Phase 1 performance target.
+    parameters.core.grid.subdivision_level = 7;
 
     let mut world = create_world(parameters).expect("default world creates successfully");
     let mut tectonics = TectonicsState::new();
 
-    // Formation at year 0 plus two Geological ticks (500k + 500k) for visible plate motion.
-    generate_full_history_with_tectonics(&mut world, &mut tectonics, WorldYear(1_000_000), |_| {})
+    let target_year = target_year_from_env();
+    generate_full_history_with_tectonics(&mut world, &mut tectonics, target_year, |_| {})
         .expect("tectonic formation and geological ticks");
 
+    let summary = genesis_tectonics::summarize_world(&world, &tectonics);
     info!(
         "Genesis Engine geology smoke test: subdivision level {}, {} hexes, {} plates",
         world.data.grid.subdivision_level(),
         world.data.grid.cell_count(),
         tectonics.registry.count(),
     );
-    info!("{}", genesis_tectonics::summarize_world(&world, &tectonics));
+    info!("{summary}");
+    // Log subscriber is not active until Bevy starts; stderr carries startup diagnostics.
+    eprintln!(
+        "Genesis Engine geology smoke test: subdivision level {}, {} hexes, {} plates",
+        world.data.grid.subdivision_level(),
+        world.data.grid.cell_count(),
+        tectonics.registry.count(),
+    );
+    eprintln!("{summary}");
 
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {

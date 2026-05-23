@@ -142,16 +142,83 @@ impl HexGrid {
     /// Returns the hex nearest to the given geographic point.
     pub fn nearest_hex(&self, lat_rad: f64, lon_rad: f64) -> HexId {
         let point = isea3h::lat_lon_to_vec3(lat_rad, lon_rad);
+        self.nearest_hex_direction([point.x, point.y, point.z])
+    }
+
+    /// Returns the hex whose center direction has the largest dot product with `direction`.
+    ///
+    /// Tie-break: lower [`HexId`] wins (deterministic).
+    pub fn nearest_hex_direction(&self, direction: [f64; 3]) -> HexId {
         let mut best = HexId(0);
-        let mut best_dot = -f64::INFINITY;
+        let mut best_dot = f64::NEG_INFINITY;
         for (index, center) in self.centers.iter().enumerate() {
-            let d = point.dot(*center);
+            let d = direction[0] * f64::from(center.x)
+                + direction[1] * f64::from(center.y)
+                + direction[2] * f64::from(center.z);
+            let hex = HexId(index as u32);
             if d > best_dot {
                 best_dot = d;
-                best = HexId(index as u32);
+                best = hex;
+            } else if d == best_dot && hex < best {
+                best = hex;
             }
         }
         best
+    }
+
+    /// Returns the hex whose center has the largest dot product with `direction`,
+    /// searching locally starting from `hint`.
+    ///
+    /// O(1) amortized when `hint` is close to the target hex. Uses the icosahedral
+    /// grid's local convexity: hill-climbing through neighbors reliably converges
+    /// to the global maximum. Use this when you have a reasonable starting hint
+    /// (e.g., the previous position of a moving feature).
+    ///
+    /// For arbitrary directions with no good hint, use [`Self::nearest_hex_direction`]
+    /// instead (O(n) but no hint required).
+    ///
+    /// Uses bounded hill-climbing capped at `2 * cell_count()` iterations. In
+    /// practice converges in 1-5 steps. If the cap is hit (pathological case),
+    /// falls back to global search.
+    ///
+    /// Tie-break: lower [`HexId`] wins, matching [`Self::nearest_hex_direction`].
+    pub fn nearest_hex_direction_from(&self, hint: HexId, direction: [f64; 3]) -> HexId {
+        let max_iterations = (self.cell_count() as usize) * 2;
+        let mut current = hint;
+        let mut current_dot = self.dot_with_direction(current, direction);
+
+        for _ in 0..max_iterations {
+            let neighbors = self.neighbors(current);
+            let mut best_neighbor = current;
+            let mut best_neighbor_dot = current_dot;
+
+            for &neighbor in neighbors {
+                let n_dot = self.dot_with_direction(neighbor, direction);
+                if n_dot > best_neighbor_dot {
+                    best_neighbor_dot = n_dot;
+                    best_neighbor = neighbor;
+                } else if n_dot == best_neighbor_dot && neighbor < best_neighbor {
+                    best_neighbor = neighbor;
+                }
+            }
+
+            if best_neighbor == current {
+                return current;
+            }
+
+            current = best_neighbor;
+            current_dot = best_neighbor_dot;
+        }
+
+        self.nearest_hex_direction(direction)
+    }
+
+    /// Dot product of `hex`'s center direction with `direction`.
+    fn dot_with_direction(&self, hex: HexId, direction: [f64; 3]) -> f64 {
+        let center = self.centers[hex.0 as usize];
+        direction[0] * f64::from(center.x)
+            + direction[1] * f64::from(center.y)
+            + direction[2] * f64::from(center.z)
     }
 
     /// Iterate all valid [`HexId`] values in this grid (`0..cell_count`).
@@ -439,6 +506,86 @@ mod tests {
                     hex
                 );
             }
+        }
+    }
+
+    #[test]
+    fn nearest_hex_direction_from_matches_global_for_each_hex_target() {
+        let grid = HexGrid::new(5, EARTH_RADIUS_KM).unwrap();
+        let n = grid.cell_count() as usize;
+
+        for query_idx in 0..n {
+            let query_hex = HexId(query_idx as u32);
+            let target = grid.cell_center_direction(query_hex);
+            let global_result = grid.nearest_hex_direction(target);
+
+            for hint_idx in [0, n / 4, n / 2, (n * 3) / 4, n - 1] {
+                let hint = HexId(hint_idx as u32);
+                let local_result = grid.nearest_hex_direction_from(hint, target);
+                assert_eq!(
+                    local_result, global_result,
+                    "from hint {hint:?} querying {query_hex:?}'s center, got {local_result:?} but global says {global_result:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn nearest_hex_direction_from_matches_global_with_random_directions() {
+        let grid = HexGrid::new(5, EARTH_RADIUS_KM).unwrap();
+        let n = grid.cell_count() as usize;
+
+        let mut state: u64 = 0x517c_c1b7_2722_0a95;
+        let mut next_rand = || -> f64 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state as f64) / (u64::MAX as f64)
+        };
+
+        for trial in 0..100 {
+            let u = next_rand();
+            let v = next_rand();
+            let theta = 2.0 * PI * u;
+            let phi = (2.0 * v - 1.0).acos();
+            let target = [phi.sin() * theta.cos(), phi.sin() * theta.sin(), phi.cos()];
+
+            let global_result = grid.nearest_hex_direction(target);
+
+            for hint_idx in [0, n / 8, n / 4, n / 2, n - 1] {
+                let hint = HexId(hint_idx as u32);
+                let local_result = grid.nearest_hex_direction_from(hint, target);
+                assert_eq!(
+                    local_result, global_result,
+                    "trial {trial}: local search from hint {hint:?} disagrees with global"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn nearest_hex_direction_from_returns_self_or_neighbor_for_small_drift() {
+        let grid = HexGrid::new(5, EARTH_RADIUS_KM).unwrap();
+
+        for hex_idx in [0u32, 12, 100, 500, 1000, 2000] {
+            let hex = HexId(hex_idx);
+            if hex.0 as usize >= grid.cell_count() as usize {
+                continue;
+            }
+            let center = grid.cell_center_direction(hex);
+
+            let p = [center[0] + 0.01, center[1] - 0.01, center[2] + 0.005];
+            let mag = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
+            let perturbed = [p[0] / mag, p[1] / mag, p[2] / mag];
+
+            let result = grid.nearest_hex_direction_from(hex, perturbed);
+
+            let mut allowed: Vec<HexId> = vec![hex];
+            allowed.extend(grid.neighbors(hex).iter().copied());
+            assert!(
+                allowed.contains(&result),
+                "small perturbation of {hex:?} produced unexpected hex {result:?}; allowed: {allowed:?}"
+            );
         }
     }
 }

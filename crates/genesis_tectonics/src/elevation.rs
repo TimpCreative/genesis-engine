@@ -2,8 +2,11 @@
 
 use std::collections::{BTreeMap, VecDeque};
 
-use genesis_core::data::{BedrockType, WorldData};
-use genesis_core::{HexId, PlateId};
+use glam::{DQuat, DVec3};
+
+use genesis_core::data::{BedrockType, PlateOrigin, WorldData};
+use genesis_core::time::WorldYear;
+use genesis_core::{HexId, PlateId, pack_plate_local};
 
 use crate::boundary::{BoundaryClass, BoundaryInfo, ClassifiedEdge, ConvergentSubtype};
 use crate::plate::{Plate, PlateRegistry, PlateType};
@@ -17,14 +20,29 @@ pub const MAX_ELEVATION_M: f32 = 9_000.0;
 /// Maximum vertical relief within a hex, meters (§5.7).
 pub const MAX_RELIEF_M: f32 = 5_000.0;
 
+/// Equilibrium depth for normal oceanic seafloor (m). Divergent subsidence asymptotes here.
+pub const OCEAN_FLOOR_BASELINE_M: f32 = -4000.0;
+
+/// Equilibrium height for continental orogeny (m). Uplift slows as elevation approaches this.
+pub const MOUNTAIN_EQUILIBRIUM_M: f32 = 7000.0;
+
+/// Equilibrium depth for subduction trenches (m).
+pub const TRENCH_EQUILIBRIUM_M: f32 = -8500.0;
+
 /// Divergent subsidence: m per (cm/year × year) (§5.1).
-pub const SUBSIDENCE_RATE: f64 = 0.001;
+/// Calibrated: 5 cm/yr × 500K years × 2e-5 = 50 m per tick.
+/// Produces ~3 km of seafloor deepening over 100M years of sustained divergence.
+pub const SUBSIDENCE_RATE: f64 = 2e-5;
 
 /// Continental–continental orogeny rate (§5.2).
-pub const OROGENY_RATE: f64 = 0.005;
+/// Calibrated: 5 cm/yr × 500K years × 5e-5 = 125 m per tick.
+/// Produces ~5 km mountain over 100M years of sustained collision (Himalayan scale).
+pub const OROGENY_RATE: f64 = 5e-5;
 
 /// Subduction trench deepening rate (§5.3–§5.4).
-pub const SUBDUCTION_RATE: f64 = 0.02;
+/// Calibrated: 5 cm/yr × 500K years × 1e-4 = 250 m per tick.
+/// Produces ~10 km trench over 100M years of sustained subduction (Mariana scale).
+pub const SUBDUCTION_RATE: f64 = 1e-4;
 
 /// Continental rifting subsidence multiplier (§5.1 heuristic).
 pub const CONTINENTAL_RIFT_SUBSIDENCE_FACTOR: f64 = 0.3;
@@ -34,6 +52,12 @@ pub const CC_INLAND_HEXES: u32 = 3;
 
 /// Inland uplift spread for oceanic–continental (§5.3).
 pub const OC_INLAND_HEXES: u32 = 3;
+
+/// Coastal shelf spread depth on the oceanic side of oceanic–continental boundaries (§5.3).
+pub const COASTAL_SHELF_HEXES: u32 = 2;
+
+/// Falloff for coastal shelf depth (fraction of trench delta per hex ring).
+const COASTAL_SHELF_FALLOFF: [f64; 2] = [0.4, 0.15];
 
 /// Coastal uplift fraction of orogeny delta on continental boundary hex.
 const OC_COASTAL_UPLIFT_FACTOR: f64 = 0.5;
@@ -48,6 +72,7 @@ struct HexDeltas {
     elev: f64,
     relief: f64,
     bedrock: Option<BedrockType>,
+    set_origin: Option<PlateOrigin>,
 }
 
 /// Applies boundary-driven elevation and bedrock changes, then clamps.
@@ -56,6 +81,7 @@ pub fn apply_boundary_elevation(
     registry: &PlateRegistry,
     boundaries: &BoundaryInfo,
     tick_interval_years: f64,
+    tick_year: WorldYear,
 ) {
     let mut deltas: BTreeMap<HexId, HexDeltas> = BTreeMap::new();
 
@@ -82,6 +108,7 @@ pub fn apply_boundary_elevation(
                 owner_plate,
                 other_plate,
                 tick_interval_years,
+                tick_year,
             );
         }
     }
@@ -122,6 +149,56 @@ fn velocity_cm_per_year(edge: &ClassifiedEdge) -> f64 {
     edge.normal_velocity_m_per_year.abs() * 100.0
 }
 
+/// Fraction of full per-tick rate to apply based on remaining distance to equilibrium.
+/// World-frame center direction rotated backwards into plate-local coordinates.
+pub fn compute_plate_local(
+    world_pos: [f64; 3],
+    plate_motion_axis: [f64; 3],
+    plate_accumulated_rotation_rad: f64,
+) -> [f64; 3] {
+    let world_v = DVec3::new(world_pos[0], world_pos[1], world_pos[2]).normalize();
+    let axis = DVec3::new(
+        plate_motion_axis[0],
+        plate_motion_axis[1],
+        plate_motion_axis[2],
+    )
+    .normalize();
+    let q = DQuat::from_axis_angle(axis, -plate_accumulated_rotation_rad);
+    let local_v = (q * world_v).normalize();
+    [local_v.x, local_v.y, local_v.z]
+}
+
+fn tag_boundary_origin(
+    entry: &mut HexDeltas,
+    data: &WorldData,
+    owner_hex: HexId,
+    owner_plate_id: PlateId,
+    owner_plate: &Plate,
+    tick_year: WorldYear,
+) {
+    let world_pos = data.grid.cell_center_direction(owner_hex);
+    let local_pos = compute_plate_local(
+        world_pos,
+        owner_plate.motion_axis,
+        owner_plate.accumulated_rotation_rad,
+    );
+    let (px, py, pz) = pack_plate_local(local_pos);
+    entry.set_origin = Some(PlateOrigin {
+        plate: owner_plate_id,
+        plate_local_x: px,
+        plate_local_y: py,
+        plate_local_z: pz,
+        age_year: tick_year.value(),
+    });
+}
+
+fn asymptotic_fraction(distance_m: f32, scale_height_m: f32) -> f64 {
+    if distance_m <= 0.0 || scale_height_m <= 0.0 {
+        return 0.0;
+    }
+    ((distance_m / scale_height_m).min(1.0)) as f64
+}
+
 #[allow(clippy::too_many_arguments)]
 fn apply_edge(
     data: &WorldData,
@@ -132,12 +209,29 @@ fn apply_edge(
     owner_plate: &Plate,
     other_plate: &Plate,
     tick_interval_years: f64,
+    tick_year: WorldYear,
 ) {
     let v_cm = velocity_cm_per_year(edge);
+    let idx = owner_hex.0 as usize;
+    let current_elev = if idx < data.elevation_mean.len() {
+        data.elevation_mean[idx]
+    } else {
+        0.0
+    };
 
     match edge.class {
         BoundaryClass::Divergent => {
-            apply_divergent(deltas, owner_hex, owner_plate, v_cm, tick_interval_years);
+            apply_divergent(
+                data,
+                deltas,
+                owner_hex,
+                owner_plate_id,
+                owner_plate,
+                current_elev,
+                v_cm,
+                tick_interval_years,
+                tick_year,
+            );
         }
         BoundaryClass::Convergent(ConvergentSubtype::ContinentalContinental) => {
             apply_continental_continental(
@@ -146,8 +240,10 @@ fn apply_edge(
                 owner_hex,
                 owner_plate_id,
                 owner_plate,
+                current_elev,
                 v_cm,
                 tick_interval_years,
+                tick_year,
             );
         }
         BoundaryClass::Convergent(ConvergentSubtype::ContinentalOceanic) => {
@@ -157,20 +253,26 @@ fn apply_edge(
                 owner_hex,
                 owner_plate_id,
                 owner_plate,
+                edge.other_plate,
+                current_elev,
                 v_cm,
                 tick_interval_years,
+                tick_year,
             );
         }
         BoundaryClass::Convergent(ConvergentSubtype::OceanicOceanic) => {
             apply_oceanic_oceanic(
+                data,
                 deltas,
                 owner_hex,
                 owner_plate_id,
                 edge.other_plate,
                 owner_plate,
                 other_plate,
+                current_elev,
                 v_cm,
                 tick_interval_years,
+                tick_year,
             );
         }
         BoundaryClass::Transform => {
@@ -180,46 +282,80 @@ fn apply_edge(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn apply_divergent(
+    data: &WorldData,
     deltas: &mut BTreeMap<HexId, HexDeltas>,
     hex: HexId,
+    owner_plate_id: PlateId,
     owner_plate: &Plate,
+    current_elev: f32,
     velocity_cm_per_year: f64,
     tick_interval_years: f64,
+    tick_year: WorldYear,
 ) {
-    let mut delta = velocity_cm_per_year * tick_interval_years * SUBSIDENCE_RATE;
-    let mut bedrock = BedrockType::OceanicCrust;
+    let (baseline, bedrock) = if owner_plate.plate_type == PlateType::Continental {
+        (-500.0_f32, BedrockType::Igneous)
+    } else {
+        (OCEAN_FLOOR_BASELINE_M, BedrockType::OceanicCrust)
+    };
 
-    if owner_plate.plate_type == PlateType::Continental {
-        delta *= CONTINENTAL_RIFT_SUBSIDENCE_FACTOR;
-        bedrock = BedrockType::Igneous;
+    let distance_above_baseline = current_elev - baseline;
+    let entry = deltas.entry(hex).or_default();
+    entry.bedrock = Some(bedrock);
+    tag_boundary_origin(entry, data, hex, owner_plate_id, owner_plate, tick_year);
+
+    if distance_above_baseline <= 0.0 {
+        return;
     }
 
-    let entry = deltas.entry(hex).or_default();
+    let scale_height_m = 4000.0;
+    let driving_fraction = asymptotic_fraction(distance_above_baseline, scale_height_m);
+    let max_delta = velocity_cm_per_year * tick_interval_years * SUBSIDENCE_RATE;
+    let delta = max_delta * driving_fraction;
     entry.elev -= delta;
-    entry.bedrock = Some(bedrock);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn apply_continental_continental(
     data: &WorldData,
     deltas: &mut BTreeMap<HexId, HexDeltas>,
     owner_hex: HexId,
     owner_plate_id: PlateId,
     owner_plate: &Plate,
+    current_elev: f32,
     velocity_cm_per_year: f64,
     tick_interval_years: f64,
+    tick_year: WorldYear,
 ) {
     if owner_plate.plate_type != PlateType::Continental {
         return;
     }
 
-    let orogeny = velocity_cm_per_year * tick_interval_years * OROGENY_RATE;
+    let entry = deltas.entry(owner_hex).or_default();
+    entry.bedrock = Some(BedrockType::Metamorphic);
+    tag_boundary_origin(
+        entry,
+        data,
+        owner_hex,
+        owner_plate_id,
+        owner_plate,
+        tick_year,
+    );
+
+    let distance_below_equilibrium = MOUNTAIN_EQUILIBRIUM_M - current_elev;
+    if distance_below_equilibrium <= 0.0 {
+        return;
+    }
+
+    let scale_height_m = 7000.0;
+    let driving_fraction = asymptotic_fraction(distance_below_equilibrium, scale_height_m);
+    let max_orogeny = velocity_cm_per_year * tick_interval_years * OROGENY_RATE;
+    let orogeny = max_orogeny * driving_fraction;
     let relief = orogeny * 0.3;
 
-    let entry = deltas.entry(owner_hex).or_default();
     entry.elev += orogeny;
     entry.relief += relief;
-    entry.bedrock = Some(BedrockType::Metamorphic);
 
     spread_inland(
         data,
@@ -234,40 +370,88 @@ fn apply_continental_continental(
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 fn apply_continental_oceanic(
     data: &WorldData,
     deltas: &mut BTreeMap<HexId, HexDeltas>,
     owner_hex: HexId,
     owner_plate_id: PlateId,
     owner_plate: &Plate,
+    other_plate_id: PlateId,
+    current_elev: f32,
     velocity_cm_per_year: f64,
     tick_interval_years: f64,
+    tick_year: WorldYear,
 ) {
     match owner_plate.plate_type {
         PlateType::Oceanic => {
-            let trench = velocity_cm_per_year * tick_interval_years * SUBDUCTION_RATE;
             let entry = deltas.entry(owner_hex).or_default();
-            entry.elev -= trench;
             entry.bedrock = Some(BedrockType::OceanicCrust);
+            tag_boundary_origin(
+                entry,
+                data,
+                owner_hex,
+                owner_plate_id,
+                owner_plate,
+                tick_year,
+            );
+
+            let distance_above_equilibrium = current_elev - TRENCH_EQUILIBRIUM_M;
+            if distance_above_equilibrium <= 0.0 {
+                return;
+            }
+
+            let scale_height_m = 4500.0;
+            let driving_fraction = asymptotic_fraction(distance_above_equilibrium, scale_height_m);
+            let max_trench = velocity_cm_per_year * tick_interval_years * SUBDUCTION_RATE;
+            let trench = max_trench * driving_fraction;
+            entry.elev -= trench;
         }
         PlateType::Continental => {
-            let uplift = velocity_cm_per_year
-                * tick_interval_years
-                * OROGENY_RATE
-                * OC_COASTAL_UPLIFT_FACTOR;
             let entry = deltas.entry(owner_hex).or_default();
-            entry.elev += uplift;
             entry.bedrock = Some(BedrockType::Igneous);
+            tag_boundary_origin(
+                entry,
+                data,
+                owner_hex,
+                owner_plate_id,
+                owner_plate,
+                tick_year,
+            );
 
-            spread_inland(
+            let distance_below_equilibrium = MOUNTAIN_EQUILIBRIUM_M - current_elev;
+            if distance_below_equilibrium <= 0.0 {
+            } else {
+                let scale_height_m = 7000.0;
+                let driving_fraction =
+                    asymptotic_fraction(distance_below_equilibrium, scale_height_m);
+                let max_uplift = velocity_cm_per_year
+                    * tick_interval_years
+                    * OROGENY_RATE
+                    * OC_COASTAL_UPLIFT_FACTOR;
+                let uplift = max_uplift * driving_fraction;
+                entry.elev += uplift;
+
+                spread_inland(
+                    data,
+                    deltas,
+                    owner_hex,
+                    owner_plate_id,
+                    OC_INLAND_HEXES,
+                    |d, falloff| {
+                        d.elev += uplift * falloff;
+                    },
+                );
+            }
+
+            spread_coastal_shelf(
                 data,
                 deltas,
                 owner_hex,
-                owner_plate_id,
-                OC_INLAND_HEXES,
-                |d, falloff| {
-                    d.elev += uplift * falloff;
-                },
+                other_plate_id,
+                COASTAL_SHELF_HEXES,
+                velocity_cm_per_year,
+                tick_interval_years,
             );
         }
     }
@@ -275,27 +459,132 @@ fn apply_continental_oceanic(
 
 #[allow(clippy::too_many_arguments)]
 fn apply_oceanic_oceanic(
+    data: &WorldData,
     deltas: &mut BTreeMap<HexId, HexDeltas>,
     owner_hex: HexId,
     owner_plate_id: PlateId,
     other_plate_id: PlateId,
     owner_plate: &Plate,
     other_plate: &Plate,
+    current_elev: f32,
     velocity_cm_per_year: f64,
     tick_interval_years: f64,
+    tick_year: WorldYear,
 ) {
     let subducting = subducting_plate_id(owner_plate_id, other_plate_id, owner_plate, other_plate);
-    let trench = velocity_cm_per_year * tick_interval_years * SUBDUCTION_RATE;
+    let max_trench = velocity_cm_per_year * tick_interval_years * SUBDUCTION_RATE;
 
     if owner_plate_id == subducting {
         let entry = deltas.entry(owner_hex).or_default();
-        entry.elev -= trench;
         entry.bedrock = Some(BedrockType::OceanicCrust);
+        tag_boundary_origin(
+            entry,
+            data,
+            owner_hex,
+            owner_plate_id,
+            owner_plate,
+            tick_year,
+        );
+
+        let distance_above_equilibrium = current_elev - TRENCH_EQUILIBRIUM_M;
+        if distance_above_equilibrium <= 0.0 {
+            return;
+        }
+
+        let scale_height_m = 4500.0;
+        let driving_fraction = asymptotic_fraction(distance_above_equilibrium, scale_height_m);
+        let trench = max_trench * driving_fraction;
+        entry.elev -= trench;
     } else {
-        let uplift = trench * OO_ARC_UPLIFT_FACTOR;
         let entry = deltas.entry(owner_hex).or_default();
-        entry.elev += uplift;
         entry.bedrock = Some(BedrockType::Igneous);
+        tag_boundary_origin(
+            entry,
+            data,
+            owner_hex,
+            owner_plate_id,
+            owner_plate,
+            tick_year,
+        );
+
+        let distance_below_equilibrium = MOUNTAIN_EQUILIBRIUM_M - current_elev;
+        if distance_below_equilibrium <= 0.0 {
+            return;
+        }
+
+        let scale_height_m = 7000.0;
+        let driving_fraction = asymptotic_fraction(distance_below_equilibrium, scale_height_m);
+        let max_uplift = max_trench * OO_ARC_UPLIFT_FACTOR;
+        let uplift = max_uplift * driving_fraction;
+        entry.elev += uplift;
+    }
+}
+
+/// Spreads gentle subsidence onto the oceanic plate's hexes adjacent to a continental
+/// boundary, producing a continental shelf → deep ocean gradient instead of a cliff.
+fn spread_coastal_shelf(
+    data: &WorldData,
+    deltas: &mut BTreeMap<HexId, HexDeltas>,
+    boundary_hex: HexId,
+    oceanic_plate_id: PlateId,
+    max_depth: u32,
+    velocity_cm_per_year: f64,
+    tick_interval_years: f64,
+) {
+    let grid = &data.grid;
+    let n = data.plate_id.len();
+    let trench_delta = velocity_cm_per_year * tick_interval_years * SUBDUCTION_RATE;
+
+    let mut visited = BTreeMap::<HexId, u32>::new();
+    let mut queue = VecDeque::new();
+
+    let mut neighbors: Vec<HexId> = grid.neighbors(boundary_hex).to_vec();
+    neighbors.sort_by_key(|h| h.0);
+    for neighbor in neighbors {
+        let idx = neighbor.0 as usize;
+        if idx >= n || data.plate_id[idx] != oceanic_plate_id {
+            continue;
+        }
+        visited.insert(neighbor, 1);
+        queue.push_back(neighbor);
+    }
+
+    while let Some(current) = queue.pop_front() {
+        let depth = *visited.get(&current).unwrap_or(&0);
+        if depth == 0 || depth as usize > COASTAL_SHELF_FALLOFF.len() {
+            continue;
+        }
+
+        let falloff = COASTAL_SHELF_FALLOFF[depth as usize - 1];
+        let idx = current.0 as usize;
+        let current_elev = if idx < data.elevation_mean.len() {
+            data.elevation_mean[idx]
+        } else {
+            0.0
+        };
+        let distance_above = current_elev - TRENCH_EQUILIBRIUM_M;
+        if distance_above <= 0.0 {
+            continue;
+        }
+        let driving_fraction = asymptotic_fraction(distance_above, 4500.0);
+        let delta = trench_delta * falloff * driving_fraction;
+        let entry = deltas.entry(current).or_default();
+        entry.elev -= delta;
+
+        if depth >= max_depth {
+            continue;
+        }
+
+        let mut next_neighbors: Vec<HexId> = grid.neighbors(current).to_vec();
+        next_neighbors.sort_by_key(|h| h.0);
+        for next in next_neighbors {
+            let idx = next.0 as usize;
+            if visited.contains_key(&next) || idx >= n || data.plate_id[idx] != oceanic_plate_id {
+                continue;
+            }
+            visited.insert(next, depth + 1);
+            queue.push_back(next);
+        }
     }
 }
 
@@ -361,6 +650,9 @@ fn apply_deltas(data: &mut WorldData, deltas: &BTreeMap<HexId, HexDeltas>) {
         data.elevation_relief[i] += delta.relief as f32;
         if let Some(bedrock) = delta.bedrock {
             data.bedrock_type[i] = bedrock;
+        }
+        if let Some(origin) = delta.set_origin {
+            data.plate_origin[i] = Some(origin);
         }
     }
 }
@@ -430,7 +722,13 @@ mod tests {
             }],
         );
 
-        apply_boundary_elevation(&mut data, &registry, &boundaries, 500_000.0);
+        apply_boundary_elevation(
+            &mut data,
+            &registry,
+            &boundaries,
+            500_000.0,
+            WorldYear(500_000),
+        );
         assert!(data.elevation_mean[hex.0 as usize] < 0.0);
         assert_eq!(data.bedrock_type[hex.0 as usize], BedrockType::OceanicCrust);
     }
@@ -462,9 +760,90 @@ mod tests {
             }],
         );
 
-        apply_boundary_elevation(&mut data, &registry, &boundaries, 500_000.0);
+        apply_boundary_elevation(
+            &mut data,
+            &registry,
+            &boundaries,
+            500_000.0,
+            WorldYear(500_000),
+        );
         assert!(data.elevation_mean[hex.0 as usize] > 100.0);
         assert_eq!(data.bedrock_type[hex.0 as usize], BedrockType::Metamorphic);
+    }
+
+    #[test]
+    fn divergent_at_ocean_baseline_does_not_subside_further() {
+        let (mut data, registry) = world_with_plates(4);
+        set_half_half(&mut data);
+        let hex = HexId(10);
+        data.elevation_mean[hex.0 as usize] = OCEAN_FLOOR_BASELINE_M;
+
+        let mut boundaries = BoundaryInfo::default();
+        boundaries.boundary_hexes.push(hex);
+        boundaries.edges.insert(
+            hex,
+            vec![ClassifiedEdge {
+                neighbor_hex: HexId(11),
+                other_plate: PlateId(1),
+                class: BoundaryClass::Divergent,
+                normal_velocity_m_per_year: -0.05,
+                tangential_velocity_m_per_year: 0.0,
+            }],
+        );
+
+        apply_boundary_elevation(
+            &mut data,
+            &registry,
+            &boundaries,
+            500_000.0,
+            WorldYear(500_000),
+        );
+        assert!(
+            (data.elevation_mean[hex.0 as usize] - OCEAN_FLOOR_BASELINE_M).abs() < 1.0,
+            "at ocean baseline, divergent subsidence should stop"
+        );
+    }
+
+    #[test]
+    fn orogeny_near_equilibrium_adds_minimal_uplift() {
+        let (mut data, mut registry) = world_with_plates(4);
+        registry.insert(plate_at(2, PlateType::Continental, 200, 1e-8));
+        registry.insert(plate_at(3, PlateType::Continental, 800, 1e-8));
+        let n = data.plate_id.len();
+        for (i, pid) in data.plate_id.iter_mut().enumerate() {
+            *pid = if i < n / 2 { PlateId(2) } else { PlateId(3) };
+        }
+
+        let hex = HexId(10);
+        data.elevation_mean[hex.0 as usize] = MOUNTAIN_EQUILIBRIUM_M - 50.0;
+
+        let mut boundaries = BoundaryInfo::default();
+        boundaries.boundary_hexes.push(hex);
+        boundaries.edges.insert(
+            hex,
+            vec![ClassifiedEdge {
+                neighbor_hex: HexId(11),
+                other_plate: PlateId(3),
+                class: BoundaryClass::Convergent(ConvergentSubtype::ContinentalContinental),
+                normal_velocity_m_per_year: 0.05,
+                tangential_velocity_m_per_year: 0.0,
+            }],
+        );
+
+        let before = data.elevation_mean[hex.0 as usize];
+        apply_boundary_elevation(
+            &mut data,
+            &registry,
+            &boundaries,
+            500_000.0,
+            WorldYear(500_000),
+        );
+        let after = data.elevation_mean[hex.0 as usize];
+        assert!(
+            after - before < 20.0,
+            "near mountain equilibrium, uplift should be small (got {} m)",
+            after - before
+        );
     }
 
     #[test]
@@ -492,7 +871,13 @@ mod tests {
             }],
         );
 
-        apply_boundary_elevation(&mut data, &registry, &boundaries, 500_000.0);
+        apply_boundary_elevation(
+            &mut data,
+            &registry,
+            &boundaries,
+            500_000.0,
+            WorldYear(500_000),
+        );
         assert!(data.elevation_mean[hex.0 as usize] < 0.0);
     }
 
@@ -523,7 +908,13 @@ mod tests {
             }],
         );
 
-        apply_boundary_elevation(&mut data, &registry, &boundaries, 500_000.0);
+        apply_boundary_elevation(
+            &mut data,
+            &registry,
+            &boundaries,
+            500_000.0,
+            WorldYear(500_000),
+        );
         assert!(data.elevation_mean[0] <= MAX_ELEVATION_M);
     }
 
@@ -560,7 +951,13 @@ mod tests {
             ],
         );
 
-        apply_boundary_elevation(&mut data, &registry, &boundaries, 500_000.0);
+        apply_boundary_elevation(
+            &mut data,
+            &registry,
+            &boundaries,
+            500_000.0,
+            WorldYear(500_000),
+        );
         assert_eq!(data.bedrock_type[hex.0 as usize], BedrockType::Metamorphic);
     }
 
@@ -571,6 +968,46 @@ mod tests {
         assert_eq!(
             subducting_plate_id(PlateId(0), PlateId(1), &fast, &slow),
             PlateId(0)
+        );
+    }
+
+    #[test]
+    fn continental_oc_spreads_coastal_shelf_on_oceanic_neighbor() {
+        let (mut data, mut registry) = world_with_plates(4);
+        registry.insert(plate_at(2, PlateType::Oceanic, 100, 1e-8));
+        registry.insert(plate_at(3, PlateType::Continental, 900, 1e-8));
+
+        let continental_hex = HexId(50);
+        let oceanic_neighbor = data.grid.neighbors(continental_hex)[0];
+        data.plate_id[continental_hex.0 as usize] = PlateId(3);
+        data.plate_id[oceanic_neighbor.0 as usize] = PlateId(2);
+        data.elevation_mean[continental_hex.0 as usize] = 200.0;
+        data.elevation_mean[oceanic_neighbor.0 as usize] = -500.0;
+        let oceanic_elev_before = data.elevation_mean[oceanic_neighbor.0 as usize];
+
+        let mut boundaries = BoundaryInfo::default();
+        boundaries.boundary_hexes.push(continental_hex);
+        boundaries.edges.insert(
+            continental_hex,
+            vec![ClassifiedEdge {
+                neighbor_hex: oceanic_neighbor,
+                other_plate: PlateId(2),
+                class: BoundaryClass::Convergent(ConvergentSubtype::ContinentalOceanic),
+                normal_velocity_m_per_year: 0.05,
+                tangential_velocity_m_per_year: 0.0,
+            }],
+        );
+
+        apply_boundary_elevation(
+            &mut data,
+            &registry,
+            &boundaries,
+            500_000.0,
+            WorldYear(500_000),
+        );
+        assert!(
+            data.elevation_mean[oceanic_neighbor.0 as usize] < oceanic_elev_before,
+            "coastal shelf should lower oceanic neighbor elevation"
         );
     }
 

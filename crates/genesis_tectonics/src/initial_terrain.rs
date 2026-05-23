@@ -1,7 +1,8 @@
 //! Formation-era initial elevation and bedrock (Doc 06 §4.3 steps 5–8).
 
-use genesis_core::data::{BedrockType, WorldData};
+use genesis_core::data::{BedrockType, PlateOrigin, WorldData};
 use genesis_core::rng::WorldRng;
+use genesis_core::{HexId, PlateId, pack_plate_local};
 use rand::Rng;
 
 use crate::plate::{PlateRegistry, PlateType};
@@ -47,6 +48,29 @@ pub fn apply_formation_terrain(data: &mut WorldData, registry: &PlateRegistry, r
     }
 
     data.sea_level_m = 0.0;
+    populate_initial_plate_origins(data);
+}
+
+/// Populates `plate_origin` for every hex with a plate assignment at formation.
+///
+/// At year 0 no plate has rotated yet, so plate-local equals world-frame center.
+pub fn populate_initial_plate_origins(data: &mut WorldData) {
+    let n = data.cell_count() as usize;
+    for i in 0..n {
+        let plate_id = data.plate_id[i];
+        if plate_id == PlateId::NONE {
+            continue;
+        }
+        let world_pos = data.grid.cell_center_direction(HexId(i as u32));
+        let (px, py, pz) = pack_plate_local(world_pos);
+        data.plate_origin[i] = Some(PlateOrigin {
+            plate: plate_id,
+            plate_local_x: px,
+            plate_local_y: py,
+            plate_local_z: pz,
+            age_year: 0,
+        });
+    }
 }
 
 #[cfg(test)]
@@ -132,6 +156,22 @@ mod tests {
         apply_formation_terrain(&mut world.data, &registry, &world.rng);
         assert_eq!(world.data.sea_level_m, 0.0);
         assert!(world.data.fertility.iter().all(|&f| f == 0.0));
+    }
+
+    #[test]
+    fn formation_populates_plate_origins() {
+        let mut world = formation_world();
+        let registry = crate::generate_initial_plates_data(&mut world.data, &world.rng);
+        apply_formation_terrain(&mut world.data, &registry, &world.rng);
+
+        for (i, &plate_id) in world.data.plate_id.iter().enumerate() {
+            if plate_id == PlateId::NONE {
+                continue;
+            }
+            let origin = world.data.plate_origin[i].expect("origin for assigned hex");
+            assert_eq!(origin.plate, plate_id);
+            assert_eq!(origin.age_year, 0);
+        }
     }
 
     #[test]

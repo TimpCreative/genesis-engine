@@ -3,7 +3,9 @@
 //! All validation runs use a fixed seed ([`VALIDATION_SEED`]) and subdivision
 //! level ([`VALIDATION_SUBDIVISION_LEVEL`]) for reproducible CI checks.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+
+use glam::DVec3;
 
 use genesis_core::World;
 use genesis_core::data::{BedrockType, WorldData};
@@ -15,6 +17,7 @@ use genesis_core::time::WorldYear;
 use genesis_core::{HexId, create_world};
 
 use crate::history::generate_full_history_with_tectonics;
+use crate::motion::effective_position_direction;
 use crate::plate::TectonicsState;
 
 /// Fixed seed for all §11 / determinism / perf validation (Doc 06 §11).
@@ -28,6 +31,15 @@ pub const VALIDATION_TARGET_YEAR_QUICK: i64 = 1_000_000;
 
 /// Long-history validation for mountains, ocean basins, bedrock, event volume.
 pub const VALIDATION_TARGET_YEAR_FULL: i64 = 100_000_000;
+
+/// Deep persistence check (`cargo test --ignored`). Subdiv 5; ~10× [`VALIDATION_TARGET_YEAR_FULL`].
+pub const VALIDATION_TARGET_YEAR_DEEP_PERSISTENCE: i64 = 500_000_000;
+
+/// Full 1B-year run is manual only (`GENESIS_TARGET_YEAR=1000000000 cargo run -p genesis_app`).
+pub const VALIDATION_TARGET_YEAR_ONE_BILLION: i64 = 1_000_000_000;
+
+/// Shorter horizon for advection drift check (10M vs this year).
+pub const VALIDATION_TARGET_YEAR_ADVECTION_DRIFT: i64 = 100_000_000;
 
 /// Performance budget test target year (20 Geological ticks).
 pub const PERF_TARGET_YEAR: i64 = 10_000_000;
@@ -44,11 +56,17 @@ pub const CONTINENTAL_FRACTION_MIN: f32 = 0.20;
 /// Doc §11 #1 upper bound on land fraction (nominal §11 is 0.35; §17 Q6 allows 0.20–0.40).
 pub const CONTINENTAL_FRACTION_MAX: f32 = 0.40;
 
+/// Minimum land fraction at 1B years — continental cratons should persist (P1-13).
+pub const CONTINENTAL_PERSISTENCE_MIN_FRAC: f32 = 0.15;
+
 /// Doc §11 #6 elevation lower bound (m).
 pub const ELEVATION_MIN_BOUND_M: f32 = -11_000.0;
 
 /// Doc §11 #6 elevation upper bound (m).
 pub const ELEVATION_MAX_BOUND_M: f32 = 9_000.0;
+
+/// Tolerance for detecting hexes at elevation clamp (P1-11 saturation guard).
+pub const SATURATION_TOLERANCE_M: f32 = 1.0;
 
 /// Doc §11 #7 sea level bound (m).
 pub const SEA_LEVEL_MAX_ABS_M: f32 = 200.0;
@@ -90,11 +108,41 @@ pub fn run_validation_world(
     Ok((world, state))
 }
 
+/// Returns counts of hexes at or near max/min elevation clamps (§11 #6 strengthening).
+pub fn count_saturated_hexes(data: &WorldData) -> (usize, usize) {
+    let near_max = data
+        .elevation_mean
+        .iter()
+        .filter(|&&e| (e - ELEVATION_MAX_BOUND_M).abs() < SATURATION_TOLERANCE_M)
+        .count();
+    let near_min = data
+        .elevation_mean
+        .iter()
+        .filter(|&&e| (e - ELEVATION_MIN_BOUND_M).abs() < SATURATION_TOLERANCE_M)
+        .count();
+    (near_max, near_min)
+}
+
 /// Fraction of hexes with `elevation_mean > sea_level_m` (§11 #1).
 pub fn continental_fraction(data: &WorldData) -> f32 {
     let sea = data.sea_level_m;
     let land = data.elevation_mean.iter().filter(|&&e| e > sea).count();
     land as f32 / data.cell_count() as f32
+}
+
+/// Hex with the highest `elevation_mean` (tie-break: lowest `HexId`).
+pub fn peak_elevation_hex(data: &WorldData) -> HexId {
+    let mut best = HexId(0);
+    let mut best_e = f32::MIN;
+    for (i, &e) in data.elevation_mean.iter().enumerate() {
+        if e > best_e {
+            best_e = e;
+            best = HexId(i as u32);
+        } else if e == best_e && HexId(i as u32) < best {
+            best = HexId(i as u32);
+        }
+    }
+    best
 }
 
 /// Scales Doc §11 #4 ocean basin minimum area for small grids.
@@ -201,6 +249,45 @@ pub fn elevation_bounds(data: &WorldData) -> (f32, f32) {
     }
 }
 
+/// Summarizes total plate motion over simulated history (angular seed→effective distance, km).
+pub fn plate_motion_summary(world: &World, state: &TectonicsState) -> Vec<f64> {
+    let grid = &world.data.grid;
+    let radius_km = world.data.parameters.core.planet.radius_km;
+    let mut motions = Vec::new();
+
+    for plate in state.registry.iter() {
+        let seed = grid.cell_center_direction(plate.seed_hex);
+        let seed_v = DVec3::new(seed[0], seed[1], seed[2]);
+        let eff = effective_position_direction(grid, plate);
+        let eff_v = DVec3::new(eff[0], eff[1], eff[2]);
+        let dot = seed_v.dot(eff_v).clamp(-1.0, 1.0);
+        let angular_rad = dot.acos();
+        motions.push(angular_rad * radius_km);
+    }
+
+    motions.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    motions
+}
+
+/// Bins `elevation_mean` into 1000 m brackets for distribution analysis.
+pub fn elevation_distribution(data: &WorldData) -> BTreeMap<i32, usize> {
+    let mut bins = BTreeMap::new();
+    for &e in &data.elevation_mean {
+        let bin = (e / 1000.0).floor() as i32 * 1000;
+        *bins.entry(bin).or_insert(0) += 1;
+    }
+    bins
+}
+
+/// Compact elevation histogram for diagnostic logs.
+pub fn format_elevation_distribution(data: &WorldData) -> String {
+    elevation_distribution(data)
+        .iter()
+        .map(|(bin, count)| format!("{bin}:{count}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// Events in the root log at or above `min_significance`.
 pub fn event_count_at_granularity(world: &World, min_significance: Significance) -> usize {
     world
@@ -228,12 +315,24 @@ pub fn summarize_world(world: &World, state: &TectonicsState) -> String {
         .filter(|&s| s >= ocean_threshold)
         .collect();
 
+    let motions = plate_motion_summary(world, state);
+    let motion_summary = if motions.is_empty() {
+        "none".to_string()
+    } else {
+        format!(
+            "min={:.0}km median={:.0}km max={:.0}km",
+            motions.first().copied().unwrap_or(0.0),
+            motions[motions.len() / 2],
+            motions.last().copied().unwrap_or(0.0),
+        )
+    };
+
     let land_pct = land_frac * 100.0;
     format!(
         "seed={VALIDATION_SEED} subdiv={} year={} land={land_pct:.1}% elev=[{min_e:.0},{max_e:.0}] \
          sea_level={:.1}m plates={} bedrock=[{}] notable_events={notable_events} \
          mountain_regions(>{MOUNTAIN_ELEVATION_THRESHOLD_M}m)={} \
-         deep_ocean_basins(>={ocean_threshold} hex)={}",
+         deep_ocean_basins(>={ocean_threshold} hex)={} motion={motion_summary}",
         data.grid.subdivision_level(),
         data.current_year.value(),
         data.sea_level_m,

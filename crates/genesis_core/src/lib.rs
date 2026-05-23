@@ -14,8 +14,8 @@ pub mod world;
 
 pub use branches::{Branch, BranchError, BranchId, BranchTree};
 pub use data::{
-    BedrockType, BiomeId, HotSpotId, NationId, PlateId, SettlementId, SpeciesId, WorldData,
-    WorldYear,
+    BedrockType, BiomeId, HotSpotId, NationId, PLATE_LOCAL_QUANTUM, PlateId, PlateOrigin,
+    SettlementId, SpeciesId, WorldData, WorldYear, pack_plate_local, unpack_plate_local,
 };
 pub use events::{
     BoundaryType, Event, EventId, EventKind, EventLocation, EventLog, PlateReorgAction,

@@ -10,6 +10,7 @@ use genesis_core::parameters::WorldParameters;
 use genesis_core::rng::WorldRng;
 use genesis_core::time::{Era, SimulationLayer, WorldYear};
 
+use crate::advection::advect_plate_features;
 use crate::boundary::detect_and_classify_boundaries;
 use crate::boundary_events::emit_boundary_events;
 use crate::elevation::{apply_boundary_elevation, clamp_terrain};
@@ -65,7 +66,9 @@ impl SimulationLayer for TectonicsLayer {
         let era = Era::for_year(current_time, params);
         match era {
             Era::Formation | Era::Geological => geological_tick_interval(params),
-            _ => 0,
+            Era::Prehistoric => 2_000_000,
+            Era::Ancient => 10_000_000,
+            Era::Recent => 0,
         }
     }
 
@@ -100,14 +103,18 @@ impl SimulationLayer for TectonicsLayer {
             return Vec::new();
         }
 
-        if era == Era::Geological {
+        if matches!(era, Era::Geological | Era::Prehistoric | Era::Ancient) {
             let interval_years = (world.current_year - self.last_tick_year.get()) as f64;
             self.last_tick_year.set(world.current_year);
             let tick_year = world.current_year;
             let volcanism_scale = world.parameters.core.geology.volcanism_scale;
             let event_granularity = world.parameters.core.geology.event_granularity;
 
-            debug_tick_step("motion", || {
+            timed_tick_step("advect", tick_year, || {
+                advect_plate_features(world, &state.registry, tick_year);
+            });
+
+            timed_tick_step("motion", tick_year, || {
                 let plate_ids = state.registry.plate_ids();
                 for id in plate_ids {
                     if let Some(plate) = state.registry.plates_mut().get_mut(&id) {
@@ -116,21 +123,27 @@ impl SimulationLayer for TectonicsLayer {
                 }
             });
 
-            debug_tick_step("partition", || {
+            timed_tick_step("partition", tick_year, || {
                 repartition_hexes(world, &state.registry);
             });
 
-            debug_tick_step("boundaries", || {
+            timed_tick_step("boundaries", tick_year, || {
                 state.boundaries = detect_and_classify_boundaries(world, &state.registry);
             });
 
             state.elevation_at_tick_start = world.elevation_mean.clone();
 
-            debug_tick_step("elevation", || {
-                apply_boundary_elevation(world, &state.registry, &state.boundaries, interval_years);
+            timed_tick_step("elevation", tick_year, || {
+                apply_boundary_elevation(
+                    world,
+                    &state.registry,
+                    &state.boundaries,
+                    interval_years,
+                    tick_year,
+                );
             });
 
-            debug_tick_step("volcanism", || {
+            timed_tick_step("volcanism", tick_year, || {
                 apply_boundary_volcanism(
                     world,
                     &mut state,
@@ -142,7 +155,7 @@ impl SimulationLayer for TectonicsLayer {
                 );
             });
 
-            debug_tick_step("hotspots", || {
+            timed_tick_step("hotspots", tick_year, || {
                 apply_hotspot_tick(
                     world,
                     &mut state,
@@ -153,11 +166,11 @@ impl SimulationLayer for TectonicsLayer {
                 );
             });
 
-            debug_tick_step("erosion", || {
+            timed_tick_step("erosion", tick_year, || {
                 apply_erosion_tick(world, &mut state, rng, tick_year, interval_years);
             });
 
-            let reorg_fired = debug_tick_step("reorg", || {
+            let reorg_fired = timed_tick_step_value("reorg", tick_year, || {
                 maybe_reorganize(
                     world,
                     &mut state,
@@ -169,14 +182,15 @@ impl SimulationLayer for TectonicsLayer {
             });
 
             if reorg_fired {
-                debug_tick_step("repartition_after_reorg", || {
+                state.reorg_count += 1;
+                timed_tick_step("repartition_after_reorg", tick_year, || {
                     repartition_hexes(world, &state.registry);
                     state.boundaries = detect_and_classify_boundaries(world, &state.registry);
                 });
             }
 
             let boundaries = state.boundaries.clone();
-            debug_tick_step("sea_level", || {
+            timed_tick_step("sea_level", tick_year, || {
                 update_sea_level(
                     world,
                     &boundaries,
@@ -189,7 +203,7 @@ impl SimulationLayer for TectonicsLayer {
                 );
             });
 
-            debug_tick_step("boundary_events", || {
+            timed_tick_step("boundary_events", tick_year, || {
                 emit_boundary_events(
                     world,
                     &boundaries,
@@ -200,7 +214,7 @@ impl SimulationLayer for TectonicsLayer {
                 );
             });
 
-            debug_tick_step("clamp", || {
+            timed_tick_step("clamp", tick_year, || {
                 clamp_terrain(world);
             });
 
@@ -231,14 +245,31 @@ fn elevation_min_max(world: &WorldData) -> (f32, f32) {
     }
 }
 
-/// Runs `f` and logs elapsed milliseconds when `RUST_LOG=genesis_tectonics=debug` (§9.3).
-fn debug_tick_step<T>(step: &'static str, f: impl FnOnce() -> T) -> T {
-    let start = tracing::enabled!(tracing::Level::DEBUG).then(std::time::Instant::now);
+const SLOW_TICK_STEP_MS: u128 = 100;
+
+fn timed_tick_step(step: &'static str, tick_year: WorldYear, f: impl FnOnce()) {
+    let step_start = std::time::Instant::now();
+    f();
+    log_slow_tick_step(step, tick_year, step_start.elapsed());
+}
+
+fn timed_tick_step_value<T>(step: &'static str, tick_year: WorldYear, f: impl FnOnce() -> T) -> T {
+    let step_start = std::time::Instant::now();
     let out = f();
-    if let Some(t0) = start {
-        tracing::debug!(step, elapsed_ms = t0.elapsed().as_millis() as u64);
-    }
+    log_slow_tick_step(step, tick_year, step_start.elapsed());
     out
+}
+
+fn log_slow_tick_step(step: &'static str, tick_year: WorldYear, elapsed: std::time::Duration) {
+    if elapsed.as_millis() > SLOW_TICK_STEP_MS {
+        eprintln!(
+            "[tectonics] {} tick at year {} took {}ms",
+            step,
+            tick_year.value(),
+            elapsed.as_millis()
+        );
+        let _ = std::io::Write::flush(&mut std::io::stderr());
+    }
 }
 
 /// Geological tick interval from parameters or Doc 06 default.

@@ -195,6 +195,8 @@ pub struct TectonicsState {
     pub pending_events: Vec<genesis_core::events::Event>,
     /// Monotonic counter for [`EventId`](genesis_core::events::EventId) allocation.
     pub next_event_id: u64,
+    /// Plate reorganizations fired during geological ticks (diagnostics).
+    pub reorg_count: u64,
 }
 
 impl TectonicsState {

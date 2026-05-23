@@ -13,8 +13,44 @@ pub use ids::{BiomeId, HotSpotId, NationId, PlateId, SettlementId, SpeciesId};
 
 use crate::HexGrid;
 use crate::parameters::WorldParameters;
+use serde::{Deserialize, Serialize};
 
 pub use crate::time::WorldYear;
+
+/// Records which plate owns a hex's surface features and where they originated in that
+/// plate's local reference frame. Used to advect surface features when plates rotate.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlateOrigin {
+    /// The plate whose surface features this hex carries.
+    pub plate: PlateId,
+    /// Quantized unit vector in plate-local coordinates. Use [`pack_plate_local`] /
+    /// [`unpack_plate_local`] to convert to/from `f64`.
+    pub plate_local_x: i16,
+    pub plate_local_y: i16,
+    pub plate_local_z: i16,
+    /// When this feature was created or last significantly updated (tie-breaking).
+    pub age_year: i64,
+}
+
+/// Scale factor for quantizing plate-local unit vectors to `i16`.
+pub const PLATE_LOCAL_QUANTUM: f64 = 32000.0;
+
+/// Packs a unit direction into quantized `i16` components for deterministic storage.
+pub fn pack_plate_local(v: [f64; 3]) -> (i16, i16, i16) {
+    let x = (v[0].clamp(-1.0, 1.0) * PLATE_LOCAL_QUANTUM).round() as i16;
+    let y = (v[1].clamp(-1.0, 1.0) * PLATE_LOCAL_QUANTUM).round() as i16;
+    let z = (v[2].clamp(-1.0, 1.0) * PLATE_LOCAL_QUANTUM).round() as i16;
+    (x, y, z)
+}
+
+/// Unpacks quantized plate-local components to `f64` direction components.
+pub fn unpack_plate_local(x: i16, y: i16, z: i16) -> [f64; 3] {
+    [
+        f64::from(x) / PLATE_LOCAL_QUANTUM,
+        f64::from(y) / PLATE_LOCAL_QUANTUM,
+        f64::from(z) / PLATE_LOCAL_QUANTUM,
+    ]
+}
 
 /// Per-hex bulk arrays and global physical state for one world instance.
 ///
@@ -36,6 +72,9 @@ pub struct WorldData {
     pub bedrock_type: Vec<BedrockType>,
     /// Tectonic plate assignment.
     pub plate_id: Vec<PlateId>,
+    /// Plate-frame origin metadata per hex. `None` means no plate-borne feature; use
+    /// background elevation for the current plate's type.
+    pub plate_origin: Vec<Option<PlateOrigin>>,
     /// Mean annual temperature in degrees Celsius.
     pub temperature_mean: Vec<f32>,
     /// Annual temperature range (max − min) in degrees Celsius.
@@ -90,6 +129,7 @@ impl WorldData {
             elevation_relief: vec![0.0; n],
             bedrock_type: vec![BedrockType::Unknown; n],
             plate_id: vec![PlateId::NONE; n],
+            plate_origin: vec![None; n],
             temperature_mean: vec![15.0; n],
             temperature_range: vec![0.0; n],
             precipitation: vec![0.0; n],
@@ -164,6 +204,7 @@ mod tests {
         assert_eq!(world.elevation_relief.len(), n);
         assert_eq!(world.bedrock_type.len(), n);
         assert_eq!(world.plate_id.len(), n);
+        assert_eq!(world.plate_origin.len(), n);
         assert_eq!(world.temperature_mean.len(), n);
         assert_eq!(world.temperature_range.len(), n);
         assert_eq!(world.precipitation.len(), n);
@@ -232,5 +273,21 @@ mod tests {
         let mut world = world_at_level(4);
         world.flow_direction[10] = Some(Direction::D2);
         assert_eq!(world.flow_direction[10], Some(Direction::D2));
+    }
+
+    #[test]
+    fn plate_origin_defaults_none() {
+        let world = world_at_level(4);
+        assert!(world.plate_origin.iter().all(|o| o.is_none()));
+    }
+
+    #[test]
+    fn pack_unpack_plate_local_round_trip() {
+        let v = [0.1, -0.5, 0.866];
+        let (x, y, z) = pack_plate_local(v);
+        let out = unpack_plate_local(x, y, z);
+        assert!((out[0] - v[0]).abs() < 0.001);
+        assert!((out[1] - v[1]).abs() < 0.001);
+        assert!((out[2] - v[2]).abs() < 0.001);
     }
 }

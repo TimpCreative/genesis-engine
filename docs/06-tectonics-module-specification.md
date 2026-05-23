@@ -1,12 +1,13 @@
 # 06 — Tectonics Module Specification
 
 **Document Type:** Tier 2 — System Specification
-**Status:** Draft v0.2
+**Status:** Draft v0.3
 **Last Updated:** May 2026
 **Owner:** Brax Johnson
 **Implementing Phase:** 1 (Geology Prototype)
 
 **Changelog:**
+- v0.3 (May 2026): Recalibrated boundary elevation rates by ~100x (§5.1–§5.4) to prevent saturation. Added coastal-shelf falloff (§5.3) to produce gradient coastlines instead of cliffs. New rates: `OROGENY_RATE=5e-5`, `SUBDUCTION_RATE=1e-4`, `SUBSIDENCE_RATE=2e-5`. Calibration verified by `long_validation_does_not_saturate_elevation` test. See P1-11 calibration prompt.
 - v0.2 (May 2026): Incorporated Brax's review feedback. Added planetary rotation influence on plate motion (§2.1). Added motion axis constraints to prevent geometrically weird plate drift (§2.1). Replaced pure Voronoi initial generation with growth-based seeding (§2.2). Split plate count into major (default 7) + minor (default 8) (§2.2). Made plate velocity distribution log-normal with continental-velocity multiplier (§2.4). Added climate-feedback hook for erosion in Phase 2 (§8.2). Replaced limestone bedrock assignment with fertility accumulator field (§8.4) — `BedrockType::Limestone` transition deferred to Phase 4 Biology. Updated open questions; resolved items 2 and 4; added items 7 (planetary formation deferred to future doc) and 8 (chaos mode deferred).
 - v0.1 (May 2026): Initial draft. Defines plate model, boundary dynamics, hot spots, erosion, event schema, and the user-tunable event granularity system.
 
@@ -247,24 +248,26 @@ For boundary classification, we project this onto the local boundary frame (norm
 
 ### 4.1 Tick Interval
 
-Geological tick interval scales with the current `Era`:
+Tectonic tick interval scales with the current `Era`. The layer stays **active through Prehistoric and Ancient**; only **Recent** is dormant (present-day snapshot).
 
 | Era | Tick Interval | Rationale |
 |-----|---------------|-----------|
 | Formation | 1 tick at year 0 only | Initial plate generation |
 | Geological | 500,000 years | Continental drift moves visibly per tick |
-| Prehistoric | 2,000,000 years | Slower; geology mostly settled, just refining |
-| Ancient | 10,000,000 years | Negligible change over historical timescales |
+| Prehistoric | 2,000,000 years | Coarser resolution; plates still drift and boundaries evolve |
+| Ancient | 10,000,000 years | Even coarser; slow residual tectonics over long spans |
 | Recent | Layer dormant | No simulation, just state |
 
-These are configurable via `WorldParameters.core.geology.tick_interval_overrides` (optional map per era; falls back to defaults).
+**Why tectonics does not stop at life emergence:** Real planetary tectonics runs continuously for billions of years. Treating the Geological era as the only active window was incorrect for a god-mode worldbuilding tool that simulates full planetary history—continents must keep advecting, colliding, and eroding from 500 Myr through the end of the simulation. Life emergence marks a narrative era boundary, not the end of plate tectonics.
+
+Geological-era interval is configurable via `WorldParameters.core.geology.tick_interval_overrides_years` (optional map per era; falls back to defaults). Prehistoric and Ancient intervals are fixed constants in v1.
 
 Total tick count for default Earth-analog world:
 - Formation: 1 tick
 - Geological: (life_emergence_year - 0) / 500,000 = ~1,000 ticks (assuming life emerges at 500 million years)
 - Prehistoric: (sapience_year - life_emergence) / 2,000,000 = ~2,000 ticks
-- Ancient: small number
-- **Total: ~3,000-4,000 ticks over the full geological history**
+- Ancient: (recent_boundary - sapience) / 10,000,000 = small number
+- **Total: ~3,000-4,000 ticks over the full planetary history**
 
 ### 4.2 Per-Tick Steps
 
@@ -354,7 +357,7 @@ At a divergent boundary, two plates separate. New crust forms in the gap.
 For each boundary hex h at a divergent boundary:
 - Elevation decreases toward the oceanic baseline (-3500m) at a rate proportional to `relative_velocity_magnitude * tick_interval_years`
 - Specifically: `elevation_mean[h] -= velocity_cm_per_year * tick_interval_years * subsidence_rate`
-- Where `subsidence_rate ≈ 0.001 m per cm of separation` (calibrated to produce ~3.5km deepening over 100 million years)
+- Where `subsidence_rate ≈ 2e-5 m per cm of separation` (calibrated to produce ~3 km deepening over 100 million years of sustained divergence)
 - Bedrock changes to `OceanicCrust` if it was previously something else
 - Plate ID is reassigned (the boundary hex now clearly belongs to whichever plate it's farther into)
 
@@ -366,7 +369,7 @@ Two continents collide. Crust crumples upward.
 
 For each boundary hex h at a continental-continental boundary:
 - `elevation_mean[h] += orogeny_rate * velocity_cm_per_year * tick_interval_years`
-- Where `orogeny_rate ≈ 0.005 m per cm of convergence` (calibrated to produce ~5km elevation over 100 million years of sustained collision)
+- Where `orogeny_rate ≈ 5e-5 m per cm of convergence` (calibrated to produce ~5 km elevation over 100 million years of sustained collision)
 - `elevation_relief[h] += orogeny_rate * 0.3 * velocity_cm_per_year * tick_interval_years` (mountains get rougher)
 - Bedrock changes to `Metamorphic` (collision metamorphism)
 
@@ -378,12 +381,14 @@ Oceanic plate subducts under continental plate.
 
 For each boundary hex h on the **oceanic side**:
 - Elevation decreases sharply (forming a trench): `elevation_mean[h] -= subduction_rate * velocity * tick_interval`
-- `subduction_rate ≈ 0.02 m per cm` (deeper response than divergence)
+- `subduction_rate ≈ 1e-4 m per cm` (calibrated to produce ~10 km trench over 100 million years of sustained subduction)
 
-For each boundary hex h on the **continental side** (within 3-5 hexes inland):
+For each boundary hex h on the **continental side** (within 3 hexes inland):
 - Elevation increases (coastal mountains)
 - Volcanism is likely (see §5.5)
 - Bedrock changes to `Igneous` (volcanic rock from arc magmatism)
+
+**Coastal shelf (oceanic plate):** From the continental boundary hex, gentle subsidence spreads onto the oceanic plate for up to 2 hexes, using falloff fractions `[0.4, 0.15]` of the trench delta per ring. This produces a continental shelf → deep ocean gradient instead of an instant cliff at the plate boundary.
 
 ### 5.4 Convergent: Oceanic-Oceanic
 
@@ -394,7 +399,7 @@ For each boundary hex h on the **upper plate side**:
 - Bedrock changes to `Igneous`
 
 For each boundary hex h on the **lower plate side**:
-- Elevation decreases (the subducting trench)
+- Elevation decreases (the subducting trench); uses the same `subduction_rate ≈ 1e-4 m per cm` as §5.3
 
 ### 5.5 Volcanism (Boundary-Driven)
 

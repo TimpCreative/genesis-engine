@@ -74,9 +74,17 @@ impl TickCoordinator {
                     if interval > 0 {
                         let _ = state.layer.advance(world, rng);
                         state.next_tick_year = world.current_year + interval;
+                    } else {
+                        // Layer is dormant at this year; skip it past the target to
+                        // prevent the coordinator stalling on a layer with no work.
+                        state.next_tick_year = WorldYear(i64::MAX);
                     }
                 }
             }
+        }
+
+        if world.current_year < target_year {
+            world.current_year = target_year;
         }
     }
 
@@ -135,6 +143,25 @@ impl SimulationLayer for RecordingLayer {
     fn advance(&mut self, world: &mut WorldData, _rng: &WorldRng) -> Vec<()> {
         self.tick_years.lock().unwrap().push(world.current_year);
         Vec::new()
+    }
+}
+
+/// Always dormant; used to verify the coordinator does not stall.
+#[cfg(test)]
+struct DormantLayer;
+
+#[cfg(test)]
+impl SimulationLayer for DormantLayer {
+    fn name(&self) -> &str {
+        "dormant"
+    }
+
+    fn tick_interval(&self, _current_time: WorldYear, _params: &WorldParameters) -> i64 {
+        0
+    }
+
+    fn advance(&mut self, _world: &mut WorldData, _rng: &WorldRng) -> Vec<()> {
+        panic!("dormant layer must not advance");
     }
 }
 
@@ -231,5 +258,20 @@ mod tests {
             *slow_log.lock().unwrap(),
             vec![WorldYear(0), WorldYear(100)]
         );
+    }
+
+    #[test]
+    fn coordinator_does_not_stall_on_dormant_layer() {
+        let mut coord = TickCoordinator::new();
+        coord.add_layer(Box::new(DormantLayer));
+
+        let mut world = world_at(WorldYear::FORMATION);
+        let rng = WorldRng::from_effective_seed(1);
+        let params = WorldParameters::default();
+        let target = WorldYear(1_000_000);
+
+        coord.advance_to(target, &mut world, &rng, &params);
+
+        assert_eq!(world.current_year, target);
     }
 }
