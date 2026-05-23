@@ -255,6 +255,86 @@ mod tests {
         );
     }
 
+    /// Manual P2-5 report: `cargo test -p genesis_app p2_5_wind_field_stats -- --ignored --nocapture`
+    #[test]
+    #[ignore = "manual P2-5 wind field verification"]
+    fn p2_5_wind_field_stats() {
+        use genesis_core::parameters::WorldParameters;
+
+        let mut params = WorldParameters::default();
+        params.core.grid.subdivision_level = 7;
+
+        let mut world = create_world(params).expect("world");
+        let mut tectonics = TectonicsState::new();
+        let mut climate = ClimateState::new();
+        generate_full_history(
+            &mut world,
+            &mut tectonics,
+            &mut climate,
+            WorldYear(1_000_000_000),
+            |_| {},
+        )
+        .expect("history");
+
+        let data = &world.data;
+        let n = data.cell_count() as usize;
+
+        let mut min_speed = f32::INFINITY;
+        let mut max_speed = 0.0_f32;
+        let mut sum_low_elev = 0.0_f64;
+        let mut count_low_elev = 0_u64;
+        let mut sum_high_elev = 0.0_f64;
+        let mut count_high_elev = 0_u64;
+
+        for i in 0..n {
+            let speed = data.wind_speed_m_s[i];
+            let elev = data.elevation_mean[i];
+            if speed.is_finite() && speed > 0.0 {
+                min_speed = min_speed.min(speed);
+                max_speed = max_speed.max(speed);
+            }
+            if elev < 1000.0 {
+                sum_low_elev += f64::from(speed);
+                count_low_elev += 1;
+            }
+            if elev > 4000.0 {
+                sum_high_elev += f64::from(speed);
+                count_high_elev += 1;
+            }
+        }
+
+        let distinct_directions: std::collections::BTreeSet<i32> = data
+            .wind_direction_rad
+            .iter()
+            .filter(|&&d| d > 0.0)
+            .map(|&d| (d * 100.0).round() as i32)
+            .collect();
+
+        let mean_low = if count_low_elev > 0 {
+            sum_low_elev / count_low_elev as f64
+        } else {
+            0.0
+        };
+        let mean_high = if count_high_elev > 0 {
+            sum_high_elev / count_high_elev as f64
+        } else {
+            0.0
+        };
+
+        eprintln!("=== wind field at 1B years (subdiv=7) ===");
+        eprintln!("min_speed_m_s: {min_speed}");
+        eprintln!("max_speed_m_s: {max_speed}");
+        eprintln!("mean_speed_below_1000m_elev: {mean_low}");
+        eprintln!("mean_speed_above_4000m_elev: {mean_high}");
+        eprintln!(
+            "distinct_directions (0.01 rad bins): {}",
+            distinct_directions.len()
+        );
+
+        assert!(max_speed > 0.0 && max_speed < 30.0);
+        assert!(distinct_directions.len() >= 4);
+    }
+
     #[test]
     fn empty_climate_layer_does_not_change_tectonic_world_at_1m() {
         let mut params = WorldParameters::default();

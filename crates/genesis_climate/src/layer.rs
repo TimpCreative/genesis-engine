@@ -125,6 +125,33 @@ impl SimulationLayer for ClimateLayer {
             );
         }
 
+        {
+            let mut state = self.state.borrow_mut();
+            state.circulation_cells = crate::circulation::compute_circulation(world);
+
+            let wind_start = std::time::Instant::now();
+            crate::wind::compute_wind_field(world, &state.circulation_cells);
+            let wind_elapsed = wind_start.elapsed();
+            if wind_elapsed.as_millis() > 50 {
+                eprintln!(
+                    "[climate] wind tick at year {} took {}ms",
+                    world.current_year.value(),
+                    wind_elapsed.as_millis()
+                );
+            }
+
+            let era = Era::for_year(world.current_year, &world.parameters);
+            if state.formation_complete && !state.circulation_logged_once && era != Era::Formation {
+                eprintln!(
+                    "[climate] circulation: {} cells per hemisphere ({}h rotation), gradient ~{}°C",
+                    state.circulation_cells.cells_per_hemisphere,
+                    world.parameters.core.planet.rotation_period_hours,
+                    state.circulation_cells.equator_pole_temp_diff_c,
+                );
+                state.circulation_logged_once = true;
+            }
+        }
+
         self.last_tick_year.set(world.current_year);
         Vec::new()
     }
@@ -189,6 +216,90 @@ mod tests {
             (world.data.global_temperature_c - 15.0).abs() < 20.0,
             "temperature should be near equilibrium; got {}",
             world.data.global_temperature_c
+        );
+    }
+
+    #[test]
+    fn circulation_cells_computed_after_formation() {
+        let params = WorldParameters::default();
+        let mut world = create_world(params).expect("world");
+        let mut climate = ClimateState::new();
+
+        let (layer, shared) = ClimateLayer::attach(&mut climate);
+        let mut coordinator = TickCoordinator::new();
+        coordinator.add_layer(Box::new(layer));
+
+        let params = world.data.parameters.clone();
+        coordinator.advance_to(WorldYear(500_000_000), &mut world.data, &world.rng, &params);
+        drop(coordinator);
+
+        let mut climate = ClimateLayer::detach_state(shared);
+
+        assert!(climate.formation_complete);
+        assert_eq!(climate.circulation_cells.cells_per_hemisphere, 3);
+        assert_eq!(climate.circulation_cells.cells.len(), 3);
+        assert!(
+            climate.circulation_cells.equator_pole_temp_diff_c >= 40.0,
+            "gradient should be strong after cooling; got {}",
+            climate.circulation_cells.equator_pole_temp_diff_c
+        );
+
+        let intensity_at_500m = climate.circulation_cells.cells[0].intensity;
+        let gradient_at_500m = climate.circulation_cells.equator_pole_temp_diff_c;
+
+        world.data.current_year = WorldYear(1_000_000_000);
+        let (mut layer, shared) = ClimateLayer::attach(&mut climate);
+        layer.advance(&mut world.data, &world.rng);
+        drop(layer);
+        climate = ClimateLayer::detach_state(shared);
+
+        assert!(
+            climate.circulation_cells.equator_pole_temp_diff_c >= gradient_at_500m,
+            "gradient at 1B should be >= 500M"
+        );
+        assert!(
+            climate.circulation_cells.cells[0].intensity >= intensity_at_500m,
+            "intensity at 1B should be >= 500M"
+        );
+    }
+
+    #[test]
+    fn wind_field_populated_after_formation() {
+        let params = WorldParameters::default();
+        let mut world = create_world(params).expect("world");
+        let mut climate = ClimateState::new();
+
+        let (layer, shared) = ClimateLayer::attach(&mut climate);
+        let mut coordinator = TickCoordinator::new();
+        coordinator.add_layer(Box::new(layer));
+
+        let params = world.data.parameters.clone();
+        coordinator.advance_to(WorldYear(500_000_000), &mut world.data, &world.rng, &params);
+        drop(coordinator);
+
+        let _climate = ClimateLayer::detach_state(shared);
+
+        let speeds = &world.data.wind_speed_m_s;
+        assert!(
+            speeds.iter().any(|&s| s > 0.0),
+            "expected some non-zero wind speeds after formation"
+        );
+        assert!(
+            speeds.iter().all(|&s| s >= 0.0 && s < 30.0),
+            "wind speeds should be in [0, 30) m/s"
+        );
+
+        let distinct_directions: std::collections::BTreeSet<i32> = world
+            .data
+            .wind_direction_rad
+            .iter()
+            .filter(|&&d| d > 0.0)
+            .map(|&d| (d * 100.0).round() as i32)
+            .collect();
+        assert!(
+            distinct_directions.len() >= 4,
+            "expected at least 4 distinct wind directions, got {}",
+            distinct_directions.len()
         );
     }
 }

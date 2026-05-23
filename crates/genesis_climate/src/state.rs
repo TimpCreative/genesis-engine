@@ -114,6 +114,50 @@ pub fn formation_period_active(year: i64, params: &WorldParameters) -> bool {
     !params.core.climate.skip_planetary_formation && year <= STABILIZATION_END_YEAR
 }
 
+/// A single circulation cell, spanning a latitude band in one hemisphere.
+///
+/// Per Doc 07 §6.3, cells alternate in circulation direction: cell 0 (equator-most)
+/// is Hadley-like, cell 1 is Ferrel-like, cell 2 is polar-like, etc.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct CirculationCell {
+    /// Zero-indexed from equator outward (0 = equator-most cell, N-1 = polar cell).
+    pub index: u8,
+    /// Latitude (radians, absolute value) of the cell's equator-side boundary.
+    pub lat_low_rad: f64,
+    /// Latitude (radians, absolute value) of the cell's pole-side boundary.
+    pub lat_high_rad: f64,
+    /// Cell's circulation intensity (dimensionless, 0.1-2.0 range typical).
+    /// Scales with pole-equator temperature gradient.
+    pub intensity: f32,
+}
+
+/// Atmospheric circulation cells for the planet (Doc 07 §6).
+///
+/// Cells are symmetric: each cell description applies to both hemispheres. The
+/// `cells_per_hemisphere` field is the count for one hemisphere; total cells
+/// in the atmosphere is `2 * cells_per_hemisphere`.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct CirculationCells {
+    /// Number of cells per hemisphere. 1-6 range.
+    pub cells_per_hemisphere: u8,
+    /// Cell descriptions, ordered from equator outward.
+    /// `cells.len() == cells_per_hemisphere`.
+    pub cells: Vec<CirculationCell>,
+    /// Pole-to-equator temperature gradient (°C) used to compute intensity this tick.
+    pub equator_pole_temp_diff_c: f32,
+}
+
+impl CirculationCells {
+    /// Returns the cell that contains the given latitude (radians, signed).
+    /// Returns `None` if the cells haven't been computed yet (empty cells list).
+    pub fn cell_for_latitude(&self, lat_rad: f64) -> Option<&CirculationCell> {
+        let abs_lat = lat_rad.abs();
+        self.cells
+            .iter()
+            .find(|c| abs_lat >= c.lat_low_rad && abs_lat <= c.lat_high_rad)
+    }
+}
+
 /// Glaciation state (Doc 07 §12.2).
 #[derive(Copy, Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub enum GlaciationState {
@@ -145,6 +189,10 @@ pub struct ClimateState {
     /// Last temperature at which a cooling milestone was emitted.
     /// `INFINITY` until first tick (no emissions before then).
     pub last_cooling_milestone_temp_c: f32,
+    /// Atmospheric circulation cell configuration. Recomputed each climate tick.
+    pub circulation_cells: CirculationCells,
+    /// True after the one-time circulation diagnostic has been logged to stderr.
+    pub circulation_logged_once: bool,
 }
 
 impl Default for ClimateState {
@@ -159,6 +207,8 @@ impl Default for ClimateState {
             formation_sub_phase: FormationSubPhase::Molten,
             formation_complete: false,
             last_cooling_milestone_temp_c: f32::INFINITY,
+            circulation_cells: CirculationCells::default(),
+            circulation_logged_once: false,
         }
     }
 }

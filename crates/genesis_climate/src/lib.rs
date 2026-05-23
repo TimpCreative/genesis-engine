@@ -5,13 +5,17 @@
 //! precipitation, regimes, atmospheric composition, variability,
 //! and climate-tectonics feedback.
 
+pub mod circulation;
 pub mod events;
 pub mod formation;
 pub mod layer;
 pub mod ocean_distance;
 pub mod state;
+pub mod wind;
 
+pub use circulation::compute_circulation;
 pub use ocean_distance::compute_distance_to_ocean;
+pub use wind::compute_wind_field;
 
 pub use events::flush_events_to_branch;
 pub use formation::{
@@ -24,6 +28,7 @@ pub use layer::{
     DEFAULT_RECENT_CLIMATE_TICK_YEARS,
 };
 pub use state::{
-    AtmosphericComposition, ClimateRegime, ClimateState, FormationSubPhase, GlaciationState,
-    STABILIZATION_END_YEAR, T_EQUILIBRIUM_C, T_INITIAL_MOLTEN_C, formation_period_active,
+    AtmosphericComposition, CirculationCell, CirculationCells, ClimateRegime, ClimateState,
+    FormationSubPhase, GlaciationState, STABILIZATION_END_YEAR, T_EQUILIBRIUM_C,
+    T_INITIAL_MOLTEN_C, formation_period_active,
 };
