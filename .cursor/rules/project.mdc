@@ -157,3 +157,5 @@ genesis-engine/
 ```
 
 Refer to files by their path relative to repo root.
+
+When committing to git, use robust, multi-line commit messages that cover all major details of the changes since the previous commit.
