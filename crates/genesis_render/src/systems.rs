@@ -7,16 +7,21 @@ use bevy::camera::{OrthographicProjection, ScalingMode};
 use bevy::input::mouse::{AccumulatedMouseMotion, MouseWheel};
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
-use genesis_core::{WorldSeed, create_world};
+use genesis_core::{HexId, WorldSeed, create_world};
 
-use crate::color::hex_fill_color;
+use crate::color::hex_color_for_mode;
 use crate::polygon::{direction_to_lat_lon, hex_polygon_vertices, unwrap_lon_relative};
 use crate::projection::{hex_mesh_2d, project, should_skip_for_equirectangular};
+use crate::render_mode::CurrentRenderMode;
 use crate::resources::{CameraState, HexEntityCache, WorldDirty, WorldResource};
 
 const MIN_ZOOM: f32 = 0.1;
 const MAX_ZOOM: f32 = 50.0;
 const ZOOM_SENSITIVITY: f32 = 0.1;
+
+/// Maps a spawned mesh entity back to its hex for color updates.
+#[derive(Component)]
+pub(crate) struct HexCell(pub HexId);
 
 /// World width/height in projected radians (equirectangular).
 const WORLD_WIDTH: f32 = (2.0 * PI) as f32;
@@ -160,9 +165,64 @@ pub fn handle_quit(keys: Res<ButtonInput<KeyCode>>, mut exit: MessageWriter<AppE
     }
 }
 
+pub fn cycle_render_mode_on_keypress(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut render_mode: ResMut<CurrentRenderMode>,
+) {
+    if keys.just_pressed(KeyCode::KeyM) {
+        render_mode.0 = render_mode.0.cycle_next();
+        eprintln!("[render] mode: {}", render_mode.0.label());
+    }
+}
+
+pub fn update_window_title(
+    render_mode: Res<CurrentRenderMode>,
+    mut windows: Query<&mut Window, With<PrimaryWindow>>,
+) {
+    if !render_mode.is_changed() {
+        return;
+    }
+    if let Ok(mut window) = windows.single_mut() {
+        window.title = format!(
+            "Genesis Engine — {} (press M to cycle)",
+            render_mode.0.label()
+        );
+    }
+}
+
+pub fn update_hex_colors(
+    world_res: Option<Res<WorldResource>>,
+    render_mode: Res<CurrentRenderMode>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    query: Query<(&HexCell, &MeshMaterial2d<ColorMaterial>)>,
+) {
+    if !render_mode.is_changed() {
+        return;
+    }
+    let Some(world_res) = world_res else {
+        return;
+    };
+
+    let data = &world_res.0.data;
+    let grid = &data.grid;
+
+    for (hex_cell, mat_handle) in &query {
+        let idx = hex_cell.0.0 as usize;
+        if idx >= data.cell_count() as usize {
+            continue;
+        }
+        let is_pentagon = grid.is_pentagon(hex_cell.0);
+        let color = hex_color_for_mode(data, idx, render_mode.0, is_pentagon);
+        if let Some(material) = materials.get_mut(&mat_handle.0) {
+            material.color = color;
+        }
+    }
+}
+
 pub fn render_world_if_dirty(
     mut commands: Commands,
     world_res: Option<Res<WorldResource>>,
+    render_mode: Res<CurrentRenderMode>,
     mut world_dirty: ResMut<WorldDirty>,
     mut cache: ResMut<HexEntityCache>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -233,14 +293,13 @@ pub fn render_world_if_dirty(
         let mesh = hex_mesh_2d(center_2d, &ring);
         let mesh_handle = meshes.add(mesh);
         let idx = hex.0 as usize;
-        let elev = world_res.0.data.elevation_mean[idx];
-        let sea = world_res.0.data.sea_level_m;
         let is_pentagon = grid.is_pentagon(hex);
-        let fill = hex_fill_color(elev, sea, is_pentagon);
+        let fill = hex_color_for_mode(&world_res.0.data, idx, render_mode.0, is_pentagon);
         let material = materials.add(ColorMaterial::from_color(fill));
 
         let entity = commands
             .spawn((
+                HexCell(hex),
                 Mesh2d(mesh_handle),
                 MeshMaterial2d(material),
                 Transform::from_xyz(0.0, 0.0, 0.0),

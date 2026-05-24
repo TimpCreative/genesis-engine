@@ -1,9 +1,15 @@
-//! Deterministic elevation-based hex coloring (Doc 06 §15 step 10).
+//! Hex coloring for elevation and climate visualization.
 //!
-//! Colors are derived only from `elevation_m` and `sea_level_m` — no `HexId` hue.
-//! Pentagons use the same ramp as hexes; five-sided geometry distinguishes them.
+//! Elevation colors follow Doc 06 §15 step 10. Temperature and precipitation
+//! ramps support multi-mode rendering (Doc 07 fields).
 
 use bevy::prelude::*;
+use genesis_core::data::WorldData;
+
+use crate::render_mode::RenderMode;
+
+/// Uniform ocean color for climate modes (keeps land patterns readable).
+pub const OCEAN_BASELINE_COLOR: Color = Color::srgb(0.1, 0.3, 0.5);
 
 /// Matches tectonics clamp (Doc 06 §5.7); local to render — no `genesis_tectonics` dependency.
 pub const MIN_ELEVATION_M: f32 = -11_000.0;
@@ -105,6 +111,114 @@ pub fn hex_fill_color(elevation_m: f32, sea_level_m: f32, _is_pentagon: bool) ->
     elevation_color(elevation_m, sea_level_m)
 }
 
+/// Maps temperature in °C to a color: blue (cold) → green (mild) → yellow (warm) → red (hot).
+pub fn temperature_to_color(temp_c: f32) -> Color {
+    let normalized = ((temp_c + 40.0) / 75.0).clamp(0.0, 1.0);
+
+    let (r, g, b) = if normalized < 0.25 {
+        let t = normalized / 0.25;
+        (
+            0.1 + t * (0.4 - 0.1),
+            0.1 + t * (0.6 - 0.1),
+            0.6 + t * (0.95 - 0.6),
+        )
+    } else if normalized < 0.5 {
+        let t = (normalized - 0.25) / 0.25;
+        (0.4, 0.6 + t * (0.85 - 0.6), 0.95 + t * (0.4 - 0.95))
+    } else if normalized < 0.75 {
+        let t = (normalized - 0.5) / 0.25;
+        (
+            0.4 + t * (0.95 - 0.4),
+            0.85 + t * (0.9 - 0.85),
+            0.4 + t * (0.2 - 0.4),
+        )
+    } else {
+        let t = (normalized - 0.75) / 0.25;
+        (
+            0.95 + t * (0.85 - 0.95),
+            0.9 + t * (0.2 - 0.9),
+            0.2 + t * (0.15 - 0.2),
+        )
+    };
+
+    Color::srgb(r, g, b)
+}
+
+/// Maps precipitation in mm/year to a color: brown (dry) → tan → green → dark blue-green (very wet).
+///
+/// Domain 0–2500 mm with midpoint near Earth's ~800 mm land mean (moderate green band).
+pub fn precipitation_to_color(precip_mm: f32) -> Color {
+    let p = precip_mm.clamp(0.0, 2500.0);
+
+    let (r, g, b) = if p < 200.0 {
+        let t = p / 200.0;
+        (
+            0.5 + t * (0.75 - 0.5),
+            0.4 + t * (0.6 - 0.4),
+            0.2 + t * (0.35 - 0.2),
+        )
+    } else if p < 600.0 {
+        let t = (p - 200.0) / 400.0;
+        (
+            0.75 + t * (0.85 - 0.75),
+            0.6 + t * (0.8 - 0.6),
+            0.35 + t * (0.4 - 0.35),
+        )
+    } else if p < 1200.0 {
+        let t = (p - 600.0) / 600.0;
+        (
+            0.85 + t * (0.45 - 0.85),
+            0.8 + t * (0.75 - 0.8),
+            0.4 + t * (0.35 - 0.4),
+        )
+    } else if p < 2000.0 {
+        let t = (p - 1200.0) / 800.0;
+        (
+            0.45 + t * (0.2 - 0.45),
+            0.75 + t * (0.6 - 0.75),
+            0.35 + t * (0.4 - 0.35),
+        )
+    } else {
+        let t = (p - 2000.0) / 500.0;
+        (
+            0.2 + t * (0.1 - 0.2),
+            0.6 + t * (0.4 - 0.6),
+            0.4 + t * (0.55 - 0.4),
+        )
+    };
+
+    Color::srgb(r, g, b)
+}
+
+/// Resolves fill color for a hex under the active render mode.
+pub fn hex_color_for_mode(
+    data: &WorldData,
+    hex_idx: usize,
+    mode: RenderMode,
+    is_pentagon: bool,
+) -> Color {
+    let elev = data.elevation_mean[hex_idx];
+    let sea_level = data.sea_level_m;
+
+    match mode {
+        RenderMode::Elevation => hex_fill_color(elev, sea_level, is_pentagon),
+        RenderMode::Temperature => {
+            if elev < sea_level {
+                OCEAN_BASELINE_COLOR
+            } else {
+                temperature_to_color(data.temperature_mean[hex_idx])
+            }
+        }
+        RenderMode::Precipitation => {
+            if elev < sea_level {
+                OCEAN_BASELINE_COLOR
+            } else {
+                precipitation_to_color(data.precipitation[hex_idx])
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -192,5 +306,77 @@ mod tests {
         let at_min = elevation_color(MIN_ELEVATION_M, 0.0);
         let below = elevation_color(MIN_ELEVATION_M - 5_000.0, 0.0);
         colors_approx_equal(at_min, below);
+    }
+
+    #[test]
+    fn temperature_color_cold_is_bluer_than_hot() {
+        let cold = color_to_rgb(temperature_to_color(-40.0));
+        let hot = color_to_rgb(temperature_to_color(35.0));
+        assert!(cold[2] > hot[2], "cold should be bluer");
+        assert!(hot[0] > cold[0], "hot should be redder");
+    }
+
+    #[test]
+    fn temperature_color_is_deterministic() {
+        colors_approx_equal(temperature_to_color(15.0), temperature_to_color(15.0));
+    }
+
+    #[test]
+    fn precipitation_color_zero_is_dark_brown() {
+        let rgb = color_to_rgb(precipitation_to_color(0.0));
+        assert!(rgb[0] > rgb[2], "desert should be browner than blue");
+        assert!(rgb[0] >= 0.45 && rgb[0] <= 0.55);
+        assert!(rgb[1] >= 0.35 && rgb[1] <= 0.45);
+    }
+
+    #[test]
+    fn precipitation_color_earth_average_is_moderate_green() {
+        let rgb = color_to_rgb(precipitation_to_color(800.0));
+        assert!(
+            rgb[1] > rgb[0] && rgb[1] > rgb[2],
+            "800mm should read as moderate green, got {:?}",
+            rgb
+        );
+        assert!(rgb[1] >= 0.7, "green channel should be strong at 800mm");
+    }
+
+    #[test]
+    fn precipitation_color_max_is_dark_blue_green() {
+        let rgb = color_to_rgb(precipitation_to_color(2500.0));
+        assert!(rgb[2] > rgb[0], "rainforest should be bluer than red");
+        assert!(rgb[1] >= 0.35 && rgb[1] <= 0.45);
+        assert!(rgb[2] >= 0.5);
+    }
+
+    #[test]
+    fn precipitation_color_progression_dry_to_wet() {
+        let dry = color_to_rgb(precipitation_to_color(0.0));
+        let semi_arid = color_to_rgb(precipitation_to_color(400.0));
+        let moderate = color_to_rgb(precipitation_to_color(800.0));
+        let rainforest = color_to_rgb(precipitation_to_color(2500.0));
+
+        assert!(dry[0] > dry[2], "desert should be brown, not blue");
+        assert!(
+            moderate[1] > moderate[0],
+            "Earth-average should be green-dominant"
+        );
+        assert!(moderate[1] > dry[1], "800mm should be greener than desert");
+        assert!(
+            semi_arid[0] > moderate[0],
+            "semi-arid should be redder than moderate"
+        );
+        assert!(
+            rainforest[2] > moderate[2],
+            "rainforest should be bluer than moderate"
+        );
+        assert!(
+            dry[0] > rainforest[0],
+            "desert should be redder than rainforest"
+        );
+    }
+
+    #[test]
+    fn precipitation_color_is_deterministic() {
+        colors_approx_equal(precipitation_to_color(800.0), precipitation_to_color(800.0));
     }
 }
