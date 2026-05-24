@@ -59,12 +59,21 @@ pub fn compute_ocean_currents(data: &mut WorldData, basins: &OceanBasins) {
 
         let bias_vec = equatorial_bias_vector(lat_rad);
 
-        let combined = [
-            (gyre_vec[0] + bias_vec[0]).clamp(-MAX_CURRENT_SPEED_M_S, MAX_CURRENT_SPEED_M_S),
-            (gyre_vec[1] + bias_vec[1]).clamp(-MAX_CURRENT_SPEED_M_S, MAX_CURRENT_SPEED_M_S),
-        ];
-
-        data.ocean_current_vec[i] = combined;
+        let combined_east = gyre_vec[0] + bias_vec[0];
+        let combined_north = gyre_vec[1] + bias_vec[1];
+        let magnitude = (combined_east * combined_east + combined_north * combined_north).sqrt();
+        let scale = if magnitude > MAX_CURRENT_SPEED_M_S {
+            MAX_CURRENT_SPEED_M_S / magnitude
+        } else {
+            1.0
+        };
+        data.ocean_current_vec[i] = [combined_east * scale, combined_north * scale];
+        let [e, n] = data.ocean_current_vec[i];
+        let speed = (e * e + n * n).sqrt();
+        if speed > MAX_CURRENT_SPEED_M_S {
+            let fix = MAX_CURRENT_SPEED_M_S / speed;
+            data.ocean_current_vec[i] = [e * fix, n * fix];
+        }
     }
 }
 
@@ -387,8 +396,8 @@ mod tests {
         compute_ocean_currents(&mut world.data, &basins);
 
         for &[e, n] in &world.data.ocean_current_vec {
-            assert!(e.abs() <= MAX_CURRENT_SPEED_M_S);
-            assert!(n.abs() <= MAX_CURRENT_SPEED_M_S);
+            let magnitude = (e * e + n * n).sqrt();
+            assert!(magnitude <= MAX_CURRENT_SPEED_M_S);
         }
     }
 

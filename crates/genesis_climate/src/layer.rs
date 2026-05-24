@@ -173,6 +173,17 @@ impl SimulationLayer for ClimateLayer {
                 );
             }
 
+            let precip_start = std::time::Instant::now();
+            crate::precipitation::compute_precipitation_field(world, &state);
+            let precip_elapsed = precip_start.elapsed();
+            if precip_elapsed.as_millis() > 100 {
+                eprintln!(
+                    "[climate] precipitation tick at year {} took {}ms",
+                    world.current_year.value(),
+                    precip_elapsed.as_millis()
+                );
+            }
+
             let era = Era::for_year(world.current_year, &world.parameters);
             if state.formation_complete && !state.circulation_logged_once && era != Era::Formation {
                 eprintln!(
@@ -511,6 +522,116 @@ mod tests {
         assert!(
             fast_fraction > 0.5,
             "expected majority of largest-basin hexes with speed > 0.1 m/s; got {basin_fast}/{basin_total} ({fast_fraction:.1})"
+        );
+    }
+
+    #[test]
+    fn precipitation_field_has_realistic_distribution() {
+        use crate::precipitation::{PRECIPITATION_MAX_MM, PRECIPITATION_MIN_MM};
+
+        let params = WorldParameters::default();
+        let mut world = create_world(params).expect("world");
+        let mut climate = ClimateState::new();
+
+        // Mixed ocean/land with relief so orographic and coastal modifiers can produce
+        // wet and dry extremes (flat elevation=0 worlds cap base precip below 1500 mm).
+        world.data.sea_level_m = 0.0;
+        for i in 0..world.data.cell_count() as usize {
+            let hex = HexId(i as u32);
+            let (lat, _) = world.data.grid.center_lat_lon(hex);
+            let abs_lat_deg = lat.abs().to_degrees();
+            world.data.elevation_mean[i] = if abs_lat_deg < 25.0 {
+                match i % 11 {
+                    0 => 4000.0,
+                    1 | 2 => 800.0,
+                    3..=5 => -500.0,
+                    _ => 200.0,
+                }
+            } else if abs_lat_deg < 40.0 {
+                if i % 4 == 0 { 1500.0 } else { -200.0 }
+            } else if i % 3 == 0 {
+                500.0
+            } else {
+                -300.0
+            };
+        }
+
+        let (layer, shared) = ClimateLayer::attach(&mut climate);
+        let mut coordinator = TickCoordinator::new();
+        coordinator.add_layer(Box::new(layer));
+
+        let params = world.data.parameters.clone();
+        coordinator.advance_to(
+            WorldYear(1_000_000_000),
+            &mut world.data,
+            &world.rng,
+            &params,
+        );
+        drop(coordinator);
+
+        let _climate = ClimateLayer::detach_state(shared);
+
+        let sea = world.data.sea_level_m;
+        let mut land_count = 0_u64;
+        let mut desert_count = 0_u64;
+        let mut wet_count = 0_u64;
+        let mut sum_tropical = 0.0_f64;
+        let mut count_tropical = 0_u64;
+        let mut sum_subtropical = 0.0_f64;
+        let mut count_subtropical = 0_u64;
+
+        for i in 0..world.data.cell_count() as usize {
+            let elev = world.data.elevation_mean[i];
+            if elev < sea {
+                continue;
+            }
+
+            land_count += 1;
+            let p = world.data.precipitation[i];
+            assert!(
+                (PRECIPITATION_MIN_MM..=PRECIPITATION_MAX_MM).contains(&p),
+                "precipitation {p} out of range"
+            );
+
+            if p < 250.0 {
+                desert_count += 1;
+            }
+            if p > 1500.0 {
+                wet_count += 1;
+            }
+
+            let (lat, _) = world.data.grid.center_lat_lon(HexId(i as u32));
+            let abs_lat_deg = lat.abs().to_degrees();
+            if abs_lat_deg < 23.0 {
+                sum_tropical += f64::from(p);
+                count_tropical += 1;
+            } else if (23.0..40.0).contains(&abs_lat_deg) {
+                sum_subtropical += f64::from(p);
+                count_subtropical += 1;
+            }
+        }
+
+        assert!(land_count > 0, "expected land hexes");
+        let desert_fraction = desert_count as f64 / land_count as f64;
+        let wet_fraction = wet_count as f64 / land_count as f64;
+        assert!(
+            desert_fraction >= 0.10,
+            "expected >=10% desert hexes (<250mm), got {desert_fraction:.1} ({desert_count}/{land_count})"
+        );
+        assert!(
+            wet_fraction >= 0.10,
+            "expected >=10% wet hexes (>1500mm), got {wet_fraction:.1} ({wet_count}/{land_count})"
+        );
+
+        let mean_tropical = sum_tropical / count_tropical as f64;
+        let mean_subtropical = sum_subtropical / count_subtropical as f64;
+        assert!(
+            count_tropical > 0 && count_subtropical > 0,
+            "expected tropical and subtropical land hexes"
+        );
+        assert!(
+            mean_tropical > mean_subtropical,
+            "tropical mean {mean_tropical} should exceed subtropical {mean_subtropical}"
         );
     }
 }

@@ -526,8 +526,8 @@ mod tests {
     #[ignore = "manual P2-8 ocean current verification"]
     fn p2_8_ocean_current_stats() {
         use genesis_climate::ocean_currents::MAX_CURRENT_SPEED_M_S;
-        use genesis_core::parameters::WorldParameters;
         use genesis_core::BasinId;
+        use genesis_core::parameters::WorldParameters;
 
         let mut params = WorldParameters::default();
         params.core.grid.subdivision_level = 7;
@@ -633,6 +633,199 @@ mod tests {
         if fast_count > 0 {
             assert!(adj_count > 0 || mean_abs_adj == 0.0);
         }
+    }
+
+    /// Manual P2-9 report: `cargo test -p genesis_app p2_9_precipitation_stats -- --ignored --nocapture`
+    #[test]
+    #[ignore = "manual P2-9 precipitation verification"]
+    fn p2_9_precipitation_stats() {
+        use genesis_core::parameters::WorldParameters;
+        use std::f32::consts::PI;
+
+        fn upwind_neighbor(
+            data: &genesis_core::data::WorldData,
+            hex: genesis_core::HexId,
+            wind_dir: f32,
+        ) -> Option<genesis_core::HexId> {
+            let grid = &data.grid;
+            let hex_pos = grid.cell_center_direction(hex);
+            let north_pole = [0.0_f64, 0.0, 1.0];
+            let cross = |a: [f64; 3], b: [f64; 3]| {
+                [
+                    a[1] * b[2] - a[2] * b[1],
+                    a[2] * b[0] - a[0] * b[2],
+                    a[0] * b[1] - a[1] * b[0],
+                ]
+            };
+            let normalize = |v: [f64; 3]| {
+                let mag = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+                if mag < 1e-9 {
+                    [1.0, 0.0, 0.0]
+                } else {
+                    [v[0] / mag, v[1] / mag, v[2] / mag]
+                }
+            };
+            let east = normalize(cross(north_pole, hex_pos));
+            let north = normalize(cross(hex_pos, east));
+            let bearing = wind_dir + PI;
+            let target_east = bearing.sin();
+            let target_north = bearing.cos();
+            let mut best = None;
+            let mut best_alignment = -1.0_f64;
+            for &neighbor in grid.neighbors(hex) {
+                let n_pos = grid.cell_center_direction(neighbor);
+                let to_n = [
+                    n_pos[0] - hex_pos[0],
+                    n_pos[1] - hex_pos[1],
+                    n_pos[2] - hex_pos[2],
+                ];
+                let east_comp = to_n[0] * east[0] + to_n[1] * east[1] + to_n[2] * east[2];
+                let north_comp = to_n[0] * north[0] + to_n[1] * north[1] + to_n[2] * north[2];
+                let mag = (east_comp * east_comp + north_comp * north_comp).sqrt();
+                if mag < 1e-9 {
+                    continue;
+                }
+                let alignment = (east_comp / mag) * f64::from(target_east)
+                    + (north_comp / mag) * f64::from(target_north);
+                if alignment > best_alignment {
+                    best_alignment = alignment;
+                    best = Some(neighbor);
+                }
+            }
+            best
+        }
+
+        let mut params = WorldParameters::default();
+        params.core.grid.subdivision_level = 7;
+
+        let mut world = create_world(params).expect("world");
+        let mut tectonics = TectonicsState::new();
+        let mut climate = ClimateState::new();
+        generate_full_history(
+            &mut world,
+            &mut tectonics,
+            &mut climate,
+            WorldYear(1_000_000_000),
+            |_| {},
+        )
+        .expect("history");
+
+        let data = &world.data;
+        let sea = data.sea_level_m;
+        let n = data.cell_count() as usize;
+
+        let mut land_count = 0_u64;
+        let mut min_precip = f32::INFINITY;
+        let mut max_precip = 0.0_f32;
+        let mut sum_land = 0.0_f64;
+
+        let mut sum_tropical = 0.0_f64;
+        let mut count_tropical = 0_u64;
+        let mut sum_subtropical = 0.0_f64;
+        let mut count_subtropical = 0_u64;
+        let mut sum_temperate = 0.0_f64;
+        let mut count_temperate = 0_u64;
+        let mut sum_polar = 0.0_f64;
+        let mut count_polar = 0_u64;
+
+        let mut desert_count = 0_u64;
+        let mut wet_count = 0_u64;
+
+        let mut rain_shadow_sum = 0.0_f64;
+        let mut rain_shadow_count = 0_u64;
+
+        for i in 0..n {
+            let elev = data.elevation_mean[i];
+            if elev < sea {
+                continue;
+            }
+
+            let hex = genesis_core::HexId(i as u32);
+            let p = data.precipitation[i];
+            let (lat, _) = data.grid.center_lat_lon(hex);
+            let abs_lat_deg = lat.abs().to_degrees();
+
+            land_count += 1;
+            min_precip = min_precip.min(p);
+            max_precip = max_precip.max(p);
+            sum_land += f64::from(p);
+
+            if p < 250.0 {
+                desert_count += 1;
+            }
+            if p > 1500.0 {
+                wet_count += 1;
+            }
+
+            if abs_lat_deg < 23.0 {
+                sum_tropical += f64::from(p);
+                count_tropical += 1;
+            } else if abs_lat_deg < 40.0 {
+                sum_subtropical += f64::from(p);
+                count_subtropical += 1;
+            } else if abs_lat_deg < 60.0 {
+                sum_temperate += f64::from(p);
+                count_temperate += 1;
+            } else {
+                sum_polar += f64::from(p);
+                count_polar += 1;
+            }
+
+            let wind_dir = data.wind_direction_rad[i];
+            if let Some(upwind) = upwind_neighbor(data, hex, wind_dir) {
+                let elev_upwind = data.elevation_mean[upwind.0 as usize];
+                if elev_upwind > elev + 1000.0 {
+                    rain_shadow_sum += f64::from(p);
+                    rain_shadow_count += 1;
+                }
+            }
+        }
+
+        let mean_land = sum_land / land_count as f64;
+        let mean_tropical = if count_tropical > 0 {
+            sum_tropical / count_tropical as f64
+        } else {
+            0.0
+        };
+        let mean_subtropical = if count_subtropical > 0 {
+            sum_subtropical / count_subtropical as f64
+        } else {
+            0.0
+        };
+        let mean_temperate = if count_temperate > 0 {
+            sum_temperate / count_temperate as f64
+        } else {
+            0.0
+        };
+        let mean_polar = if count_polar > 0 {
+            sum_polar / count_polar as f64
+        } else {
+            0.0
+        };
+        let mean_rain_shadow = if rain_shadow_count > 0 {
+            rain_shadow_sum / rain_shadow_count as f64
+        } else {
+            0.0
+        };
+
+        eprintln!("=== precipitation at 1B years (subdiv=7) ===");
+        eprintln!("land_hex_count: {land_count}");
+        eprintln!("min_precip_mm: {min_precip}");
+        eprintln!("max_precip_mm: {max_precip}");
+        eprintln!("mean_land_precip_mm: {mean_land}");
+        eprintln!("mean_tropical_mm: {mean_tropical}");
+        eprintln!("mean_subtropical_mm: {mean_subtropical}");
+        eprintln!("mean_temperate_mm: {mean_temperate}");
+        eprintln!("mean_polar_mm: {mean_polar}");
+        eprintln!("hexes_lt_250mm: {desert_count}");
+        eprintln!("hexes_gt_1500mm: {wet_count}");
+        eprintln!("rain_shadow_hex_count: {rain_shadow_count}");
+        eprintln!("mean_rain_shadow_precip_mm: {mean_rain_shadow}");
+        eprintln!("mean_all_land_precip_mm: {mean_land}");
+
+        assert!(min_precip >= 0.0);
+        assert!(max_precip <= 12000.0);
+        assert!(land_count > 0);
     }
 
     #[test]
