@@ -10,6 +10,7 @@ pub mod events;
 pub mod formation;
 pub mod layer;
 pub mod ocean_basins;
+pub mod ocean_currents;
 pub mod ocean_distance;
 pub mod state;
 pub mod temperature;
@@ -17,6 +18,7 @@ pub mod wind;
 
 pub use circulation::compute_circulation;
 pub use ocean_basins::identify_ocean_basins;
+pub use ocean_currents::compute_ocean_currents;
 pub use ocean_distance::compute_distance_to_ocean;
 pub use temperature::compute_temperature_field;
 pub use wind::compute_wind_field;

@@ -521,6 +521,120 @@ mod tests {
         );
     }
 
+    /// Manual P2-8 report: `cargo test -p genesis_app p2_8_ocean_current_stats -- --ignored --nocapture`
+    #[test]
+    #[ignore = "manual P2-8 ocean current verification"]
+    fn p2_8_ocean_current_stats() {
+        use genesis_climate::ocean_currents::MAX_CURRENT_SPEED_M_S;
+        use genesis_core::parameters::WorldParameters;
+        use genesis_core::BasinId;
+
+        let mut params = WorldParameters::default();
+        params.core.grid.subdivision_level = 7;
+
+        let mut world = create_world(params).expect("world");
+        let mut tectonics = TectonicsState::new();
+        let mut climate = ClimateState::new();
+        generate_full_history(
+            &mut world,
+            &mut tectonics,
+            &mut climate,
+            WorldYear(1_000_000_000),
+            |_| {},
+        )
+        .expect("history");
+
+        let data = &world.data;
+        let sea = data.sea_level_m;
+        let n = data.cell_count() as usize;
+
+        let largest_id = climate
+            .ocean_basins
+            .basins
+            .first()
+            .map(|b| b.id)
+            .unwrap_or(BasinId::NONE);
+
+        let mut min_speed = f32::INFINITY;
+        let mut max_speed = 0.0_f32;
+        let mut sum_speed = 0.0_f64;
+        let mut ocean_count = 0_u64;
+        let mut fast_count = 0_u64;
+
+        let mut basin_sum = 0.0_f64;
+        let mut basin_count = 0_u64;
+
+        for i in 0..n {
+            if data.elevation_mean[i] >= sea {
+                continue;
+            }
+            let [e, north] = data.ocean_current_vec[i];
+            let speed =
+                (f64::from(e) * f64::from(e) + f64::from(north) * f64::from(north)).sqrt() as f32;
+
+            ocean_count += 1;
+            min_speed = min_speed.min(speed);
+            max_speed = max_speed.max(speed);
+            sum_speed += f64::from(speed);
+            if speed > 0.1 {
+                fast_count += 1;
+            }
+
+            if data.basin_id[i] == largest_id {
+                basin_sum += f64::from(speed);
+                basin_count += 1;
+            }
+        }
+
+        let mean_speed = if ocean_count > 0 {
+            sum_speed / f64::from(ocean_count as u32)
+        } else {
+            0.0
+        };
+        let mean_basin_speed = if basin_count > 0 {
+            basin_sum / f64::from(basin_count as u32)
+        } else {
+            0.0
+        };
+
+        let coastal =
+            genesis_climate::ocean_currents::compute_coastal_temperature_adjustments(data);
+        let mut adj_count = 0_u64;
+        let mut min_adj = f32::INFINITY;
+        let mut max_adj = f32::NEG_INFINITY;
+        let mut sum_abs_adj = 0.0_f64;
+
+        for &adj in coastal.values() {
+            adj_count += 1;
+            min_adj = min_adj.min(adj);
+            max_adj = max_adj.max(adj);
+            sum_abs_adj += f64::from(adj.abs());
+        }
+        let mean_abs_adj = if adj_count > 0 {
+            sum_abs_adj / f64::from(adj_count as u32)
+        } else {
+            0.0
+        };
+
+        eprintln!("=== ocean currents at 1B years (subdiv=7) ===");
+        eprintln!("ocean_hex_count: {ocean_count}");
+        eprintln!("min_speed_m_s: {min_speed}");
+        eprintln!("max_speed_m_s: {max_speed}");
+        eprintln!("mean_speed_m_s: {mean_speed}");
+        eprintln!("hexes_speed_gt_0.1: {fast_count}");
+        eprintln!("largest_basin_mean_speed_m_s: {mean_basin_speed}");
+        eprintln!("coastal_adjustment_count: {adj_count}");
+        eprintln!("coastal_adj_min_c: {min_adj}");
+        eprintln!("coastal_adj_max_c: {max_adj}");
+        eprintln!("coastal_adj_mean_abs_c: {mean_abs_adj}");
+
+        assert!(max_speed <= MAX_CURRENT_SPEED_M_S);
+        assert!(min_speed >= 0.0);
+        if fast_count > 0 {
+            assert!(adj_count > 0 || mean_abs_adj == 0.0);
+        }
+    }
+
     #[test]
     fn empty_climate_layer_does_not_change_tectonic_world_at_1m() {
         let mut params = WorldParameters::default();

@@ -140,17 +140,6 @@ impl SimulationLayer for ClimateLayer {
                 );
             }
 
-            let temp_start = std::time::Instant::now();
-            crate::temperature::compute_temperature_field(world, &state);
-            let temp_elapsed = temp_start.elapsed();
-            if temp_elapsed.as_millis() > 50 {
-                eprintln!(
-                    "[climate] temperature tick at year {} took {}ms",
-                    world.current_year.value(),
-                    temp_elapsed.as_millis()
-                );
-            }
-
             let basins_start = std::time::Instant::now();
             state.ocean_basins = crate::ocean_basins::identify_ocean_basins(world);
             let basins_elapsed = basins_start.elapsed();
@@ -159,6 +148,28 @@ impl SimulationLayer for ClimateLayer {
                     "[climate] ocean_basins tick at year {} took {}ms",
                     world.current_year.value(),
                     basins_elapsed.as_millis()
+                );
+            }
+
+            let currents_start = std::time::Instant::now();
+            crate::ocean_currents::compute_ocean_currents(world, &state.ocean_basins);
+            let currents_elapsed = currents_start.elapsed();
+            if currents_elapsed.as_millis() > 100 {
+                eprintln!(
+                    "[climate] ocean_currents tick at year {} took {}ms",
+                    world.current_year.value(),
+                    currents_elapsed.as_millis()
+                );
+            }
+
+            let temp_start = std::time::Instant::now();
+            crate::temperature::compute_temperature_field(world, &state);
+            let temp_elapsed = temp_start.elapsed();
+            if temp_elapsed.as_millis() > 50 {
+                eprintln!(
+                    "[climate] temperature tick at year {} took {}ms",
+                    world.current_year.value(),
+                    temp_elapsed.as_millis()
                 );
             }
 
@@ -398,7 +409,10 @@ mod tests {
         climate = ClimateLayer::detach_state(shared);
 
         let basin_count = climate.ocean_basins.basins.len();
-        assert!(basin_count >= 1, "expected at least one basin, got {basin_count}");
+        assert!(
+            basin_count >= 1,
+            "expected at least one basin, got {basin_count}"
+        );
 
         let mut ocean_hexes = 0_u64;
         for (i, &elev) in world.data.elevation_mean.iter().enumerate() {
@@ -426,5 +440,77 @@ mod tests {
                 "largest basin {largest} should cover >=30% of {ocean_hexes} ocean hexes"
             );
         }
+    }
+
+    #[test]
+    fn ocean_currents_produce_gyres_in_large_basins() {
+        use crate::ocean_currents::MAX_CURRENT_SPEED_M_S;
+
+        let params = WorldParameters::default();
+        let mut world = create_world(params).expect("world");
+        let mut climate = ClimateState::new();
+
+        let (layer, shared) = ClimateLayer::attach(&mut climate);
+        let mut coordinator = TickCoordinator::new();
+        coordinator.add_layer(Box::new(layer));
+
+        let params = world.data.parameters.clone();
+        coordinator.advance_to(WorldYear(500_000_000), &mut world.data, &world.rng, &params);
+        drop(coordinator);
+
+        let mut climate = ClimateLayer::detach_state(shared);
+
+        world.data.sea_level_m = 0.0;
+        for elev in world.data.elevation_mean.iter_mut() {
+            *elev = -100.0;
+        }
+
+        let (mut layer, shared) = ClimateLayer::attach(&mut climate);
+        layer.advance(&mut world.data, &world.rng);
+        drop(layer);
+        climate = ClimateLayer::detach_state(shared);
+
+        let largest_basin = climate
+            .ocean_basins
+            .basins
+            .first()
+            .expect("expected at least one basin");
+        assert!(
+            largest_basin.hex_count >= crate::ocean_currents::MIN_BASIN_SIZE_FOR_GYRE,
+            "largest basin {} hexes should qualify for gyre",
+            largest_basin.hex_count
+        );
+
+        let sea = world.data.sea_level_m;
+        let mut basin_fast = 0_u32;
+        let mut basin_total = 0_u32;
+
+        for i in 0..world.data.cell_count() as usize {
+            if world.data.elevation_mean[i] >= sea {
+                continue;
+            }
+
+            let [e, n] = world.data.ocean_current_vec[i];
+            assert!(
+                e.abs() <= MAX_CURRENT_SPEED_M_S && n.abs() <= MAX_CURRENT_SPEED_M_S,
+                "current [{e}, {n}] exceeds clamp"
+            );
+            assert!(e >= -MAX_CURRENT_SPEED_M_S && n >= -MAX_CURRENT_SPEED_M_S);
+
+            if world.data.basin_id[i] == largest_basin.id {
+                basin_total += 1;
+                let speed = (e * e + n * n).sqrt();
+                if speed > 0.1 {
+                    basin_fast += 1;
+                }
+            }
+        }
+
+        assert!(basin_total > 0, "expected ocean hexes in largest basin");
+        let fast_fraction = f64::from(basin_fast) / f64::from(basin_total);
+        assert!(
+            fast_fraction > 0.5,
+            "expected majority of largest-basin hexes with speed > 0.1 m/s; got {basin_fast}/{basin_total} ({fast_fraction:.1})"
+        );
     }
 }

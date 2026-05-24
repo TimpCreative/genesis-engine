@@ -61,6 +61,11 @@ pub fn compute_temperature_field(data: &mut WorldData, climate: &ClimateState) {
         data.temperature_mean[i] = temperature;
         data.temperature_range[i] = seasonal_range_c(lat_rad, distance_km, axial_tilt_rad);
     }
+
+    let coastal_adjustments = crate::ocean_currents::compute_coastal_temperature_adjustments(data);
+    for (hex, adjustment) in coastal_adjustments {
+        data.temperature_mean[hex.0 as usize] += adjustment;
+    }
 }
 
 fn latitude_exponent(axial_tilt_rad: f64) -> f32 {
