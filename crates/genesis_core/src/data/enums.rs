@@ -6,7 +6,19 @@
 /// small, fixed in core, and used in exhaustive matches during geology and soil
 /// derivation. Moddable surface categories (biomes, technologies) use content IDs
 /// instead (`BiomeId`, etc.).
-#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Default)]
+#[derive(
+    Copy,
+    Clone,
+    Eq,
+    PartialEq,
+    Ord,
+    PartialOrd,
+    Hash,
+    Debug,
+    Default,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub enum BedrockType {
     /// Default for newly initialized cells before geology runs.
     #[default]

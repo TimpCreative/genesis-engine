@@ -1,19 +1,97 @@
 // Environment variables read by the app:
 // - GENESIS_TARGET_YEAR (i64): simulated year to advance to. Default 1_000_000.
+// - GENESIS_SUBDIVISION_LEVEL (u8): ISEA3H subdivision level. Default 7 (valid 5–9).
+// - GENESIS_SCREENSHOT_DIR: if set, writes elevation/temperature/precipitation PNGs then exits.
 //   Examples:
 //     cargo run -p genesis_app                       # 1M years (default)
 //     GENESIS_TARGET_YEAR=10000000 cargo run -p genesis_app   # 10M years
-//     GENESIS_TARGET_YEAR=100000000 cargo run -p genesis_app  # 100M years
+//     GENESIS_SUBDIVISION_LEVEL=8 GENESIS_SCREENSHOT_DIR=screenshots/y1m_subdiv8 \
+//       cargo run -p genesis_app --release
 
 mod history;
 
 use bevy::prelude::*;
+use bevy::render::view::screenshot::{Screenshot, save_to_disk};
 use genesis_climate::ClimateState;
 use genesis_core::{WorldParameters, WorldYear, create_world};
-use genesis_render::{GenesisRenderPlugin, WorldResource};
+use genesis_render::{GenesisRenderPlugin, RenderMode, WorldResource};
 use genesis_tectonics::TectonicsState;
 
 use crate::history::generate_full_history;
+
+#[derive(Resource)]
+struct AutoScreenshots {
+    dir: String,
+    year: i64,
+    step: u8,
+    frames_until_next: u8,
+}
+
+fn auto_screenshot_system(
+    mut commands: Commands,
+    state: Option<ResMut<AutoScreenshots>>,
+    mut current_mode: ResMut<genesis_render::CurrentRenderMode>,
+    mut exit: MessageWriter<AppExit>,
+) {
+    let Some(mut state) = state else {
+        return;
+    };
+
+    if state.frames_until_next > 0 {
+        state.frames_until_next -= 1;
+        return;
+    }
+
+    let (mode, label) = match state.step {
+        0 => (RenderMode::Elevation, "elevation"),
+        1 => (RenderMode::Temperature, "temperature"),
+        2 => (RenderMode::Precipitation, "precipitation"),
+        _ => {
+            exit.write(AppExit::Success);
+            return;
+        }
+    };
+
+    current_mode.0 = mode;
+    let path = format!("{}/year{}_{}.png", state.dir, state.year, label);
+    commands
+        .spawn(Screenshot::primary_window())
+        .observe(save_to_disk(path));
+
+    state.step += 1;
+    // Give Bevy a couple frames to apply mode change & capture.
+    state.frames_until_next = 3;
+}
+
+const DEFAULT_SUBDIVISION_LEVEL: u8 = 7;
+const MIN_SUBDIVISION_LEVEL: u8 = 5;
+const MAX_SUBDIVISION_LEVEL: u8 = 9;
+
+fn subdivision_level_from_env() -> u8 {
+    match std::env::var("GENESIS_SUBDIVISION_LEVEL") {
+        Ok(s) => match s.parse::<u8>() {
+            Ok(level) if (MIN_SUBDIVISION_LEVEL..=MAX_SUBDIVISION_LEVEL).contains(&level) => {
+                info!("Using GENESIS_SUBDIVISION_LEVEL={} from environment", level);
+                level
+            }
+            Ok(level) => {
+                warn!(
+                    "GENESIS_SUBDIVISION_LEVEL={} is outside supported range {}..={}; using default {}",
+                    level, MIN_SUBDIVISION_LEVEL, MAX_SUBDIVISION_LEVEL, DEFAULT_SUBDIVISION_LEVEL
+                );
+                DEFAULT_SUBDIVISION_LEVEL
+            }
+            Err(e) => {
+                warn!(
+                    "GENESIS_SUBDIVISION_LEVEL='{}' could not be parsed ({}); using default {}",
+                    s, e, DEFAULT_SUBDIVISION_LEVEL
+                );
+                DEFAULT_SUBDIVISION_LEVEL
+            }
+        },
+        Err(_) => DEFAULT_SUBDIVISION_LEVEL,
+    }
+}
 
 fn target_year_from_env() -> WorldYear {
     const DEFAULT_TARGET_YEAR: i64 = 1_000_000;
@@ -43,26 +121,8 @@ fn target_year_from_env() -> WorldYear {
     }
 }
 
-fn main() {
-    let mut parameters = WorldParameters::default();
-    // Level 7 (~21.9k hexes) per Doc 06 §9.1 Phase 1 performance target.
-    parameters.core.grid.subdivision_level = 7;
-
-    let mut world = create_world(parameters).expect("default world creates successfully");
-    let mut tectonics = TectonicsState::new();
-    let mut climate = ClimateState::new();
-
-    let target_year = target_year_from_env();
-    generate_full_history(
-        &mut world,
-        &mut tectonics,
-        &mut climate,
-        target_year,
-        |_| {},
-    )
-    .expect("tectonic and climate history generation");
-
-    let summary = genesis_tectonics::summarize_world(&world, &tectonics);
+fn print_world_summary(world: &genesis_core::World, tectonics: &TectonicsState) {
+    let summary = genesis_tectonics::summarize_world(world, tectonics);
     info!(
         "Genesis Engine geology smoke test: subdivision level {}, {} hexes, {} plates",
         world.data.grid.subdivision_level(),
@@ -70,7 +130,6 @@ fn main() {
         tectonics.registry.count(),
     );
     info!("{summary}");
-    // Log subscriber is not active until Bevy starts; stderr carries startup diagnostics.
     eprintln!(
         "Genesis Engine geology smoke test: subdivision level {}, {} hexes, {} plates",
         world.data.grid.subdivision_level(),
@@ -78,19 +137,68 @@ fn main() {
         tectonics.registry.count(),
     );
     eprintln!("{summary}");
+}
 
-    App::new()
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "Genesis Engine — Elevation (press M to cycle)".to_string(),
-                resolution: (1280, 720).into(),
-                ..default()
-            }),
+fn main() {
+    let mut parameters = WorldParameters::default();
+    // Default level 7 (~21.9k hexes) per Doc 06 §9.1; override via GENESIS_SUBDIVISION_LEVEL.
+    let subdivision_level = subdivision_level_from_env();
+    parameters.core.grid.subdivision_level = subdivision_level;
+    eprintln!("GENESIS_SUBDIVISION_LEVEL={subdivision_level}");
+
+    let mut world = create_world(parameters).expect("default world creates successfully");
+    let mut tectonics = TectonicsState::new();
+    let mut climate = ClimateState::new();
+
+    let requested_year = target_year_from_env();
+    // If the user requests year 0, still run Formation once to populate plate/climate fields.
+    let simulate_year = if requested_year.value() == 0 {
+        WorldYear(1)
+    } else {
+        requested_year
+    };
+    generate_full_history(
+        &mut world,
+        &mut tectonics,
+        &mut climate,
+        simulate_year,
+        |_| {},
+    )
+    .expect("tectonic and climate history generation");
+    if requested_year.value() == 0 {
+        world.data.current_year = requested_year;
+    }
+
+    print_world_summary(&world, &tectonics);
+
+    let screenshot_dir = std::env::var("GENESIS_SCREENSHOT_DIR").ok();
+    if let Some(dir) = screenshot_dir.as_deref() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+
+    let mut app = App::new();
+    app.add_plugins(DefaultPlugins.set(WindowPlugin {
+        primary_window: Some(Window {
+            title: "Genesis Engine — Elevation (press M to cycle)".to_string(),
+            resolution: (1280, 720).into(),
             ..default()
-        }))
-        .add_plugins(GenesisRenderPlugin)
-        .insert_resource(WorldResource(world))
-        .run();
+        }),
+        ..default()
+    }))
+    .add_plugins(GenesisRenderPlugin)
+    .insert_resource(WorldResource(world));
+
+    if let Some(dir) = screenshot_dir {
+        app.insert_resource(AutoScreenshots {
+            dir,
+            year: requested_year.value(),
+            step: 0,
+            frames_until_next: 3,
+        })
+        .add_systems(Update, auto_screenshot_system);
+    }
+
+    app.run();
 }
 
 #[cfg(test)]
@@ -500,6 +608,57 @@ mod tests {
 
         eprintln!("=== ocean basins at 1B years (subdiv=7) ===");
         eprintln!("total_basin_count: {count}");
+        let significant_basin_count = basins
+            .iter()
+            .filter(|b| b.hex_count >= SIGNIFICANT_BASIN_MIN_HEXES)
+            .count();
+        eprintln!("significant_basin_count: {significant_basin_count}");
+
+        // Diagnostic: plate surface utilization and continental elevation dispersion.
+        let mut plate_populated_sum: f64 = 0.0;
+        let mut plate_populated_count: u64 = 0;
+        for plate in tectonics.registry.iter() {
+            plate_populated_sum += f64::from(plate.surface.populated_count());
+            plate_populated_count += 1;
+        }
+        let mean_populated = if plate_populated_count > 0 {
+            plate_populated_sum / plate_populated_count as f64
+        } else {
+            0.0
+        };
+        eprintln!("avg_plate_surface_populated_count: {mean_populated}");
+
+        let mut cont_sum: f64 = 0.0;
+        let mut cont_sum_sq: f64 = 0.0;
+        let mut cont_n: u64 = 0;
+        for (i, &plate_id) in world.data.plate_id.iter().enumerate() {
+            if plate_id == genesis_core::PlateId::NONE {
+                continue;
+            }
+            let Some(plate) = tectonics.registry.get(plate_id) else {
+                continue;
+            };
+            if plate.plate_type != genesis_tectonics::PlateType::Continental {
+                continue;
+            }
+            let e = f64::from(world.data.elevation_mean[i]);
+            cont_sum += e;
+            cont_sum_sq += e * e;
+            cont_n += 1;
+        }
+        let cont_mean = if cont_n > 0 {
+            cont_sum / cont_n as f64
+        } else {
+            0.0
+        };
+        let cont_var = if cont_n > 0 {
+            (cont_sum_sq / cont_n as f64) - cont_mean * cont_mean
+        } else {
+            0.0
+        };
+        let cont_stddev = cont_var.max(0.0).sqrt();
+        eprintln!("continental_elevation_mean_m: {cont_mean}");
+        eprintln!("continental_elevation_stddev_m: {cont_stddev}");
 
         if let Some(largest) = basins.first() {
             let lat_span_deg = (largest.lat_max_rad - largest.lat_min_rad).to_degrees();
@@ -512,6 +671,35 @@ mod tests {
         if basins.len() >= 5 {
             eprintln!("fifth_largest_hex_count: {}", basins[4].hex_count);
         }
+
+        const MAJOR_BASIN_MIN_HEXES: u32 = 50;
+        const MICRO_BASIN_MAX_HEXES: u32 = 4;
+        const SIGNIFICANT_BASIN_MIN_HEXES: u32 = MICRO_BASIN_MAX_HEXES + 1;
+        let major_ocean_basin_count = basins
+            .iter()
+            .filter(|b| !b.is_inland && b.hex_count >= MAJOR_BASIN_MIN_HEXES)
+            .count();
+        let inland_lake_basin_count = basins.iter().filter(|b| b.is_inland).count();
+        let micro_basin_count = basins
+            .iter()
+            .filter(|b| b.hex_count <= MICRO_BASIN_MAX_HEXES)
+            .count();
+        let sea = world.data.sea_level_m;
+        let total_ocean_hexes: u64 = world
+            .data
+            .elevation_mean
+            .iter()
+            .filter(|&&e| e < sea)
+            .count() as u64;
+        let largest_ocean_component_fraction = if total_ocean_hexes > 0 {
+            f64::from(basins.first().map(|b| b.hex_count).unwrap_or(0)) / total_ocean_hexes as f64
+        } else {
+            0.0
+        };
+        eprintln!("major_ocean_basin_count: {major_ocean_basin_count}");
+        eprintln!("inland_lake_basin_count: {inland_lake_basin_count}");
+        eprintln!("micro_basin_count: {micro_basin_count}");
+        eprintln!("largest_ocean_component_fraction: {largest_ocean_component_fraction}");
 
         assert!(count > 0, "expected at least one ocean basin");
         assert!(basins.first().is_some_and(|b| b.hex_count > 0));
@@ -861,10 +1049,6 @@ mod tests {
         assert_eq!(
             world_tectonics_only.data.plate_id,
             world_combined.data.plate_id
-        );
-        assert_eq!(
-            world_tectonics_only.data.plate_origin,
-            world_combined.data.plate_origin
         );
     }
 }

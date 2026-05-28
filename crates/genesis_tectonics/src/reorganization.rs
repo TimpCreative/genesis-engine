@@ -15,6 +15,7 @@ use crate::events::{alloc_event_id, maybe_emit};
 use crate::motion::sample_motion_axis;
 use crate::partition::repartition_hexes;
 use crate::plate::{Plate, PlateClass, PlateRegistry, PlateType, TectonicsState};
+use crate::plate_surface::modify_surface_at_world_hex;
 
 /// Per-tick reorganization probability gate (§4.5).
 pub const REORGANIZATION_CHECK_STREAM: &str = "tectonics.reorganization_check";
@@ -74,10 +75,10 @@ pub fn maybe_reorganize(
         _ => None,
     };
 
-    repartition_hexes(data, &state.registry);
+    repartition_hexes(data, &mut state.registry);
 
     if let Some((parent, child)) = split_pair {
-        apply_split_boundary_subsidence(data, &state.registry, parent, child);
+        apply_split_boundary_subsidence(data, &mut state.registry, parent, child);
     }
     update_last_nonempty_years(data, &mut state.registry, tick_year);
     purge_extinct_plates(&mut state.registry, data, tick_year);
@@ -144,6 +145,7 @@ fn apply_split(
         target_fraction: parent.target_fraction * 0.5,
         accumulated_rotation_rad: parent.accumulated_rotation_rad,
         last_nonempty_year: tick_year,
+        surface: parent.surface.clone(),
     };
     registry.insert(child);
 
@@ -218,6 +220,14 @@ fn apply_merge(
     let (into, absorbed) = pairs[idx];
 
     reassign_plate_hexes(data, absorbed, into);
+
+    if let Some(absorbed_plate) = registry.get(absorbed) {
+        let absorbed_surface = absorbed_plate.surface.clone();
+        if let Some(into_plate) = registry.plates_mut().get_mut(&into) {
+            into_plate.surface.merge_from(&absorbed_surface);
+        }
+    }
+
     registry.remove(absorbed);
 
     if let Some(plate) = registry.plates_mut().get_mut(&into) {
@@ -274,8 +284,8 @@ fn reassign_plate_hexes(data: &mut WorldData, from: PlateId, to: PlateId) {
 }
 
 fn apply_split_boundary_subsidence(
-    data: &mut WorldData,
-    registry: &PlateRegistry,
+    data: &WorldData,
+    registry: &mut PlateRegistry,
     parent: PlateId,
     child: PlateId,
 ) {
@@ -305,7 +315,9 @@ fn apply_split_boundary_subsidence(
             if (owner == parent && other_plate == child)
                 || (owner == child && other_plate == parent)
             {
-                data.elevation_mean[i] -= SPLIT_BOUNDARY_SUBSIDENCE_M;
+                modify_surface_at_world_hex(registry, data, hex, 0, |feature| {
+                    feature.elevation_m -= SPLIT_BOUNDARY_SUBSIDENCE_M;
+                });
             }
         }
     }
@@ -481,7 +493,7 @@ mod tests {
                 Significance::Trace,
                 BranchId::ROOT,
             );
-            repartition_hexes(&mut world.data, &state.registry);
+            repartition_hexes(&mut world.data, &mut state.registry);
             update_last_nonempty_years(&world.data, &mut state.registry, year);
         }
 

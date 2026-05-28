@@ -68,6 +68,11 @@ impl Default for WorldParameters {
                     event_granularity: Significance::Notable,
                     tick_interval_overrides_years: None,
                     base_erosion_rate_per_year: 1e-7,
+                    max_ephemeral_island_hexes: 10,
+                    max_ephemeral_island_height_m: 100.0,
+                    max_ephemeral_island_relief_m: 250.0,
+                    max_artifact_lake_hexes: 20,
+                    min_geologic_lake_depth_m: 200.0,
                 },
                 climate_initial: ClimateInitialParameters {
                     initial_mean_temperature_c: 15.0,

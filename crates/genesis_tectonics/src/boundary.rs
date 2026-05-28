@@ -235,6 +235,7 @@ mod tests {
             target_fraction: 0.5,
             accumulated_rotation_rad: 0.0,
             last_nonempty_year: WorldYear::FORMATION,
+            surface: crate::plate_surface::PlateSurface::new(10_000),
         }
     }
 

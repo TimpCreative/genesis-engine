@@ -11,6 +11,7 @@ use rand::Rng;
 use rand::seq::SliceRandom;
 
 use crate::plate::{Plate, PlateClass, PlateRegistry, PlateType};
+use crate::plate_surface::PlateSurface;
 
 /// Doc 06 §4.4 — seed placement, growth plate selection, growth neighbor choice.
 const PLATE_SEEDS_STREAM: &str = "tectonics.plate_seeds";
@@ -53,6 +54,7 @@ pub fn generate_initial_plates_data(data: &mut WorldData, rng: &WorldRng) -> Pla
             target_fraction: major_target_fractions[i],
             accumulated_rotation_rad: 0.0,
             last_nonempty_year: WorldYear::FORMATION,
+            surface: PlateSurface::new(total_cells),
         };
         registry.insert(plate);
     }
@@ -94,6 +96,7 @@ pub fn generate_initial_plates_data(data: &mut WorldData, rng: &WorldRng) -> Pla
             target_fraction: minor_target_fractions[i],
             accumulated_rotation_rad: 0.0,
             last_nonempty_year: WorldYear::FORMATION,
+            surface: PlateSurface::new(total_cells),
         };
         registry.insert(plate);
     }

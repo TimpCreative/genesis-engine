@@ -11,10 +11,10 @@ use genesis_core::{HexId, PlateId};
 use rand::Rng;
 
 use crate::boundary::{BoundaryClass, BoundaryInfo, ConvergentSubtype};
-use crate::elevation::clamp_terrain;
 use crate::elevation::subducting_plate_id;
 use crate::events::{alloc_event_id, maybe_emit};
 use crate::plate::{Plate, PlateRegistry, PlateType};
+use crate::plate_surface::modify_surface_at_world_hex;
 
 /// RNG stream for eruption rolls and magnitude sampling (Doc 06 §4.4).
 pub const VOLCANISM_STREAM: &str = "tectonics.volcanism";
@@ -67,11 +67,19 @@ pub fn apply_boundary_volcanism(
             volcanism_rng.gen_range(ELEVATION_CHANGE_MIN_M..=ELEVATION_CHANGE_MAX_M);
         let relief_change: f32 = volcanism_rng.gen_range(RELIEF_CHANGE_MIN_M..=RELIEF_CHANGE_MAX_M);
 
-        data.elevation_mean[idx] += elev_change;
-        data.elevation_relief[idx] += relief_change;
-        data.bedrock_type[idx] = BedrockType::Igneous;
+        modify_surface_at_world_hex(
+            &mut state.registry,
+            data,
+            hex,
+            tick_year.value(),
+            |feature| {
+                feature.elevation_m += elev_change;
+                feature.relief_m += relief_change;
+                feature.bedrock = BedrockType::Igneous;
+            },
+        );
 
-        let peak_proxy = data.elevation_mean[idx] + data.elevation_relief[idx];
+        let peak_proxy = data.elevation_mean[idx] + elev_change + data.elevation_relief[idx];
         let significance = eruption_significance(peak_proxy);
 
         let event_id = alloc_event_id(state);
@@ -92,8 +100,6 @@ pub fn apply_boundary_volcanism(
             event_granularity,
         );
     }
-
-    clamp_terrain(data);
 }
 
 /// Collects unique subduction-arc boundary hexes in ascending `HexId` order.
@@ -163,23 +169,55 @@ mod tests {
     use genesis_core::{HexGrid, PlateId};
 
     use crate::boundary::{BoundaryClass, ClassifiedEdge, ConvergentSubtype};
-    use crate::plate::{Plate, PlateClass, PlateRegistry, PlateType};
+    use crate::plate::{Plate, PlateRegistry, PlateType};
+    use crate::plate_surface::SurfaceFeature;
+    use crate::world_rebuild::rebuild_world_from_plate_surfaces;
 
     const EARTH_RADIUS_KM: f64 = 6371.0;
 
     fn plate_at(id: u16, plate_type: PlateType, seed: u32, rate: f64) -> Plate {
-        Plate {
-            id: PlateId(id),
-            plate_type,
-            plate_class: PlateClass::Major,
-            seed_hex: HexId(seed),
-            motion_axis: [0.0, 0.0, 1.0],
-            motion_rate_rad_per_year: rate,
-            age_year: WorldYear::FORMATION,
-            target_fraction: 0.5,
-            accumulated_rotation_rad: 0.0,
-            last_nonempty_year: WorldYear::FORMATION,
+        Plate::test_plate(id, plate_type, seed, rate, 10_000)
+    }
+
+    fn seed_surfaces_from_world(data: &WorldData, registry: &mut PlateRegistry) {
+        for hex in data.grid.iter() {
+            let idx = hex.0 as usize;
+            let plate_id = data.plate_id[idx];
+            let Some(plate) = registry.plates_mut().get_mut(&plate_id) else {
+                continue;
+            };
+            plate.surface.set(
+                hex,
+                SurfaceFeature {
+                    elevation_m: data.elevation_mean[idx],
+                    relief_m: data.elevation_relief[idx],
+                    bedrock: data.bedrock_type[idx],
+                    fertility: data.fertility[idx],
+                    age_year: 0,
+                },
+            );
         }
+    }
+
+    fn apply_volcanism_and_rebuild(
+        data: &mut WorldData,
+        state: &mut crate::plate::TectonicsState,
+        rng: &genesis_core::rng::WorldRng,
+        volcanism_scale: f32,
+        granularity: Significance,
+        year: WorldYear,
+    ) {
+        seed_surfaces_from_world(data, &mut state.registry);
+        apply_boundary_volcanism(
+            data,
+            state,
+            rng,
+            volcanism_scale,
+            granularity,
+            year,
+            BranchId::ROOT,
+        );
+        rebuild_world_from_plate_surfaces(data, &state.registry);
     }
 
     #[test]
@@ -303,14 +341,13 @@ mod tests {
             boundaries,
             ..Default::default()
         };
-        apply_boundary_volcanism(
+        apply_volcanism_and_rebuild(
             &mut data,
             &mut tectonics_state,
             &rng,
             20.0,
             Significance::Trace,
             WorldYear(500_000),
-            BranchId::ROOT,
         );
 
         assert!(data.elevation_mean[hex.0 as usize] > 500.0);
@@ -351,14 +388,13 @@ mod tests {
             boundaries,
             ..Default::default()
         };
-        apply_boundary_volcanism(
+        apply_volcanism_and_rebuild(
             &mut data,
             &mut tectonics_state,
             &rng,
             20.0,
             Significance::Notable,
             WorldYear(500_000),
-            BranchId::ROOT,
         );
 
         assert!(data.elevation_mean[hex.0 as usize] > 100.0);
@@ -485,23 +521,21 @@ mod tests {
             ..Default::default()
         };
 
-        apply_boundary_volcanism(
+        apply_volcanism_and_rebuild(
             &mut data_a,
             &mut state_a,
             &rng,
             20.0,
             Significance::Trace,
             WorldYear(500_000),
-            BranchId::ROOT,
         );
-        apply_boundary_volcanism(
+        apply_volcanism_and_rebuild(
             &mut data_b,
             &mut state_b,
             &rng,
             20.0,
             Significance::Trace,
             WorldYear(1_000_000),
-            BranchId::ROOT,
         );
 
         assert_ne!(

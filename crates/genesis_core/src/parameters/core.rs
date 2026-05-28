@@ -144,6 +144,16 @@ pub struct GeologyParameters {
     /// Base erosion rate per year per meter of elevation above sea level.
     /// Default 1e-7. Climate modifies via climate_modifier (Phase 2).
     pub base_erosion_rate_per_year: f64,
+    /// Max land hexes in a removable ephemeral island (Doc 06 coast cleanup).
+    pub max_ephemeral_island_hexes: u32,
+    /// Max elevation (m above sea level) for ephemeral island removal.
+    pub max_ephemeral_island_height_m: f32,
+    /// Max relief (m) for ephemeral island removal.
+    pub max_ephemeral_island_relief_m: f32,
+    /// Max ocean hexes in a fillable artifact inland puddle.
+    pub max_artifact_lake_hexes: u32,
+    /// Enclosed ocean deeper than this below sea level is kept as a geologic lake (m).
+    pub min_geologic_lake_depth_m: f32,
 }
 
 /// Climate simulation parameters (Doc 07).
@@ -157,6 +167,8 @@ pub struct ClimateParameters {
     pub orbital_eccentricity: f32,
     /// Climate chaos intensity (Doc 07 §14.2). 0.0 = off. Default 0.0.
     pub climate_chaos_intensity: f32,
+    /// Land below this height above sea level still connects ocean basins (m). Default 50.
+    pub ocean_basin_sill_height_m: f32,
 }
 
 impl Default for ClimateParameters {
@@ -166,6 +178,7 @@ impl Default for ClimateParameters {
             skip_planetary_formation: false,
             orbital_eccentricity: 0.0,
             climate_chaos_intensity: 0.0,
+            ocean_basin_sill_height_m: 120.0,
         }
     }
 }

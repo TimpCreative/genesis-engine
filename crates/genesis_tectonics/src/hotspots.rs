@@ -18,6 +18,7 @@ use rand::Rng;
 
 use crate::events::{alloc_event_id, maybe_emit};
 use crate::plate::{HotSpot, HotSpotRegistry, TectonicsState};
+use crate::plate_surface::modify_surface_at_world_hex;
 
 /// One-shot Formation stream for initial hot spot positions and parameters (§4.4).
 pub const HOTSPOT_LOCATIONS_STREAM: &str = "tectonics.hotspot_locations";
@@ -150,8 +151,10 @@ pub fn apply_hotspot_tick(
 
         let elev_change: f32 =
             activity_rng.gen_range(HOTSPOT_ELEVATION_CHANGE_MIN_M..=HOTSPOT_ELEVATION_CHANGE_MAX_M);
-        data.elevation_mean[idx] += elev_change;
-        data.bedrock_type[idx] = BedrockType::Igneous;
+        modify_surface_at_world_hex(&mut state.registry, data, hex, tick_value, |feature| {
+            feature.elevation_m += elev_change;
+            feature.bedrock = BedrockType::Igneous;
+        });
 
         let hotspot = state.hotspots.hotspots_mut().get_mut(&id).expect("hotspot");
         hotspot.cumulative_uplift_m += elev_change;
@@ -207,12 +210,69 @@ mod tests {
     use genesis_core::parameters::WorldParameters;
     use genesis_core::{HexGrid, create_world};
 
-    use crate::plate::TectonicsState;
+    use crate::plate::{Plate, PlateType, TectonicsState};
+    use crate::plate_surface::SurfaceFeature;
+    use crate::world_rebuild::rebuild_world_from_plate_surfaces;
 
     fn earth_world_data() -> WorldData {
         create_world(WorldParameters::default())
             .expect("world")
             .data
+    }
+
+    fn setup_single_plate(data: &mut WorldData, state: &mut TectonicsState) {
+        let cell_count = data.cell_count() as usize;
+        if state.registry.count() == 0 {
+            state.registry.insert(Plate::test_plate(
+                0,
+                PlateType::Continental,
+                0,
+                1e-8,
+                cell_count,
+            ));
+        }
+        for pid in &mut data.plate_id {
+            *pid = genesis_core::PlateId(0);
+        }
+        for hex in data.grid.iter() {
+            let idx = hex.0 as usize;
+            let Some(plate) = state
+                .registry
+                .plates_mut()
+                .get_mut(&genesis_core::PlateId(0))
+            else {
+                continue;
+            };
+            plate.surface.set(
+                hex,
+                SurfaceFeature {
+                    elevation_m: data.elevation_mean[idx],
+                    relief_m: data.elevation_relief[idx],
+                    bedrock: data.bedrock_type[idx],
+                    fertility: data.fertility[idx],
+                    age_year: 0,
+                },
+            );
+        }
+    }
+
+    fn apply_hotspot_and_rebuild(
+        data: &mut WorldData,
+        state: &mut TectonicsState,
+        rng: &WorldRng,
+        year: WorldYear,
+        granularity: Significance,
+    ) {
+        setup_single_plate(data, state);
+        apply_hotspot_tick(
+            data,
+            state,
+            rng,
+            year,
+            granularity,
+            genesis_core::branches::BranchId::ROOT,
+        );
+        rebuild_world_from_plate_surfaces(data, &state.registry);
     }
 
     #[test]
@@ -300,13 +360,12 @@ mod tests {
         let before = data.elevation_mean[hex.0 as usize];
         let rng = WorldRng::from_effective_seed(99);
 
-        apply_hotspot_tick(
+        apply_hotspot_and_rebuild(
             &mut data,
             &mut state,
             &rng,
             WorldYear(500_000),
             Significance::Trace,
-            genesis_core::branches::BranchId::ROOT,
         );
 
         assert!(data.elevation_mean[hex.0 as usize] > before);
@@ -325,21 +384,19 @@ mod tests {
             state.hotspots = generate_initial_hotspots(&data_a, &rng_seed);
         }
 
-        apply_hotspot_tick(
+        apply_hotspot_and_rebuild(
             &mut data_a,
             &mut state_a,
             &rng_seed,
             WorldYear(500_000),
             Significance::Trace,
-            genesis_core::branches::BranchId::ROOT,
         );
-        apply_hotspot_tick(
+        apply_hotspot_and_rebuild(
             &mut data_b,
             &mut state_b,
             &rng_seed,
             WorldYear(500_000),
             Significance::Trace,
-            genesis_core::branches::BranchId::ROOT,
         );
 
         assert_eq!(data_a.elevation_mean, data_b.elevation_mean);
@@ -358,21 +415,19 @@ mod tests {
             state.hotspots = generate_initial_hotspots(data, &rng);
         }
 
-        apply_hotspot_tick(
+        apply_hotspot_and_rebuild(
             &mut data_a,
             &mut state_a,
             &rng,
             WorldYear(500_000),
             Significance::Trace,
-            genesis_core::branches::BranchId::ROOT,
         );
-        apply_hotspot_tick(
+        apply_hotspot_and_rebuild(
             &mut data_b,
             &mut state_b,
             &rng,
             WorldYear(1_000_000),
             Significance::Trace,
-            genesis_core::branches::BranchId::ROOT,
         );
 
         assert_ne!(data_a.elevation_mean, data_b.elevation_mean);

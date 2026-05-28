@@ -2,12 +2,13 @@
 //!
 //! Phase 1: plate generation, drift, boundaries, and terrain sculpting.
 
-pub mod advection;
 pub mod boundary;
 pub mod boundary_events;
+pub mod coast_cleanup;
 pub mod elevation;
 pub mod erosion;
 pub mod events;
+pub mod frames;
 pub mod history;
 pub mod hotspots;
 pub mod initial_generation;
@@ -16,12 +17,14 @@ pub mod layer;
 pub mod motion;
 pub mod partition;
 pub mod plate;
+pub mod plate_surface;
 pub mod reorganization;
 pub mod sea_level;
+pub mod surface_remap;
 pub mod validation;
 pub mod volcanism;
+pub mod world_rebuild;
 
-pub use advection::advect_plate_features;
 pub use boundary::{
     BoundaryClass, BoundaryInfo, ClassifiedEdge, ConvergentSubtype, convergent_subtype,
     detect_and_classify_boundaries,
@@ -40,6 +43,7 @@ pub use erosion::{
     lowest_elevation_neighbor, route_eroded_mass,
 };
 pub use events::flush_events_to_branch;
+pub use frames::{plate_local_to_world, world_to_plate_local};
 pub use history::{generate_full_history_with_tectonics, run_formation};
 pub use hotspots::{
     ACTIVITY_RATE_MAX, ACTIVITY_RATE_MIN, HOTSPOT_ACTIVITY_STREAM, HOTSPOT_ELEVATION_CHANGE_MAX_M,
@@ -58,6 +62,7 @@ pub use partition::repartition_hexes;
 pub use plate::{
     HotSpot, HotSpotRegistry, Plate, PlateClass, PlateRegistry, PlateType, TectonicsState,
 };
+pub use plate_surface::{PlateSurface, SurfaceFeature, baseline_feature, type_baseline};
 pub use reorganization::{
     REORGANIZATION_ACTION_STREAM, REORGANIZATION_CHECK_STREAM, maybe_reorganize,
     purge_extinct_plates, update_last_nonempty_years,
@@ -82,6 +87,7 @@ pub use volcanism::{
     NOTABLE_PEAK_THRESHOLD_M, RELIEF_CHANGE_MAX_M, RELIEF_CHANGE_MIN_M, VOLCANISM_STREAM,
     apply_boundary_volcanism, is_arc_hex,
 };
+pub use world_rebuild::rebuild_world_from_plate_surfaces;
 
 #[cfg(test)]
 mod integration_tests {
@@ -381,10 +387,65 @@ mod integration_tests {
         );
     }
 
+    use crate::erosion::TROPICAL_LATITUDE_DEG;
+    use crate::frames::world_to_plate_local;
+    use crate::plate_surface::SurfaceFeature;
+
+    fn seed_shallow_tropical_hex(world: &mut genesis_core::World, state: &mut TectonicsState) {
+        run_formation(world, state);
+        let sea = world.data.sea_level_m;
+        let lat_limit = TROPICAL_LATITUDE_DEG.to_radians();
+        let shallow_elev = sea - 50.0;
+
+        let hexes: Vec<_> = world.data.grid.iter().collect();
+        for hex in hexes {
+            let (lat, _) = world.data.grid.center_lat_lon(hex);
+            if lat.abs() >= lat_limit {
+                continue;
+            }
+            let idx = hex.0 as usize;
+            let plate_id = world.data.plate_id[idx];
+            let plate_local = {
+                let Some(plate) = state.registry.get(plate_id) else {
+                    continue;
+                };
+                world_to_plate_local(&world.data.grid, hex, plate)
+            };
+
+            let mut feature = {
+                let Some(plate) = state.registry.get(plate_id) else {
+                    continue;
+                };
+                plate
+                    .surface
+                    .get(plate_local)
+                    .cloned()
+                    .unwrap_or(SurfaceFeature {
+                        elevation_m: shallow_elev,
+                        relief_m: 0.0,
+                        bedrock: genesis_core::data::BedrockType::OceanicCrust,
+                        fertility: 0.0,
+                        age_year: 0,
+                    })
+            };
+            feature.elevation_m = shallow_elev;
+
+            if let Some(plate) = state.registry.plates_mut().get_mut(&plate_id) {
+                plate.surface.set(plate_local, feature);
+            } else {
+                continue;
+            }
+            rebuild_world_from_plate_surfaces(&mut world.data, &state.registry);
+            return;
+        }
+        panic!("test grid should include a tropical hex");
+    }
+
     #[test]
     fn shallow_tropical_fertility_accumulates_by_one_million_years() {
         let mut world = test_world();
         let mut state = TectonicsState::new();
+        seed_shallow_tropical_hex(&mut world, &mut state);
         generate_full_history_with_tectonics(&mut world, &mut state, WorldYear(1_000_000), |_| {})
             .expect("history");
 
@@ -721,7 +782,6 @@ mod integration_tests {
         assert_eq!(world_a.data.bedrock_type, world_b.data.bedrock_type);
         assert_eq!(world_a.data.plate_id, world_b.data.plate_id);
         assert_eq!(world_a.data.fertility, world_b.data.fertility);
-        assert_eq!(world_a.data.plate_origin, world_b.data.plate_origin);
         assert_eq!(world_a.data.sea_level_m, world_b.data.sea_level_m);
     }
 

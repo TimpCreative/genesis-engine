@@ -172,6 +172,8 @@ pub struct OceanBasin {
     pub lat_min_rad: f64,
     /// Maximum (northernmost) latitude in radians.
     pub lat_max_rad: f64,
+    /// True when this basin is an enclosed inland sea (not a marginal sea of the world ocean).
+    pub is_inland: bool,
 }
 
 /// Set of ocean basins on the planet. Recomputed each climate tick.

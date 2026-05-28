@@ -161,8 +161,62 @@ impl WorldParameters {
             });
         }
 
+        let geo = &self.core.geology;
+        if geo.max_ephemeral_island_hexes == 0 || geo.max_ephemeral_island_hexes > 100 {
+            return Err(ParameterValidationError::InvalidField {
+                field: "geology.max_ephemeral_island_hexes".into(),
+                message: "must be in 1..=100".into(),
+            });
+        }
+        validate_non_negative_finite(
+            geo.max_ephemeral_island_height_m,
+            "geology.max_ephemeral_island_height_m",
+            0.0,
+            500.0,
+        )?;
+        validate_non_negative_finite(
+            geo.max_ephemeral_island_relief_m,
+            "geology.max_ephemeral_island_relief_m",
+            0.0,
+            5000.0,
+        )?;
+        if geo.max_artifact_lake_hexes == 0 || geo.max_artifact_lake_hexes > 50 {
+            return Err(ParameterValidationError::InvalidField {
+                field: "geology.max_artifact_lake_hexes".into(),
+                message: "must be in 1..=50".into(),
+            });
+        }
+        validate_non_negative_finite(
+            geo.min_geologic_lake_depth_m,
+            "geology.min_geologic_lake_depth_m",
+            0.0,
+            5000.0,
+        )?;
+
+        validate_non_negative_finite(
+            self.core.climate.ocean_basin_sill_height_m,
+            "climate.ocean_basin_sill_height_m",
+            0.0,
+            500.0,
+        )?;
+
         Ok(())
     }
+}
+
+fn validate_non_negative_finite(
+    value: f32,
+    field: &str,
+    min: f32,
+    max: f32,
+) -> Result<(), ParameterValidationError> {
+    if !value.is_finite() || !(min..=max).contains(&value) {
+        return Err(ParameterValidationError::InvalidField {
+            field: field.to_string(),
+            message: format!("must be finite and in {min}..={max}"),
+        });
+    }
+    Ok(())
 }
 
 fn validate_scale(value: f32, field: &str) -> Result<(), ParameterValidationError> {

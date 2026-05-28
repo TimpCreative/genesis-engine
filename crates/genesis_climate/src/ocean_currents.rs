@@ -36,7 +36,7 @@ pub fn compute_ocean_currents(data: &mut WorldData, basins: &OceanBasins) {
 
     let mut basin_by_id: BTreeMap<BasinId, &OceanBasin> = BTreeMap::new();
     for basin in &basins.basins {
-        if basin.hex_count >= MIN_BASIN_SIZE_FOR_GYRE {
+        if basin.hex_count >= MIN_BASIN_SIZE_FOR_GYRE && !basin.is_inland {
             basin_by_id.insert(basin.id, basin);
         }
     }
@@ -305,6 +305,7 @@ mod tests {
             hex_count: 1000,
             lat_min_rad: -1.0,
             lat_max_rad: 1.0,
+            is_inland: false,
         });
 
         for i in 0..world.data.cell_count() as usize {
@@ -348,6 +349,7 @@ mod tests {
             hex_count: 10,
             lat_min_rad: 0.0,
             lat_max_rad: 0.2,
+            is_inland: false,
         });
 
         for i in 0..world.data.cell_count() as usize {
@@ -386,6 +388,7 @@ mod tests {
             hex_count: 1000,
             lat_min_rad: -std::f64::consts::FRAC_PI_2,
             lat_max_rad: std::f64::consts::FRAC_PI_2,
+            is_inland: false,
         });
 
         for i in 0..world.data.cell_count() as usize {
@@ -413,6 +416,7 @@ mod tests {
             hex_count: 15_000,
             lat_min_rad: -1.5,
             lat_max_rad: 1.5,
+            is_inland: false,
         });
 
         for i in 0..world.data.cell_count() as usize {
@@ -442,6 +446,7 @@ mod tests {
             hex_count: 1000,
             lat_min_rad: -1.0,
             lat_max_rad: 1.0,
+            is_inland: false,
         });
 
         for i in 0..world_a.data.cell_count() as usize {

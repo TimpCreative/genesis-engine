@@ -70,7 +70,7 @@ pub fn run_formation(world: &mut World, state: &mut TectonicsState) {
         return;
     }
     state.registry = crate::generate_initial_plates_data(&mut world.data, &world.rng);
-    apply_formation_terrain(&mut world.data, &state.registry, &world.rng);
+    apply_formation_terrain(&mut world.data, &mut state.registry, &world.rng);
     state.hotspots = generate_initial_hotspots(&world.data, &world.rng);
     ensure_deposition_buffer(state, world.data.grid.cell_count() as usize);
 

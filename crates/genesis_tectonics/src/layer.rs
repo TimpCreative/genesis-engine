@@ -10,9 +10,9 @@ use genesis_core::parameters::WorldParameters;
 use genesis_core::rng::WorldRng;
 use genesis_core::time::{Era, SimulationLayer, WorldYear};
 
-use crate::advection::advect_plate_features;
 use crate::boundary::detect_and_classify_boundaries;
 use crate::boundary_events::emit_boundary_events;
+use crate::coast_cleanup::cleanup_coast_artifacts;
 use crate::elevation::{apply_boundary_elevation, clamp_terrain};
 use crate::erosion::{apply_erosion_tick, ensure_deposition_buffer};
 use crate::events::{alloc_event_id, maybe_emit};
@@ -24,7 +24,9 @@ use crate::partition::repartition_hexes;
 use crate::plate::TectonicsState;
 use crate::reorganization::maybe_reorganize;
 use crate::sea_level::update_sea_level;
+use crate::surface_remap::remap_plate_surfaces_after_motion;
 use crate::volcanism::apply_boundary_volcanism;
+use crate::world_rebuild::rebuild_world_from_plate_surfaces;
 
 /// Default Geological-era tick interval (Doc 06 §4.1).
 pub const DEFAULT_GEOLOGICAL_TICK_YEARS: i64 = 500_000;
@@ -79,7 +81,7 @@ impl SimulationLayer for TectonicsLayer {
 
         if !state.formation_complete && era == Era::Formation {
             state.registry = generate_initial_plates_data(world, rng);
-            apply_formation_terrain(world, &state.registry, rng);
+            apply_formation_terrain(world, &mut state.registry, rng);
             state.hotspots = generate_initial_hotspots(world, rng);
             ensure_deposition_buffer(&mut state, world.grid.cell_count() as usize);
 
@@ -110,10 +112,6 @@ impl SimulationLayer for TectonicsLayer {
             let volcanism_scale = world.parameters.core.geology.volcanism_scale;
             let event_granularity = world.parameters.core.geology.event_granularity;
 
-            timed_tick_step("advect", tick_year, || {
-                advect_plate_features(world, &state.registry, tick_year);
-            });
-
             timed_tick_step("motion", tick_year, || {
                 let plate_ids = state.registry.plate_ids();
                 for id in plate_ids {
@@ -123,8 +121,16 @@ impl SimulationLayer for TectonicsLayer {
                 }
             });
 
+            timed_tick_step("surface_remap", tick_year, || {
+                remap_plate_surfaces_after_motion(world, &mut state.registry);
+            });
+
             timed_tick_step("partition", tick_year, || {
-                repartition_hexes(world, &state.registry);
+                repartition_hexes(world, &mut state.registry);
+            });
+
+            timed_tick_step("rebuild_world", tick_year, || {
+                rebuild_world_from_plate_surfaces(world, &state.registry);
             });
 
             timed_tick_step("boundaries", tick_year, || {
@@ -133,11 +139,12 @@ impl SimulationLayer for TectonicsLayer {
 
             state.elevation_at_tick_start = world.elevation_mean.clone();
 
+            let boundaries_for_elevation = state.boundaries.clone();
             timed_tick_step("elevation", tick_year, || {
                 apply_boundary_elevation(
                     world,
-                    &state.registry,
-                    &state.boundaries,
+                    &mut state.registry,
+                    &boundaries_for_elevation,
                     interval_years,
                     tick_year,
                 );
@@ -184,7 +191,7 @@ impl SimulationLayer for TectonicsLayer {
             if reorg_fired {
                 state.reorg_count += 1;
                 timed_tick_step("repartition_after_reorg", tick_year, || {
-                    repartition_hexes(world, &state.registry);
+                    repartition_hexes(world, &mut state.registry);
                     state.boundaries = detect_and_classify_boundaries(world, &state.registry);
                 });
             }
@@ -212,6 +219,15 @@ impl SimulationLayer for TectonicsLayer {
                     event_granularity,
                     BranchId::ROOT,
                 );
+            });
+
+            timed_tick_step("rebuild_world_final", tick_year, || {
+                rebuild_world_from_plate_surfaces(world, &state.registry);
+            });
+
+            timed_tick_step("coast_cleanup", tick_year, || {
+                cleanup_coast_artifacts(world, &mut state.registry, &boundaries, tick_year.value());
+                rebuild_world_from_plate_surfaces(world, &state.registry);
             });
 
             timed_tick_step("clamp", tick_year, || {

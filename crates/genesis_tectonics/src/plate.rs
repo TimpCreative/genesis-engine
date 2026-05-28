@@ -6,6 +6,8 @@ use genesis_core::time::WorldYear;
 use genesis_core::{HexId, HotSpotId, PlateId};
 use serde::{Deserialize, Serialize};
 
+use crate::plate_surface::PlateSurface;
+
 /// Whether the plate is continental (lighter, thicker, higher elevation)
 /// or oceanic (denser, thinner, lower elevation).
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Serialize, Deserialize)]
@@ -53,6 +55,9 @@ pub struct Plate {
 
     /// Last year this plate owned at least one hex (§12.1 extinct-plate purge).
     pub last_nonempty_year: WorldYear,
+
+    /// Plate-local surface features indexed by [`HexId`].
+    pub surface: PlateSurface,
 }
 
 /// All plates in a world, keyed by `PlateId`.
@@ -213,5 +218,30 @@ impl PlateRegistry {
 
     pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut Plate> {
         self.plates.values_mut()
+    }
+}
+
+#[cfg(test)]
+impl Plate {
+    pub fn test_plate(
+        id: u16,
+        plate_type: PlateType,
+        seed: u32,
+        rate: f64,
+        cell_count: usize,
+    ) -> Self {
+        Self {
+            id: PlateId(id),
+            plate_type,
+            plate_class: PlateClass::Major,
+            seed_hex: HexId(seed),
+            motion_axis: [0.0, 0.0, 1.0],
+            motion_rate_rad_per_year: rate,
+            age_year: WorldYear::FORMATION,
+            target_fraction: 0.5,
+            accumulated_rotation_rad: 0.0,
+            last_nonempty_year: WorldYear::FORMATION,
+            surface: PlateSurface::new(cell_count),
+        }
     }
 }
