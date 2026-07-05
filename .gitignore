@@ -16,6 +16,7 @@ Thumbs.db
 # Genesis Engine working files
 /saves/
 /cache/
+/screenshots/
 *.gen.cache
 
 # Cursor
