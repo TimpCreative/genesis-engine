@@ -1,12 +1,13 @@
 # 06 — Tectonics Module Specification
 
 **Document Type:** Tier 2 — System Specification
-**Status:** Draft v0.4
-**Last Updated:** May 2026
+**Status:** Draft v0.5
+**Last Updated:** July 2026
 **Owner:** Brax Johnson
 **Implementing Phase:** 1 (Geology Prototype)
 
 **Changelog:**
+- v0.5 (July 2026): **Birth-frame surface indexing (P1-16).** `PlateSurface` arrays are now keyed by *birth* world `HexId` — the world-frame hex where a feature was created — instead of plate-local `HexId`. Display positions are computed by forward-rotating the fixed birth position (`birth_hex_to_current_world`), so quantization error no longer compounds across ticks; writes convert once via `current_world_to_birth_hex`. Removed the `surface_remap` post-motion reindexing step (module deleted). `WorldData` rebuild is now two-phase: plate-type baseline fill, then birth-feature projection with deterministic collision priority (higher elevation, then newer `age_year`, then lower birth index) and a plate-ownership guard (features only render on hexes their plate owns). Same seed may produce different output post-P1-16 (expected).
 - v0.4 (May 2026): **Destination-driven plate surfaces (P1-15).** Authoritative terrain (`elevation_mean`, `elevation_relief`, `bedrock_type`, `fertility`) lives on per-plate `PlateSurface` arrays keyed by plate-local `HexId`; `WorldData` is rebuilt twice per Geological tick (after motion/partition and after all surface mutations). Boundary elevation, erosion, hot spots, volcanism, and reorganization subsidence write to surfaces, not directly to `WorldData`. Removed push-model feature advection and `PlateOrigin` tagging. Same seed may produce different output post-P1-15 (expected).
 - v0.3 (May 2026): Recalibrated boundary elevation rates by ~100x (§5.1–§5.4) to prevent saturation. Added coastal-shelf falloff (§5.3) to produce gradient coastlines instead of cliffs. New rates: `OROGENY_RATE=5e-5`, `SUBDUCTION_RATE=1e-4`, `SUBSIDENCE_RATE=2e-5`. Calibration verified by `long_validation_does_not_saturate_elevation` test. See P1-11 calibration prompt.
 - v0.2 (May 2026): Incorporated Brax's review feedback. Added planetary rotation influence on plate motion (§2.1). Added motion axis constraints to prevent geometrically weird plate drift (§2.1). Replaced pure Voronoi initial generation with growth-based seeding (§2.2). Split plate count into major (default 7) + minor (default 8) (§2.2). Made plate velocity distribution log-normal with continental-velocity multiplier (§2.4). Added climate-feedback hook for erosion in Phase 2 (§8.2). Replaced limestone bedrock assignment with fertility accumulator field (§8.4) — `BedrockType::Limestone` transition deferred to Phase 4 Biology. Updated open questions; resolved items 2 and 4; added items 7 (planetary formation deferred to future doc) and 8 (chaos mode deferred).

@@ -134,6 +134,8 @@ fn apply_split(
     );
     let child_axis = (parent_axis + DVec3::new(perturb, perturb * 0.5, -perturb)).normalize();
 
+    // Surfaces are birth-indexed by world HexId; cloning preserves stable birth indices
+    // across split children. Post-repartition ownership determines which features display.
     let child = Plate {
         id: child_id,
         plate_type: parent.plate_type,
@@ -224,6 +226,7 @@ fn apply_merge(
     if let Some(absorbed_plate) = registry.get(absorbed) {
         let absorbed_surface = absorbed_plate.surface.clone();
         if let Some(into_plate) = registry.plates_mut().get_mut(&into) {
+            // Birth indices are plate-independent world HexIds, so merge is stable here.
             into_plate.surface.merge_from(&absorbed_surface);
         }
     }

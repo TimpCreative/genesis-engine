@@ -5,7 +5,7 @@ use genesis_core::data::WorldData;
 use genesis_core::{HexId, PlateId};
 use serde::{Deserialize, Serialize};
 
-use crate::frames::world_to_plate_local;
+use crate::frames::current_world_to_birth_hex;
 use crate::plate::{PlateRegistry, PlateType};
 
 /// Matches [`crate::initial_terrain::CONTINENTAL_BASE_ELEVATION_M`].
@@ -13,11 +13,7 @@ const CONTINENTAL_BASELINE_M: f32 = 800.0;
 /// Matches [`crate::initial_terrain::OCEANIC_BASE_ELEVATION_M`].
 const OCEANIC_BASELINE_M: f32 = -3500.0;
 
-/// A single feature stored on a plate's surface in plate-local coordinates.
-///
-/// "Plate-local" means the world-frame position if the plate had zero accumulated rotation.
-/// When the plate rotates, features stay at the same plate-local positions but their world
-/// positions move.
+/// A single feature stored on a plate's surface by birth world-HexId.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SurfaceFeature {
     pub elevation_m: f32,
@@ -28,10 +24,11 @@ pub struct SurfaceFeature {
     pub age_year: i64,
 }
 
-/// Per-plate surface storage indexed by plate-local [`HexId`].
+/// Per-plate surface storage indexed by BIRTH world-HexId.
 ///
-/// Length is always `cell_count` of the shared world hex grid. Most entries are `None`
-/// for plates that do not span the whole world.
+/// `features[h]` holds the feature born at world hex `h` (at year 0, or when an event
+/// created it). The birth index never changes. To find where a feature currently appears,
+/// rotate its birth position forward (see `frames::birth_hex_to_current_world`).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PlateSurface {
     pub features: Vec<Option<SurfaceFeature>>,
@@ -44,34 +41,32 @@ impl PlateSurface {
         }
     }
 
-    pub fn get(&self, plate_local_hex: HexId) -> Option<&SurfaceFeature> {
-        self.features.get(plate_local_hex.0 as usize)?.as_ref()
+    pub fn get(&self, birth_hex: HexId) -> Option<&SurfaceFeature> {
+        self.features.get(birth_hex.0 as usize)?.as_ref()
     }
 
-    pub fn set(&mut self, plate_local_hex: HexId, feature: SurfaceFeature) {
-        let idx = plate_local_hex.0 as usize;
+    pub fn set(&mut self, birth_hex: HexId, feature: SurfaceFeature) {
+        let idx = birth_hex.0 as usize;
         if idx < self.features.len() {
             self.features[idx] = Some(feature);
         }
     }
 
-    pub fn clear(&mut self, plate_local_hex: HexId) {
-        let idx = plate_local_hex.0 as usize;
+    pub fn clear(&mut self, birth_hex: HexId) {
+        let idx = birth_hex.0 as usize;
         if idx < self.features.len() {
             self.features[idx] = None;
         }
     }
 
     /// Modifies an existing feature in-place if it exists; no-op if absent.
-    pub fn modify<F>(&mut self, plate_local_hex: HexId, modifier: F)
+    pub fn modify<F>(&mut self, birth_hex: HexId, modifier: F)
     where
         F: FnOnce(&mut SurfaceFeature),
     {
-        let idx = plate_local_hex.0 as usize;
-        if let Some(slot) = self.features.get_mut(idx) {
-            if let Some(feature) = slot.as_mut() {
-                modifier(feature);
-            }
+        let idx = birth_hex.0 as usize;
+        if let Some(Some(feature)) = self.features.get_mut(idx) {
+            modifier(feature);
         }
     }
 
@@ -87,7 +82,6 @@ impl PlateSurface {
             let Some(other_feature) = other_slot else {
                 continue;
             };
-            let idx = i as u32;
             match self.features.get_mut(i) {
                 Some(self_slot) => match self_slot {
                     None => *self_slot = Some(other_feature.clone()),
@@ -99,7 +93,6 @@ impl PlateSurface {
                 },
                 None => break,
             }
-            let _ = idx;
         }
     }
 }
@@ -127,8 +120,8 @@ pub fn surface_elevation_at(
         return None;
     }
     let plate = registry.get(plate_id)?;
-    let plate_local = world_to_plate_local(&data.grid, world_hex, plate);
-    Some(match plate.surface.get(plate_local) {
+    let birth_hex = current_world_to_birth_hex(&data.grid, world_hex, plate);
+    Some(match plate.surface.get(birth_hex) {
         Some(feature) => feature.elevation_m,
         None => type_baseline(plate.plate_type).0,
     })
@@ -146,7 +139,7 @@ pub fn baseline_feature(plate_type: PlateType, age_year: i64) -> SurfaceFeature 
     }
 }
 
-/// Reads or creates a feature at the world hex's plate-local position, applies `modifier`,
+/// Reads or creates a feature at the world hex's birth-index position, applies `modifier`,
 /// and stores it back on the owning plate's surface.
 pub fn modify_surface_at_world_hex<F>(
     registry: &mut PlateRegistry,
@@ -166,13 +159,13 @@ pub fn modify_surface_at_world_hex<F>(
         return;
     }
 
-    let (plate_type, plate_local) = {
+    let (plate_type, birth_hex) = {
         let Some(plate) = registry.get(plate_id) else {
             return;
         };
         (
             plate.plate_type,
-            world_to_plate_local(&data.grid, world_hex, plate),
+            current_world_to_birth_hex(&data.grid, world_hex, plate),
         )
     };
 
@@ -182,12 +175,12 @@ pub fn modify_surface_at_world_hex<F>(
 
     let mut feature = plate
         .surface
-        .get(plate_local)
+        .get(birth_hex)
         .cloned()
         .unwrap_or_else(|| baseline_feature(plate_type, tick_year));
     modifier(&mut feature);
     feature.age_year = tick_year;
-    plate.surface.set(plate_local, feature);
+    plate.surface.set(birth_hex, feature);
 }
 
 #[cfg(test)]

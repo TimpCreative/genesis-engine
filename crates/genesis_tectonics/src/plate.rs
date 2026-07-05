@@ -56,7 +56,7 @@ pub struct Plate {
     /// Last year this plate owned at least one hex (§12.1 extinct-plate purge).
     pub last_nonempty_year: WorldYear,
 
-    /// Plate-local surface features indexed by [`HexId`].
+    /// Plate surface features indexed by birth world [`HexId`].
     pub surface: PlateSurface,
 }
 
@@ -85,6 +85,11 @@ impl PlateRegistry {
 
     pub fn iter(&self) -> impl Iterator<Item = &Plate> {
         self.plates.values()
+    }
+
+    /// Deterministic `(PlateId, Plate)` iteration in ascending `PlateId` order.
+    pub fn iter_sorted(&self) -> impl Iterator<Item = (PlateId, &Plate)> {
+        self.plates.iter().map(|(id, plate)| (*id, plate))
     }
 
     pub fn count(&self) -> usize {

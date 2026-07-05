@@ -24,7 +24,6 @@ use crate::partition::repartition_hexes;
 use crate::plate::TectonicsState;
 use crate::reorganization::maybe_reorganize;
 use crate::sea_level::update_sea_level;
-use crate::surface_remap::remap_plate_surfaces_after_motion;
 use crate::volcanism::apply_boundary_volcanism;
 use crate::world_rebuild::rebuild_world_from_plate_surfaces;
 
@@ -119,10 +118,6 @@ impl SimulationLayer for TectonicsLayer {
                         advance_plate_motion(plate, interval_years);
                     }
                 }
-            });
-
-            timed_tick_step("surface_remap", tick_year, || {
-                remap_plate_surfaces_after_motion(world, &mut state.registry);
             });
 
             timed_tick_step("partition", tick_year, || {

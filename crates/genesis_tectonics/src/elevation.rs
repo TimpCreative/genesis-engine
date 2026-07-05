@@ -7,7 +7,7 @@ use genesis_core::time::WorldYear;
 use genesis_core::{HexId, PlateId};
 
 use crate::boundary::{BoundaryClass, BoundaryInfo, ClassifiedEdge, ConvergentSubtype};
-use crate::frames::world_to_plate_local;
+use crate::frames::current_world_to_birth_hex;
 use crate::initial_terrain::CONTINENTAL_BASE_ELEVATION_M;
 use crate::plate::{Plate, PlateRegistry, PlateType};
 use crate::plate_surface::baseline_feature;
@@ -71,7 +71,7 @@ const INLAND_FALLOFF: [f64; 3] = [1.0, 0.67, 0.33];
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
 struct SurfaceKey {
     plate_id: PlateId,
-    plate_local_hex: HexId,
+    birth_hex: HexId,
 }
 
 #[derive(Default)]
@@ -169,7 +169,7 @@ fn surface_key(
         .expect("plate exists for surface key");
     SurfaceKey {
         plate_id,
-        plate_local_hex: world_to_plate_local(&data.grid, world_hex, plate),
+        birth_hex: current_world_to_birth_hex(&data.grid, world_hex, plate),
     }
 }
 
@@ -508,6 +508,7 @@ fn apply_oceanic_oceanic(
 
 /// Spreads gentle subsidence onto the oceanic plate's hexes adjacent to a continental
 /// boundary, producing a continental shelf → deep ocean gradient instead of a cliff.
+#[allow(clippy::too_many_arguments)]
 fn spread_coastal_shelf(
     data: &WorldData,
     registry: &PlateRegistry,
@@ -575,6 +576,7 @@ fn spread_coastal_shelf(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spread_inland(
     data: &WorldData,
     registry: &PlateRegistry,
@@ -638,7 +640,7 @@ fn apply_surface_deltas(registry: &mut PlateRegistry, deltas: &BTreeMap<SurfaceK
         let plate_type = plate.plate_type;
         let mut feature = plate
             .surface
-            .get(key.plate_local_hex)
+            .get(key.birth_hex)
             .cloned()
             .unwrap_or_else(|| {
                 let mut f = baseline_feature(plate_type, delta.age_year);
@@ -654,7 +656,7 @@ fn apply_surface_deltas(registry: &mut PlateRegistry, deltas: &BTreeMap<SurfaceK
         if delta.age_year > 0 {
             feature.age_year = delta.age_year;
         }
-        plate.surface.set(key.plate_local_hex, feature);
+        plate.surface.set(key.birth_hex, feature);
     }
 }
 

@@ -3,7 +3,7 @@
 use genesis_core::data::WorldData;
 use genesis_core::{HexGrid, HexId, PlateId};
 
-use crate::frames::world_to_plate_local;
+use crate::frames::current_world_to_birth_hex;
 use crate::motion::effective_position_direction;
 use crate::plate::PlateRegistry;
 use crate::plate_surface::SurfaceFeature;
@@ -13,7 +13,7 @@ use crate::plate_surface::SurfaceFeature;
 /// Iterates hexes in ascending [`HexId`] order. Ties break on lowest [`PlateId`].
 ///
 /// When a hex changes owner, the displayed terrain (`elevation_mean`, relief, bedrock,
-/// fertility) is copied onto the new plate's surface at the correct plate-local index so
+/// fertility) is copied onto the new plate's surface at the correct birth index so
 /// [`crate::world_rebuild::rebuild_world_from_plate_surfaces`] does not fall back to type
 /// baselines at stale indices.
 pub fn repartition_hexes(data: &mut WorldData, registry: &mut PlateRegistry) {
@@ -28,9 +28,8 @@ pub fn repartition_hexes(data: &mut WorldData, registry: &mut PlateRegistry) {
         new_owners.push(nearest_plate(grid, hex, registry, &plate_ids));
     }
 
-    for i in 0..n {
+    for (i, &new_owner) in new_owners.iter().enumerate() {
         let old_owner = data.plate_id[i];
-        let new_owner = new_owners[i];
         if old_owner == new_owner {
             continue;
         }
@@ -51,10 +50,10 @@ pub fn repartition_hexes(data: &mut WorldData, registry: &mut PlateRegistry) {
             continue;
         };
         let world_hex = HexId(i as u32);
-        let plate_local = world_to_plate_local(grid, world_hex, new_plate);
+        let birth_hex = current_world_to_birth_hex(grid, world_hex, new_plate);
 
         if let Some(plate) = registry.plates_mut().get_mut(&new_owner) {
-            plate.surface.set(plate_local, feature);
+            plate.surface.set(birth_hex, feature);
         }
     }
 
@@ -95,7 +94,7 @@ mod tests {
     use genesis_core::time::WorldYear;
     use genesis_core::{HexGrid, HexId, PlateId};
 
-    use crate::frames::world_to_plate_local;
+    use crate::frames::current_world_to_birth_hex;
     use crate::plate::{Plate, PlateClass, PlateRegistry, PlateType};
     use crate::plate_surface::{PlateSurface, SurfaceFeature};
     use crate::world_rebuild::rebuild_world_from_plate_surfaces;
@@ -228,13 +227,13 @@ mod tests {
             age_year: 0,
         };
         let new_plate = registry.get(new_owner).expect("plate");
-        let plate_local = world_to_plate_local(&data.grid, target_hex, new_plate);
+        let birth_hex = current_world_to_birth_hex(&data.grid, target_hex, new_plate);
         registry
             .plates_mut()
             .get_mut(&new_owner)
             .expect("plate")
             .surface
-            .set(plate_local, feature);
+            .set(birth_hex, feature);
 
         rebuild_world_from_plate_surfaces(&mut data, &registry);
 

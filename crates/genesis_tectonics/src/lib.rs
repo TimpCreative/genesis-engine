@@ -20,7 +20,6 @@ pub mod plate;
 pub mod plate_surface;
 pub mod reorganization;
 pub mod sea_level;
-pub mod surface_remap;
 pub mod validation;
 pub mod volcanism;
 pub mod world_rebuild;
@@ -43,7 +42,7 @@ pub use erosion::{
     lowest_elevation_neighbor, route_eroded_mass,
 };
 pub use events::flush_events_to_branch;
-pub use frames::{plate_local_to_world, world_to_plate_local};
+pub use frames::{birth_hex_to_current_world, current_world_to_birth_hex};
 pub use history::{generate_full_history_with_tectonics, run_formation};
 pub use hotspots::{
     ACTIVITY_RATE_MAX, ACTIVITY_RATE_MIN, HOTSPOT_ACTIVITY_STREAM, HOTSPOT_ELEVATION_CHANGE_MAX_M,
@@ -388,7 +387,7 @@ mod integration_tests {
     }
 
     use crate::erosion::TROPICAL_LATITUDE_DEG;
-    use crate::frames::world_to_plate_local;
+    use crate::frames::current_world_to_birth_hex;
     use crate::plate_surface::SurfaceFeature;
 
     fn seed_shallow_tropical_hex(world: &mut genesis_core::World, state: &mut TectonicsState) {
@@ -405,11 +404,11 @@ mod integration_tests {
             }
             let idx = hex.0 as usize;
             let plate_id = world.data.plate_id[idx];
-            let plate_local = {
+            let birth_hex = {
                 let Some(plate) = state.registry.get(plate_id) else {
                     continue;
                 };
-                world_to_plate_local(&world.data.grid, hex, plate)
+                current_world_to_birth_hex(&world.data.grid, hex, plate)
             };
 
             let mut feature = {
@@ -418,7 +417,7 @@ mod integration_tests {
                 };
                 plate
                     .surface
-                    .get(plate_local)
+                    .get(birth_hex)
                     .cloned()
                     .unwrap_or(SurfaceFeature {
                         elevation_m: shallow_elev,
@@ -431,7 +430,7 @@ mod integration_tests {
             feature.elevation_m = shallow_elev;
 
             if let Some(plate) = state.registry.plates_mut().get_mut(&plate_id) {
-                plate.surface.set(plate_local, feature);
+                plate.surface.set(birth_hex, feature);
             } else {
                 continue;
             }
@@ -809,6 +808,97 @@ mod integration_tests {
         assert_ne!(
             peak_short, peak_long,
             "peak elevation unchanged between 10M and 100M years — advection broken?"
+        );
+    }
+
+    #[test]
+    #[ignore = "diagnostic: compares direct forward mapping at 1B and 4.5B"]
+    fn forward_rotation_does_not_compound_error() {
+        fn projected_feature_matches_world(
+            world: &genesis_core::World,
+            state: &TectonicsState,
+        ) -> (PlateId, genesis_core::HexId, genesis_core::HexId) {
+            for (plate_id, plate) in state.registry.iter_sorted() {
+                let mut candidates: Vec<(genesis_core::HexId, &SurfaceFeature)> = plate
+                    .surface
+                    .features
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(idx, slot)| {
+                        slot.as_ref().map(|f| (genesis_core::HexId(idx as u32), f))
+                    })
+                    .collect();
+                candidates.sort_by(|a, b| {
+                    b.1.elevation_m
+                        .partial_cmp(&a.1.elevation_m)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+
+                for (birth_hex, feature) in candidates {
+                    let expected_world =
+                        birth_hex_to_current_world(&world.data.grid, birth_hex, plate);
+                    let w = expected_world.0 as usize;
+                    if world.data.plate_id[w] != plate_id {
+                        continue;
+                    }
+                    if (world.data.elevation_mean[w] - feature.elevation_m).abs() < 1e-3 {
+                        return (plate_id, birth_hex, expected_world);
+                    }
+                }
+            }
+            panic!("no projected feature matched world reconstruction");
+        }
+
+        let (world_1b, state_1b) =
+            run_validation_world(WorldYear(VALIDATION_TARGET_YEAR_ONE_BILLION))
+                .expect("1B validation run");
+        let (world_45b, state_45b) = run_validation_world(WorldYear(VALIDATION_TARGET_YEAR_FULL))
+            .expect("4.5B validation run");
+
+        let (_plate_1b, birth_1b, expected_1b) =
+            projected_feature_matches_world(&world_1b, &state_1b);
+        let (_plate_45b, birth_45b, expected_45b) =
+            projected_feature_matches_world(&world_45b, &state_45b);
+
+        let recovered_1b = {
+            let plate = state_1b
+                .registry
+                .get(world_1b.data.plate_id[expected_1b.0 as usize])
+                .unwrap();
+            current_world_to_birth_hex(&world_1b.data.grid, expected_1b, plate)
+        };
+        let recovered_45b = {
+            let plate = state_45b
+                .registry
+                .get(world_45b.data.plate_id[expected_45b.0 as usize])
+                .unwrap();
+            current_world_to_birth_hex(&world_45b.data.grid, expected_45b, plate)
+        };
+
+        let near_1b = recovered_1b == birth_1b
+            || world_1b
+                .data
+                .grid
+                .neighbors(birth_1b)
+                .iter()
+                .copied()
+                .any(|n| n == recovered_1b);
+        let near_45b = recovered_45b == birth_45b
+            || world_45b
+                .data
+                .grid
+                .neighbors(birth_45b)
+                .iter()
+                .copied()
+                .any(|n| n == recovered_45b);
+
+        assert!(
+            near_1b,
+            "1B projection should recover birth hex or neighbor"
+        );
+        assert!(
+            near_45b,
+            "4.5B projection should recover birth hex or neighbor"
         );
     }
 

@@ -5,7 +5,6 @@ use genesis_core::rng::WorldRng;
 use genesis_core::{HexId, PlateId};
 use rand::Rng;
 
-use crate::frames::world_to_plate_local;
 use crate::plate::{PlateRegistry, PlateType};
 use crate::plate_surface::SurfaceFeature;
 use crate::world_rebuild::rebuild_world_from_plate_surfaces;
@@ -34,14 +33,11 @@ pub fn apply_formation_terrain(data: &mut WorldData, registry: &mut PlateRegistr
             continue;
         }
 
-        let (plate_type, plate_local) = {
+        let plate_type = {
             let Some(plate) = registry.get(plate_id) else {
                 continue;
             };
-            (
-                plate.plate_type,
-                world_to_plate_local(&data.grid, hex, plate),
-            )
+            plate.plate_type
         };
 
         let Some(plate) = registry.plates_mut().get_mut(&plate_id) else {
@@ -56,8 +52,9 @@ pub fn apply_formation_terrain(data: &mut WorldData, registry: &mut PlateRegistr
         let noise: f32 =
             noise_rng.gen_range(-INITIAL_ELEVATION_NOISE_RANGE_M..=INITIAL_ELEVATION_NOISE_RANGE_M);
 
+        // At year 0, birth hex == world hex (zero accumulated rotation).
         plate.surface.set(
-            plate_local,
+            hex,
             SurfaceFeature {
                 elevation_m: base + noise,
                 relief_m: 0.0,

@@ -1,4 +1,9 @@
-//! Plate-local ↔ world-frame hex conversion (Doc 06 destination-driven model).
+//! Plate birth-frame ↔ world-frame conversion (Doc 06 destination-driven model, P1-16).
+//!
+//! Features are stored indexed by their BIRTH world-HexId (the hex they occupied at
+//! year 0 or when created). To find where a feature currently appears, rotate its birth
+//! position FORWARD by the plate's accumulated rotation. We always rotate from the fixed
+//! birth position, so quantization error does not compound over time.
 
 use glam::{DQuat, DVec3};
 
@@ -15,35 +20,29 @@ fn plate_rotation_axis(plate: &Plate) -> DVec3 {
     .normalize()
 }
 
-/// Converts a world-frame hex to a plate-local [`HexId`] for the given plate.
-///
-/// Inverse-rotates the world position by the plate's accumulated rotation, then finds
-/// the nearest grid hex using `world_hex` as the search hint.
-pub fn world_to_plate_local(grid: &HexGrid, world_hex: HexId, plate: &Plate) -> HexId {
-    let world_pos = grid.cell_center_direction(world_hex);
-    let world_v = DVec3::new(world_pos[0], world_pos[1], world_pos[2]);
-
-    let q_inverse =
-        DQuat::from_axis_angle(plate_rotation_axis(plate), -plate.accumulated_rotation_rad);
-    let local_v = (q_inverse * world_v).normalize();
-
-    grid.nearest_hex_direction_from(world_hex, [local_v.x, local_v.y, local_v.z])
+/// Rotates a birth-frame world hex FORWARD to its current world position, returns the
+/// current world HexId. This is the primary lookup used by world_rebuild.
+pub fn birth_hex_to_current_world(grid: &HexGrid, birth_hex: HexId, plate: &Plate) -> HexId {
+    let birth_pos = grid.cell_center_direction(birth_hex);
+    let birth_v = DVec3::new(birth_pos[0], birth_pos[1], birth_pos[2]);
+    let q = DQuat::from_axis_angle(plate_rotation_axis(plate), plate.accumulated_rotation_rad);
+    let current_v = (q * birth_v).normalize();
+    grid.nearest_hex_direction_from(birth_hex, [current_v.x, current_v.y, current_v.z])
 }
 
-/// Finds the world-frame [`HexId`] that currently displays a plate-local feature.
-///
-/// Scans all hexes for a deterministic inverse of [`world_to_plate_local`]. `world_hint`
-/// is returned when no hex maps to `plate_local_hex` (should not occur in valid worlds).
-pub fn plate_local_to_world(
+/// Inverse-rotates a CURRENT world hex back to its birth-frame world HexId. Used at WRITE
+/// time when a terrain event occurs at a current world hex and we need its birth index.
+/// Done once per write; result is stored as a fixed index, so no compounding.
+pub fn current_world_to_birth_hex(
     grid: &HexGrid,
-    plate_local_hex: HexId,
+    current_world_hex: HexId,
     plate: &Plate,
-    world_hint: HexId,
 ) -> HexId {
-    grid.iter()
-        .filter(|&world_hex| world_to_plate_local(grid, world_hex, plate) == plate_local_hex)
-        .min()
-        .unwrap_or(world_hint)
+    let world_pos = grid.cell_center_direction(current_world_hex);
+    let world_v = DVec3::new(world_pos[0], world_pos[1], world_pos[2]);
+    let q_inv = DQuat::from_axis_angle(plate_rotation_axis(plate), -plate.accumulated_rotation_rad);
+    let birth_v = (q_inv * world_v).normalize();
+    grid.nearest_hex_direction_from(current_world_hex, [birth_v.x, birth_v.y, birth_v.z])
 }
 
 #[cfg(test)]
@@ -84,7 +83,12 @@ mod tests {
 
         for hex in grid.iter().take(50) {
             assert_eq!(
-                world_to_plate_local(grid, hex, &plate),
+                birth_hex_to_current_world(grid, hex, &plate),
+                hex,
+                "zero rotation should map {hex:?} to itself"
+            );
+            assert_eq!(
+                current_world_to_birth_hex(grid, hex, &plate),
                 hex,
                 "zero rotation should map {hex:?} to itself"
             );
@@ -92,7 +96,7 @@ mod tests {
     }
 
     #[test]
-    fn round_trip_world_to_local_to_world() {
+    fn forward_then_inverse_stays_near_birth_hex() {
         let mut params = WorldParameters::default();
         params.core.grid.subdivision_level = 5;
         let world = create_world(params).expect("world");
@@ -100,32 +104,34 @@ mod tests {
         let plate = test_plate(0.3);
 
         for hex in grid.iter().take(100) {
-            let local = world_to_plate_local(grid, hex, &plate);
-            let back = plate_local_to_world(grid, local, &plate, hex);
-            assert_eq!(
-                back, hex,
-                "round-trip failed for world hex {hex:?} (local {local:?})"
+            let current = birth_hex_to_current_world(grid, hex, &plate);
+            let recovered = current_world_to_birth_hex(grid, current, &plate);
+            let is_self_or_neighbor =
+                recovered == hex || grid.neighbors(hex).iter().copied().any(|n| n == recovered);
+            assert!(
+                is_self_or_neighbor,
+                "inverse(forward({hex:?})) should be {hex:?} or neighbor, got {recovered:?}"
             );
         }
     }
 
     #[test]
-    fn rotation_moves_local_positions() {
+    fn rotation_moves_current_world_position() {
         let grid = genesis_core::HexGrid::new(4, EARTH_RADIUS_KM).expect("grid");
         let mut plate = test_plate(std::f64::consts::FRAC_PI_2);
         plate.surface = PlateSurface::new(grid.cell_count() as usize);
 
-        let world_hex = HexId(10);
-        let local = world_to_plate_local(&grid, world_hex, &plate);
-        let back_at_zero = {
+        let birth_hex = HexId(10);
+        let rotated_world = birth_hex_to_current_world(&grid, birth_hex, &plate);
+        let world_at_zero = {
             let mut zero = plate.clone();
             zero.accumulated_rotation_rad = 0.0;
-            world_to_plate_local(&grid, world_hex, &zero)
+            birth_hex_to_current_world(&grid, birth_hex, &zero)
         };
 
         assert_ne!(
-            local, back_at_zero,
-            "90° rotation should change plate-local index for hex {world_hex:?}"
+            rotated_world, world_at_zero,
+            "90° rotation should change current world position for birth hex {birth_hex:?}"
         );
     }
 }
