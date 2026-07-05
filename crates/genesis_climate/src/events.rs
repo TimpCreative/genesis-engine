@@ -125,6 +125,17 @@ pub fn maybe_emit_cooling_milestone(
     }
 }
 
+/// Pushes [`ClimateState::pending_events`] onto the root branch event log.
+pub fn flush_events_to_branch(world: &mut World, state: &mut ClimateState) {
+    let root = world
+        .branch_tree
+        .get_mut(BranchId::ROOT)
+        .expect("root branch always exists");
+    for event in state.pending_events.drain(..) {
+        root.event_log.push(event);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -168,16 +179,5 @@ mod tests {
             1,
             "cooling milestone should not double-fire on the same tick"
         );
-    }
-}
-
-/// Pushes [`ClimateState::pending_events`] onto the root branch event log.
-pub fn flush_events_to_branch(world: &mut World, state: &mut ClimateState) {
-    let root = world
-        .branch_tree
-        .get_mut(BranchId::ROOT)
-        .expect("root branch always exists");
-    for event in state.pending_events.drain(..) {
-        root.event_log.push(event);
     }
 }

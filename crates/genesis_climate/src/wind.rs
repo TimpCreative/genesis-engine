@@ -63,7 +63,7 @@ pub fn compute_wind_field(data: &mut WorldData, cells: &CirculationCells) {
 fn cell_wind_direction_at_latitude(cell: &CirculationCell, lat_rad: f64) -> f32 {
     use std::f64::consts::PI;
 
-    let is_easterly_cell = cell.index % 2 == 0;
+    let is_easterly_cell = cell.index.is_multiple_of(2);
     let is_northern = lat_rad >= 0.0;
 
     let direction = match (is_easterly_cell, is_northern) {
@@ -151,7 +151,7 @@ mod tests {
         }
 
         compute_wind_field(&mut world.data, &cells);
-        let speed_at_full_intensity: Vec<f32> = world.data.wind_speed_m_s.iter().copied().collect();
+        let speed_at_full_intensity: Vec<f32> = world.data.wind_speed_m_s.to_vec();
 
         for cell in cells.cells.iter_mut() {
             cell.intensity = 0.5;

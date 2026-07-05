@@ -156,15 +156,16 @@ mod tests {
     }
 
     fn earth_like_climate_state() -> ClimateState {
-        let mut state = ClimateState::default();
-        state.atmospheric_composition = AtmosphericComposition {
-            co2_ppm: 280.0,
-            water_vapor_index: 0.4,
-            oxygen_fraction: 0.21,
-            greenhouse_forcing: 0.0,
-        };
-        state.glaciation = GlaciationState::Interglacial;
-        state
+        ClimateState {
+            atmospheric_composition: AtmosphericComposition {
+                co2_ppm: 280.0,
+                water_vapor_index: 0.4,
+                oxygen_fraction: 0.21,
+                greenhouse_forcing: 0.0,
+            },
+            glaciation: GlaciationState::Interglacial,
+            ..ClimateState::default()
+        }
     }
 
     #[test]

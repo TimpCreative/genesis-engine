@@ -4,7 +4,9 @@
 /// Per-hex Köppen-like regime label stored in [`WorldData::climate_regime`](super::WorldData::climate_regime).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[repr(u8)]
+#[derive(Default)]
 pub enum ClimateRegimePlaceholder {
+    #[default]
     Unset = 0,
     Tropical = 1,
     Subtropical = 2,
@@ -16,10 +18,4 @@ pub enum ClimateRegimePlaceholder {
     Boreal = 8,
     Tundra = 9,
     Polar = 10,
-}
-
-impl Default for ClimateRegimePlaceholder {
-    fn default() -> Self {
-        Self::Unset
-    }
 }

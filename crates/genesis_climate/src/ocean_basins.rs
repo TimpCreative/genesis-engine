@@ -55,12 +55,11 @@ pub fn identify_ocean_basins(data: &mut WorldData) -> OceanBasins {
     }
 
     let mut ocean_hexes_per_component: Vec<Vec<usize>> = vec![Vec::new(); next_component as usize];
-    for i in 0..n {
+    for (i, &cid) in connectivity.iter().enumerate() {
         if !is_ocean(data, i) {
             continue;
         }
-        let cid = connectivity[i] as usize;
-        ocean_hexes_per_component[cid].push(i);
+        ocean_hexes_per_component[cid as usize].push(i);
     }
 
     let main_component = ocean_hexes_per_component

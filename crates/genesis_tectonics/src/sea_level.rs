@@ -50,6 +50,7 @@ pub fn total_divergent_boundary_length_km(data: &WorldData, boundaries: &Boundar
 }
 
 /// Updates global `sea_level_m` and may emit [`EventKind::SeaLevelChange`].
+#[allow(clippy::too_many_arguments)]
 pub fn update_sea_level(
     data: &mut WorldData,
     boundaries: &BoundaryInfo,

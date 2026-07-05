@@ -152,9 +152,7 @@ impl HexGrid {
         let mut best = HexId(0);
         let mut best_dot = f64::NEG_INFINITY;
         for (index, center) in self.centers.iter().enumerate() {
-            let d = direction[0] * f64::from(center.x)
-                + direction[1] * f64::from(center.y)
-                + direction[2] * f64::from(center.z);
+            let d = direction[0] * center.x + direction[1] * center.y + direction[2] * center.z;
             let hex = HexId(index as u32);
             if d > best_dot {
                 best_dot = d;
@@ -216,9 +214,7 @@ impl HexGrid {
     /// Dot product of `hex`'s center direction with `direction`.
     fn dot_with_direction(&self, hex: HexId, direction: [f64; 3]) -> f64 {
         let center = self.centers[hex.0 as usize];
-        direction[0] * f64::from(center.x)
-            + direction[1] * f64::from(center.y)
-            + direction[2] * f64::from(center.z)
+        direction[0] * center.x + direction[1] * center.y + direction[2] * center.z
     }
 
     /// Iterate all valid [`HexId`] values in this grid (`0..cell_count`).

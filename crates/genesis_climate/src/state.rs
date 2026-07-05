@@ -15,7 +15,9 @@ use genesis_core::parameters::WorldParameters;
 /// Placeholder for P2-1. Filled out properly in P2-12 (regime classification).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[repr(u8)]
+#[derive(Default)]
 pub enum ClimateRegime {
+    #[default]
     Unset = 0,
     Tropical = 1,
     Subtropical = 2,
@@ -27,12 +29,6 @@ pub enum ClimateRegime {
     Boreal = 8,
     Tundra = 9,
     Polar = 10,
-}
-
-impl Default for ClimateRegime {
-    fn default() -> Self {
-        Self::Unset
-    }
 }
 
 /// Global atmospheric composition (Doc 07 §3.4, §11).

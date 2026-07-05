@@ -147,12 +147,11 @@ fn fill_artifact_inland_lakes(
             min_elev = min_elev.min(data.elevation_mean[idx]);
             let hex = HexId(idx as u32);
             let plate_id = data.plate_id[idx];
-            if plate_id != PlateId::NONE {
-                if let Some(plate) = registry.get(plate_id) {
-                    if plate.plate_type != PlateType::Continental {
-                        all_continental = false;
-                    }
-                }
+            if plate_id != PlateId::NONE
+                && let Some(plate) = registry.get(plate_id)
+                && plate.plate_type != PlateType::Continental
+            {
+                all_continental = false;
             }
 
             let mut neighbors: Vec<HexId> = grid.neighbors(hex).to_vec();

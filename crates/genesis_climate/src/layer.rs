@@ -329,7 +329,7 @@ mod tests {
             "expected some non-zero wind speeds after formation"
         );
         assert!(
-            speeds.iter().all(|&s| s >= 0.0 && s < 30.0),
+            speeds.iter().all(|&s| (0.0..30.0).contains(&s)),
             "wind speeds should be in [0, 30) m/s"
         );
 
@@ -365,7 +365,7 @@ mod tests {
 
         for &t in &world.data.temperature_mean {
             assert!(
-                t >= -60.0 && t <= 50.0,
+                (-60.0..=50.0).contains(&t),
                 "temperature {t}°C out of expected [-60, 50] range"
             );
         }
