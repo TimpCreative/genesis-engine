@@ -10,7 +10,9 @@ use genesis_core::time::WorldYear;
 use rand::Rng;
 
 use crate::plate::{PlateRegistry, TectonicsState};
-use crate::plate_surface::{modify_surface_at_world_hex, surface_elevation_at};
+use crate::plate_surface::{
+    continental_crust_at, modify_surface_at_world_hex, surface_elevation_at,
+};
 
 /// Per-tick erosion variation stream (§4.4).
 pub const EROSION_NOISE_STREAM: &str = "tectonics.erosion_noise";
@@ -27,11 +29,24 @@ pub const TROPICAL_LATITUDE_DEG: f64 = 30.0;
 /// Maximum water depth for shallow-shelf fertility proxy (§8.4).
 pub const SHALLOW_SEA_DEPTH_M: f32 = 200.0;
 
-/// Isostatic freeboard: land elevation (m above sea level) that net erosion
-/// asymptotes to. Crustal rebound offsets denudation on low continents, so
-/// erosion only removes elevation above this floor (Earth's mean continental
-/// elevation is ~840 m; old cratons sit near 300–500 m).
-pub const CONTINENTAL_FREEBOARD_M: f32 = 400.0;
+/// Isostatic freeboard: land elevation (m above sea level) that continental
+/// crust erodes down to and rebounds up toward. Crustal buoyancy offsets
+/// denudation on low continents (Earth's mean continental elevation is
+/// ~840 m; old cratons sit near 300–600 m). Oceanic-crust land (island arcs,
+/// hotspot volcanoes) has no freeboard and erodes to sea level.
+pub const CONTINENTAL_FREEBOARD_M: f32 = 550.0;
+
+/// Epeirogenic rebound rate: fraction of the gap to the freeboard closed per
+/// year for low or submerged continental crust. At 2e-8/yr a 500k-year tick
+/// closes ~1%, so drowned margins re-emerge over ~50–100M years —
+/// epicontinental seas are transient, continents are permanent, and enough of
+/// the continental crust stands above sea at any moment for an Earthlike
+/// (~25–30%) land fraction.
+pub const EPEIROGENIC_REBOUND_RATE_PER_YEAR: f64 = 2e-8;
+
+/// Continental crust below this is considered consumed/sutured and does not
+/// rebound (m).
+pub const EPEIROGENIC_REBOUND_FLOOR_M: f32 = -2000.0;
 
 /// Per-hex multiplicative noise amplitude: factor ∈ [1 - A, 1 + A] (Phase 1).
 const EROSION_NOISE_AMPLITUDE: f64 = 0.05;
@@ -86,11 +101,18 @@ pub fn apply_land_erosion(
             continue;
         }
 
-        // Net erosion drives land toward the isostatic freeboard, not sea
-        // level: rebound compensates most denudation on low continents, so
-        // only elevation above the freeboard erodes away. Without this,
+        // Net erosion drives continental land toward the isostatic freeboard,
+        // not sea level: rebound compensates most denudation on low
+        // continents. Oceanic-crust land (arc and hotspot islands) has no
+        // buoyant root and erodes all the way to sea level, so abandoned
+        // volcanic islands are transient. Without the freeboard,
         // persistent-crust continents grind to sea level within ~100M years.
-        let erodible = elev_above - CONTINENTAL_FREEBOARD_M;
+        let freeboard = if continental_crust_at(data, registry, hex) {
+            CONTINENTAL_FREEBOARD_M
+        } else {
+            0.0
+        };
+        let erodible = elev_above - freeboard;
         if erodible <= 0.0 {
             continue;
         }
@@ -240,7 +262,7 @@ pub fn apply_erosion_tick(
 ) {
     ensure_deposition_buffer(state, data.grid.cell_count() as usize);
 
-    apply_oceanic_thermal_subsidence(&mut state.registry, data.sea_level_m, tick_interval_years);
+    apply_isostasy(&mut state.registry, data.sea_level_m, tick_interval_years);
 
     let base_rate = data.parameters.core.geology.base_erosion_rate_per_year;
     if base_rate <= 0.0 {
@@ -271,31 +293,22 @@ pub fn apply_erosion_tick(
 /// remaining gap to [`crate::elevation::OCEAN_FLOOR_BASELINE_M`] per year).
 ///
 /// Young ridge crust cools and sinks toward the abyssal baseline as it ages;
-/// at 4e-8/yr a 500k-year tick closes ~2% of the gap, so fresh crust drops
-/// below -3000 m within ~10M years and the active ridge line stays narrow
+/// at 6e-8/yr a 500k-year tick closes ~3% of the gap, so fresh crust drops
+/// below -3000 m within ~6M years and the active ridge line stays narrow
 /// instead of walling deep basins apart.
-pub const THERMAL_SUBSIDENCE_RATE_PER_YEAR: f64 = 4e-8;
+pub const THERMAL_SUBSIDENCE_RATE_PER_YEAR: f64 = 6e-8;
 
-/// Crust deeper than this subsides regardless of its bedrock label (m).
-///
-/// Volcanism and sediment routing overwrite ocean-floor bedrock (Igneous,
-/// Sedimentary), so depth — not bedrock — identifies oceanic lithosphere.
-/// Submerged continental margins sit above this ceiling and are protected.
-pub const DEEP_CRUST_SUBSIDENCE_CEILING_M: f32 = -800.0;
-
-/// Sinks deep submerged crust toward the abyssal baseline as it ages.
-/// Deterministic: iterates plates and birth indices in ascending order; no RNG.
-pub fn apply_oceanic_thermal_subsidence(
-    registry: &mut PlateRegistry,
-    sea_level_m: f32,
-    tick_interval_years: f64,
-) {
+/// Sinks submerged oceanic crust toward the abyssal baseline as it ages, and
+/// slowly rebounds low or drowned continental crust toward the isostatic
+/// freeboard. Crust type comes from the feature's permanent
+/// `continental_crust` flag, so sediment/volcanic bedrock overprints do not
+/// confuse it. Deterministic: ascending plate and birth-index order; no RNG.
+pub fn apply_isostasy(registry: &mut PlateRegistry, sea_level_m: f32, tick_interval_years: f64) {
     let baseline = crate::elevation::OCEAN_FLOOR_BASELINE_M;
-    let fraction = (THERMAL_SUBSIDENCE_RATE_PER_YEAR * tick_interval_years).min(1.0) as f32;
-    if fraction <= 0.0 {
-        return;
-    }
-    let ceiling = DEEP_CRUST_SUBSIDENCE_CEILING_M.min(sea_level_m);
+    let sink_fraction = (THERMAL_SUBSIDENCE_RATE_PER_YEAR * tick_interval_years).min(1.0) as f32;
+    let rebound_fraction =
+        (EPEIROGENIC_REBOUND_RATE_PER_YEAR * tick_interval_years).min(1.0) as f32;
+    let freeboard_target = sea_level_m + CONTINENTAL_FREEBOARD_M;
 
     let plate_ids = registry.plate_ids();
     for plate_id in plate_ids {
@@ -306,10 +319,25 @@ pub fn apply_oceanic_thermal_subsidence(
             let Some(feature) = slot else {
                 continue;
             };
-            if feature.elevation_m >= ceiling || feature.elevation_m <= baseline {
-                continue;
+            if feature.continental_crust {
+                // Epeirogenic rebound: buoyant crust rises back toward the
+                // freeboard unless it has been consumed into a suture.
+                if feature.elevation_m < freeboard_target
+                    && feature.elevation_m > EPEIROGENIC_REBOUND_FLOOR_M
+                    && rebound_fraction > 0.0
+                {
+                    feature.elevation_m +=
+                        (freeboard_target - feature.elevation_m) * rebound_fraction;
+                }
+            } else if feature.elevation_m < sea_level_m
+                && feature.elevation_m > baseline
+                && sink_fraction > 0.0
+            {
+                // Thermal subsidence: submerged oceanic crust cools and sinks;
+                // abandoned volcanic islands erode to sea level first, then
+                // subside as guyots.
+                feature.elevation_m += (baseline - feature.elevation_m) * sink_fraction;
             }
-            feature.elevation_m += (baseline - feature.elevation_m) * fraction;
         }
     }
 }
@@ -326,6 +354,99 @@ mod tests {
     use crate::world_rebuild::rebuild_world_from_plate_surfaces;
 
     const EARTH_RADIUS_KM: f64 = 6371.0;
+
+    #[test]
+    fn drowned_continental_crust_rebounds_toward_freeboard() {
+        let mut registry = PlateRegistry::new();
+        let mut plate = Plate {
+            id: PlateId(0),
+            plate_type: PlateType::Continental,
+            plate_class: crate::plate::PlateClass::Major,
+            seed_hex: genesis_core::HexId(0),
+            motion_axis: [0.0, 0.0, 1.0],
+            motion_rate_rad_per_year: 0.0,
+            age_year: WorldYear::FORMATION,
+            target_fraction: 0.5,
+            accumulated_rotation_rad: 0.0,
+            last_nonempty_year: WorldYear::FORMATION,
+            surface: crate::plate_surface::PlateSurface::new(4),
+        };
+        plate.surface.set(
+            genesis_core::HexId(0),
+            SurfaceFeature {
+                elevation_m: -200.0,
+                relief_m: 0.0,
+                bedrock: genesis_core::data::BedrockType::Igneous,
+                fertility: 0.0,
+                age_year: 0,
+                continental_crust: true,
+            },
+        );
+        registry.insert(plate);
+
+        // 200 ticks of 500k years each: rebound closes ~63% of the gap.
+        for _ in 0..200 {
+            apply_isostasy(&mut registry, 0.0, 500_000.0);
+        }
+        let elev = registry
+            .get(PlateId(0))
+            .unwrap()
+            .surface
+            .get(genesis_core::HexId(0))
+            .unwrap()
+            .elevation_m;
+        assert!(
+            elev > 0.0,
+            "drowned continental margin should re-emerge over ~100M years, got {elev}"
+        );
+        assert!(elev < CONTINENTAL_FREEBOARD_M, "asymptotic, not instant");
+    }
+
+    #[test]
+    fn abandoned_oceanic_island_subsides_once_submerged() {
+        let mut registry = PlateRegistry::new();
+        let mut plate = Plate {
+            id: PlateId(0),
+            plate_type: PlateType::Oceanic,
+            plate_class: crate::plate::PlateClass::Major,
+            seed_hex: genesis_core::HexId(0),
+            motion_axis: [0.0, 0.0, 1.0],
+            motion_rate_rad_per_year: 0.0,
+            age_year: WorldYear::FORMATION,
+            target_fraction: 0.5,
+            accumulated_rotation_rad: 0.0,
+            last_nonempty_year: WorldYear::FORMATION,
+            surface: crate::plate_surface::PlateSurface::new(4),
+        };
+        // A guyot: volcanic island already eroded just below sea level.
+        plate.surface.set(
+            genesis_core::HexId(0),
+            SurfaceFeature {
+                elevation_m: -5.0,
+                relief_m: 0.0,
+                bedrock: genesis_core::data::BedrockType::Igneous,
+                fertility: 0.0,
+                age_year: 0,
+                continental_crust: false,
+            },
+        );
+        registry.insert(plate);
+
+        for _ in 0..200 {
+            apply_isostasy(&mut registry, 0.0, 500_000.0);
+        }
+        let elev = registry
+            .get(PlateId(0))
+            .unwrap()
+            .surface
+            .get(genesis_core::HexId(0))
+            .unwrap()
+            .elevation_m;
+        assert!(
+            elev < -2000.0,
+            "abandoned volcanic island should subside toward the abyss, got {elev}"
+        );
+    }
 
     fn small_world() -> genesis_core::World {
         let mut params = WorldParameters::default();
@@ -365,6 +486,7 @@ mod tests {
                     bedrock: data.bedrock_type[idx],
                     fertility: data.fertility[idx],
                     age_year: 0,
+                    continental_crust: false,
                 },
             );
         }

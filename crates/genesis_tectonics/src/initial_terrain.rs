@@ -70,6 +70,7 @@ pub fn apply_formation_terrain(data: &mut WorldData, registry: &mut PlateRegistr
                 bedrock,
                 fertility: 0.0,
                 age_year: 0,
+                continental_crust: plate_type == PlateType::Continental,
             },
         );
     }

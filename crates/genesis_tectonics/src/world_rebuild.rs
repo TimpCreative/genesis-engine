@@ -202,6 +202,7 @@ mod tests {
                     bedrock: BedrockType::Metamorphic,
                     fertility: 0.1,
                     age_year: 0,
+                    continental_crust: false,
                 },
             );
         }
@@ -239,6 +240,7 @@ mod tests {
                     bedrock: BedrockType::Igneous,
                     fertility: 0.0,
                     age_year: 0,
+                    continental_crust: false,
                 },
             );
         }
@@ -326,6 +328,7 @@ mod tests {
                     bedrock: BedrockType::Sedimentary,
                     fertility: 0.1,
                     age_year: 1,
+                    continental_crust: false,
                 },
             );
             plate.surface.set(
@@ -336,6 +339,7 @@ mod tests {
                     bedrock: BedrockType::Igneous,
                     fertility: 0.3,
                     age_year: 2,
+                    continental_crust: false,
                 },
             );
         }
@@ -371,6 +375,7 @@ mod tests {
                     bedrock: BedrockType::Metamorphic,
                     fertility: 0.5,
                     age_year: 100,
+                    continental_crust: false,
                 },
             );
         }

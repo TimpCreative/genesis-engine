@@ -22,6 +22,12 @@ pub struct SurfaceFeature {
     pub fertility: f32,
     /// When this feature was created or last meaningfully modified (tie-breaking on merge).
     pub age_year: i64,
+    /// True for buoyant continental lithosphere. Set at creation and never
+    /// changed: bedrock labels get overwritten by sediment and volcanism, but
+    /// crust type is permanent. Continental crust rebounds toward the isostatic
+    /// freeboard and never thermally subsides; oceanic crust does the reverse.
+    #[serde(default)]
+    pub continental_crust: bool,
 }
 
 /// Per-plate surface storage indexed by BIRTH world-HexId.
@@ -127,6 +133,35 @@ pub fn surface_elevation_at(
     })
 }
 
+/// Elevation below which a featureless hex is presumed oceanic crust (m).
+pub const CRUST_FALLBACK_DEPTH_M: f32 = -1500.0;
+
+/// Whether the crust at a world hex is continental, from the owning plate's
+/// feature. Hexes without a feature (projection holes) fall back to the
+/// displayed bedrock/elevation, which mirrors their neighbors — a continental
+/// plate's accreted oceanic apron must not read as continental there.
+pub fn continental_crust_at(data: &WorldData, registry: &PlateRegistry, world_hex: HexId) -> bool {
+    let idx = world_hex.0 as usize;
+    if idx >= data.plate_id.len() {
+        return false;
+    }
+    let plate_id = data.plate_id[idx];
+    if plate_id == PlateId::NONE {
+        return false;
+    }
+    let Some(plate) = registry.get(plate_id) else {
+        return false;
+    };
+    let birth_hex = current_world_to_birth_hex(&data.grid, world_hex, plate);
+    match plate.surface.get(birth_hex) {
+        Some(feature) => feature.continental_crust,
+        None => {
+            data.bedrock_type[idx] != BedrockType::OceanicCrust
+                && data.elevation_mean[idx] >= CRUST_FALLBACK_DEPTH_M
+        }
+    }
+}
+
 /// Default surface feature for a plate type at the given age.
 pub fn baseline_feature(plate_type: PlateType, age_year: i64) -> SurfaceFeature {
     let (elev, bedrock) = type_baseline(plate_type);
@@ -136,6 +171,7 @@ pub fn baseline_feature(plate_type: PlateType, age_year: i64) -> SurfaceFeature 
         bedrock,
         fertility: 0.0,
         age_year,
+        continental_crust: plate_type == PlateType::Continental,
     }
 }
 
@@ -173,11 +209,17 @@ pub fn modify_surface_at_world_hex<F>(
         return;
     };
 
-    let mut feature = plate
-        .surface
-        .get(birth_hex)
-        .cloned()
-        .unwrap_or_else(|| baseline_feature(plate_type, tick_year));
+    let _ = plate_type;
+    // Modify-only: hexes without a stored feature (projection holes, aprons)
+    // display neighbor-derived values, and writing those back would MINT crust
+    // out of display data — erosion or volcanism touching a margin hole would
+    // spawn continental crust that rebounds, raising its neighbors' display and
+    // spawning more: a traveling continentalization wave. Features are only
+    // born at formation, ridge accretion, and the boundary delta flush.
+    let Some(existing) = plate.surface.get(birth_hex) else {
+        return;
+    };
+    let mut feature = existing.clone();
     modifier(&mut feature);
     feature.age_year = tick_year;
     plate.surface.set(birth_hex, feature);
@@ -199,6 +241,7 @@ mod tests {
                 bedrock: BedrockType::Igneous,
                 fertility: 0.0,
                 age_year: 100,
+                continental_crust: false,
             },
         );
         b.set(
@@ -209,6 +252,7 @@ mod tests {
                 bedrock: BedrockType::Metamorphic,
                 fertility: 0.0,
                 age_year: 200,
+                continental_crust: false,
             },
         );
         a.merge_from(&b);
@@ -222,6 +266,7 @@ mod tests {
                 bedrock: BedrockType::Sedimentary,
                 fertility: 0.0,
                 age_year: 50,
+                continental_crust: false,
             },
         );
         a.merge_from(&b);
@@ -239,6 +284,7 @@ mod tests {
                 bedrock: BedrockType::Igneous,
                 fertility: 0.0,
                 age_year: i64::from(i),
+                continental_crust: false,
             };
             a.set(HexId(i), f.clone());
             b.set(HexId(i), f);

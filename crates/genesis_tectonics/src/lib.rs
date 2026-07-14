@@ -438,6 +438,7 @@ mod integration_tests {
                         bedrock: genesis_core::data::BedrockType::OceanicCrust,
                         fertility: 0.0,
                         age_year: 0,
+                        continental_crust: false,
                     })
             };
             feature.elevation_m = shallow_elev;

@@ -68,9 +68,10 @@ const COASTAL_SHELF_FALLOFF: [f64; 2] = [0.4, 0.15];
 const OC_COASTAL_UPLIFT_FACTOR: f64 = 0.25;
 
 /// Island-arc uplift fraction of subduction delta on overriding oceanic hex.
-/// Low enough that arcs equilibrate as island chains near sea level instead of
-/// continuous land bridges along every subduction zone.
-const OO_ARC_UPLIFT_FACTOR: f64 = 0.15;
+/// Calibrated against Igneous erosion (bedrock multiplier 0.10): equilibrium
+/// arc height ≈ uplift / (erosion_rate × multiplier) ≈ 1000 m — island chains
+/// near sea level, not continuous 6000 m volcanic walls along every trench.
+const OO_ARC_UPLIFT_FACTOR: f64 = 0.02;
 
 const INLAND_FALLOFF: [f64; 3] = [1.0, 0.67, 0.33];
 
@@ -434,7 +435,7 @@ fn apply_continental_oceanic(
     // Which side subducts depends on the crust at THIS hex, not the owning
     // plate's type: plates carry mixed crust, and only oceanic lithosphere
     // sinks into a trench.
-    match crate::boundary::hex_crust_is_oceanic(data, owner_hex) {
+    match crate::boundary::hex_crust_is_oceanic(data, registry, owner_hex) {
         true => {
             let entry = delta_entry(data, registry, deltas, owner_hex, owner_plate_id);
             entry.bedrock = Some(BedrockType::OceanicCrust);
@@ -686,6 +687,12 @@ fn apply_surface_deltas(registry: &mut PlateRegistry, deltas: &BTreeMap<SurfaceK
             .unwrap_or_else(|| {
                 let mut f = baseline_feature(plate_type, delta.age_year);
                 f.elevation_m = delta.base_elev_m;
+                // Features minted at boundary flush are never buoyant: real
+                // continental crust already carries a formation feature, so a
+                // featureless boundary hex is a projection hole or accreted
+                // apron — minting continental crust here would let margins
+                // creep outward via the rebound feedback loop.
+                f.continental_crust = false;
                 f
             });
 
@@ -755,6 +762,7 @@ mod tests {
                     bedrock: data.bedrock_type[idx],
                     fertility: data.fertility[idx],
                     age_year: 0,
+                    continental_crust: false,
                 },
             );
         }

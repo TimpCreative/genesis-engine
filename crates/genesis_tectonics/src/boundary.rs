@@ -54,21 +54,12 @@ pub fn convergent_subtype(a: PlateType, b: PlateType) -> ConvergentSubtype {
     }
 }
 
-/// Elevation below which a hex counts as oceanic crust even when sediment or
-/// volcanism has overwritten its `OceanicCrust` bedrock label (m).
-pub const OCEANIC_CRUST_ELEVATION_CEILING_M: f32 = -1500.0;
-
 /// Whether the crust AT this hex is oceanic. Plates carry mixed crust (a
 /// continental plate accretes oceanic floor at rifts, like the South American
-/// Plate), so boundary behavior keys on per-hex crust, not the owning plate's
-/// type.
-pub fn hex_crust_is_oceanic(data: &WorldData, hex: HexId) -> bool {
-    let i = hex.0 as usize;
-    if i >= data.plate_id.len() {
-        return true;
-    }
-    data.bedrock_type[i] == genesis_core::data::BedrockType::OceanicCrust
-        || data.elevation_mean[i] < OCEANIC_CRUST_ELEVATION_CEILING_M
+/// Plate), so boundary behavior keys on the per-hex crust flag, not the owning
+/// plate's type.
+pub fn hex_crust_is_oceanic(data: &WorldData, registry: &PlateRegistry, hex: HexId) -> bool {
+    !crate::plate_surface::continental_crust_at(data, registry, hex)
 }
 
 /// Maps two per-hex crust kinds to a convergent subtype (order-independent).
@@ -128,8 +119,8 @@ pub fn detect_and_classify_boundaries(data: &WorldData, registry: &PlateRegistry
                 owner,
                 other,
                 planet_radius_km,
-                hex_crust_is_oceanic(data, hex),
-                hex_crust_is_oceanic(data, neighbor_hex),
+                hex_crust_is_oceanic(data, registry, hex),
+                hex_crust_is_oceanic(data, registry, neighbor_hex),
             );
             contacts.insert(other_plate);
             edges.push(edge);

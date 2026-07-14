@@ -16,7 +16,7 @@ use glam::DVec3;
 
 use crate::frames::{birth_hex_to_current_world, current_world_to_birth_hex};
 use crate::motion::{effective_position_direction, surface_velocity_m_per_year};
-use crate::plate::{PlateRegistry, PlateType};
+use crate::plate::PlateRegistry;
 use crate::plate_surface::SurfaceFeature;
 
 /// Elevation of freshly accreted oceanic crust at divergent gaps (m).
@@ -145,14 +145,15 @@ pub fn repartition_hexes(data: &mut WorldData, registry: &mut PlateRegistry) {
     {
         let grid = &data.grid;
         for (plate_id, plate) in registry.iter_sorted() {
-            let continental = plate.plate_type == PlateType::Continental;
             let plate_age_year = plate.age_year.value();
             for (birth_idx, slot) in plate.surface.features.iter().enumerate() {
                 let Some(feature) = slot else {
                     continue;
                 };
-                let feature_is_continental_crust =
-                    continental && feature.bedrock != BedrockType::OceanicCrust;
+                // Buoyancy is a property of the crust, not the owning plate:
+                // ocean floor accreted onto a continental plate subducts like
+                // any other oceanic crust.
+                let continental = feature.continental_crust;
                 let birth_hex = HexId(birth_idx as u32);
                 let current_world = birth_hex_to_current_world(grid, birth_hex, plate);
                 let w = current_world.0 as usize;
@@ -179,8 +180,7 @@ pub fn repartition_hexes(data: &mut WorldData, registry: &mut PlateRegistry) {
                         // transform contacts keep both features.
                         let real_convergence =
                             converging_at(current_world, plate_id, existing.plate_id);
-                        if real_convergence && existing.continental && feature_is_continental_crust
-                        {
+                        if real_convergence && existing.continental && continental {
                             let pair = if existing.plate_id < plate_id {
                                 (existing.plate_id, plate_id)
                             } else {
@@ -314,6 +314,7 @@ pub fn repartition_hexes(data: &mut WorldData, registry: &mut PlateRegistry) {
                     bedrock: BedrockType::OceanicCrust,
                     fertility: 0.0,
                     age_year: tick_year,
+                    continental_crust: false,
                 },
             );
         }
@@ -359,6 +360,7 @@ mod tests {
             bedrock,
             fertility: 0.0,
             age_year: 0,
+            continental_crust: bedrock != BedrockType::OceanicCrust,
         }
     }
 

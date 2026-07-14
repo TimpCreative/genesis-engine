@@ -173,6 +173,7 @@ mod tests {
                 bedrock: genesis_core::data::BedrockType::Igneous,
                 fertility: 0.0,
                 age_year: 5,
+                continental_crust: false,
             },
         );
 

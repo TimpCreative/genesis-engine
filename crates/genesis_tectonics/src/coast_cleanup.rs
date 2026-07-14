@@ -314,6 +314,7 @@ mod tests {
                         bedrock: BedrockType::OceanicCrust,
                         fertility: 0.0,
                         age_year: 0,
+                        continental_crust: false,
                     },
                 );
         }
@@ -335,6 +336,7 @@ mod tests {
                     bedrock: BedrockType::Igneous,
                     fertility: 0.0,
                     age_year: 0,
+                    continental_crust: false,
                 },
             );
 
@@ -372,6 +374,7 @@ mod tests {
                         bedrock: BedrockType::OceanicCrust,
                         fertility: 0.0,
                         age_year: 0,
+                        continental_crust: false,
                     },
                 );
         }
@@ -393,6 +396,7 @@ mod tests {
                     bedrock: BedrockType::Igneous,
                     fertility: 0.0,
                     age_year: 0,
+                    continental_crust: false,
                 },
             );
 
@@ -443,6 +447,7 @@ mod tests {
                         bedrock: BedrockType::Igneous,
                         fertility: 0.0,
                         age_year: 0,
+                        continental_crust: false,
                     },
                 );
         }
@@ -463,6 +468,7 @@ mod tests {
                     bedrock: BedrockType::Igneous,
                     fertility: 0.0,
                     age_year: 0,
+                    continental_crust: false,
                 },
             );
 
@@ -513,6 +519,7 @@ mod tests {
                         bedrock: BedrockType::Igneous,
                         fertility: 0.0,
                         age_year: 0,
+                        continental_crust: false,
                     },
                 );
         }
@@ -533,6 +540,7 @@ mod tests {
                     bedrock: BedrockType::Igneous,
                     fertility: 0.0,
                     age_year: 0,
+                    continental_crust: false,
                 },
             );
 

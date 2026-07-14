@@ -195,6 +195,7 @@ mod tests {
                     bedrock: data.bedrock_type[idx],
                     fertility: data.fertility[idx],
                     age_year: 0,
+                    continental_crust: false,
                 },
             );
         }

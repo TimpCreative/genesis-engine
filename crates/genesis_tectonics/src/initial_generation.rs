@@ -118,7 +118,7 @@ pub fn generate_initial_plates_data(data: &mut WorldData, rng: &WorldRng) -> Pla
 
     debug_assert!(plate_id_for_hex.iter().all(|p| p.is_some()));
 
-    assign_plate_types(data, &mut registry);
+    assign_plate_types(data, &mut registry, &plate_id_for_hex);
     assign_plate_motion(data, rng, &mut registry, &plate_id_for_hex);
 
     for (i, plate_opt) in plate_id_for_hex.iter().enumerate() {
@@ -468,31 +468,82 @@ fn find_growth_candidate(
     Some(candidates[rng.gen_range(0..candidates.len())])
 }
 
-fn assign_plate_types(data: &WorldData, registry: &mut PlateRegistry) {
+fn assign_plate_types(
+    data: &WorldData,
+    registry: &mut PlateRegistry,
+    plate_id_for_hex: &[Option<PlateId>],
+) {
     let continental_fraction = data.parameters.core.geology.initial_continental_fraction;
-    let total = registry.count();
-    let num_continental = ((total as f32) * continental_fraction).round() as usize;
+    let total_hexes = plate_id_for_hex
+        .iter()
+        .filter(|p| p.is_some())
+        .count()
+        .max(1);
 
-    let mut plate_ids: Vec<PlateId> = registry.iter().map(|p| p.id).collect();
-    plate_ids.sort_by_key(|id| {
-        let p = registry.get(*id).unwrap();
-        (
-            match p.plate_class {
-                PlateClass::Major => 0,
-                PlateClass::Minor => 1,
-            },
-            id.0,
-        )
-    });
+    // Continental plates are chosen as a spatially CONNECTED cluster (a
+    // supercontinent start with one world ocean, like the early Earth), not by
+    // id order — scattered continental plates can ring the planet and split
+    // the world ocean into disconnected basins.
+    let mut centroids: BTreeMap<PlateId, (glam::DVec3, u32)> = BTreeMap::new();
+    for (i, pid_opt) in plate_id_for_hex.iter().enumerate() {
+        let Some(pid) = pid_opt else {
+            continue;
+        };
+        let dir = data.grid.cell_center_direction(HexId(i as u32));
+        let entry = centroids.entry(*pid).or_insert((glam::DVec3::ZERO, 0));
+        entry.0 += glam::DVec3::new(dir[0], dir[1], dir[2]);
+        entry.1 += 1;
+    }
+
+    // Anchor on the lowest-id major plate, then greedily grow the cluster by
+    // nearest plate centroid (majors preferred at equal distance via id order).
+    let anchor = registry
+        .iter()
+        .filter(|p| p.plate_class == PlateClass::Major)
+        .map(|p| p.id)
+        .min_by_key(|id| id.0)
+        .unwrap_or(PlateId(0));
+
+    // Grow the cluster until continental crust covers the requested fraction
+    // of the SPHERE (the parameter is an area fraction, not a plate count).
+    let mut chosen: Vec<PlateId> = vec![anchor];
+    let mut covered_hexes = centroids.get(&anchor).map(|(_, n)| *n).unwrap_or(0) as usize;
+    let target_hexes = ((total_hexes as f32) * continental_fraction).round() as usize;
+    let mut cluster_sum = centroids
+        .get(&anchor)
+        .map(|(v, _)| *v)
+        .unwrap_or(glam::DVec3::Z);
+    while covered_hexes < target_hexes {
+        let cluster_dir = cluster_sum.normalize_or_zero();
+        let next = centroids
+            .iter()
+            .filter(|(id, _)| !chosen.contains(id))
+            .max_by(|(a_id, (a_v, a_n)), (b_id, (b_v, b_n))| {
+                let a_dot = a_v.normalize_or_zero().dot(cluster_dir);
+                let b_dot = b_v.normalize_or_zero().dot(cluster_dir);
+                a_dot
+                    .partial_cmp(&b_dot)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| a_n.cmp(b_n))
+                    .then_with(|| b_id.0.cmp(&a_id.0))
+            })
+            .map(|(id, _)| *id);
+        let Some(next) = next else {
+            break;
+        };
+        cluster_sum += centroids.get(&next).map(|(v, _)| *v).unwrap_or_default();
+        covered_hexes += centroids.get(&next).map(|(_, n)| *n).unwrap_or(0) as usize;
+        chosen.push(next);
+    }
 
     let mut updates = Vec::new();
-    for (i, &id) in plate_ids.iter().enumerate() {
-        let plate_type = if i < num_continental {
+    for plate in registry.iter() {
+        let plate_type = if chosen.contains(&plate.id) {
             PlateType::Continental
         } else {
             PlateType::Oceanic
         };
-        updates.push((id, plate_type));
+        updates.push((plate.id, plate_type));
     }
 
     for (id, plate_type) in updates {
@@ -675,16 +726,30 @@ mod tests {
             .core
             .geology
             .initial_continental_fraction;
-        let total = registry.count() as f32;
-        let continental = registry
+
+        // The fraction targets crust AREA, overshooting by at most one plate.
+        let continental_plates: std::collections::BTreeSet<PlateId> = registry
             .iter()
             .filter(|p| p.plate_type == PlateType::Continental)
+            .map(|p| p.id)
+            .collect();
+        let total = world.data.plate_id.len() as f32;
+        let continental_hexes = world
+            .data
+            .plate_id
+            .iter()
+            .filter(|pid| continental_plates.contains(pid))
             .count() as f32;
-        let actual_fraction = continental / total;
-        let tolerance = 1.0 / total;
+        let actual_fraction = continental_hexes / total;
         assert!(
-            (actual_fraction - target_fraction).abs() <= tolerance,
-            "expected ~{target_fraction}, got {actual_fraction}"
+            actual_fraction >= target_fraction * 0.9 && actual_fraction <= target_fraction + 0.15,
+            "continental crust area fraction should approximate {target_fraction}, got {actual_fraction}"
+        );
+
+        // And the cluster is spatially connected in spirit: more than one plate.
+        assert!(
+            continental_plates.len() >= 2,
+            "expected multiple continental plates"
         );
     }
 
