@@ -2,7 +2,9 @@
 
 use genesis_climate::{ClimateLayer, ClimateState, flush_events_to_branch as flush_climate_events};
 use genesis_core::World;
-use genesis_core::lifecycle::{GenerationError, GenerationProgress, advance_with_coordinator};
+use genesis_core::lifecycle::{
+    GenerationError, GenerationProgress, advance_with_coordinator_observed,
+};
 use genesis_core::time::{TickCoordinator, WorldYear};
 use genesis_tectonics::{
     TectonicsLayer, TectonicsState, flush_events_to_branch as flush_tectonic_events,
@@ -42,7 +44,14 @@ pub fn generate_full_history(
     coordinator.add_layer(Box::new(tectonics_layer));
     coordinator.add_layer(Box::new(climate_layer));
 
-    advance_with_coordinator(world, &mut coordinator, target_year)?;
+    advance_with_coordinator_observed(world, &mut coordinator, target_year, |year| {
+        progress(GenerationProgress {
+            current_year: year,
+            target_year,
+            recent_events: &[],
+            total_events: 0,
+        });
+    })?;
     drop(coordinator);
 
     *tectonics = TectonicsLayer::detach_state(tectonics_shared);

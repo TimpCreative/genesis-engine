@@ -49,10 +49,12 @@ pub const SUBDUCTION_RATE: f64 = 1e-4;
 pub const CONTINENTAL_RIFT_SUBSIDENCE_FACTOR: f64 = 0.3;
 
 /// Inland orogeny spread depth for continental–continental (§5.2).
-pub const CC_INLAND_HEXES: u32 = 3;
+/// Two rings: persistent material-footprint boundaries uplift the same hexes
+/// every tick, so wider spreads turn whole plate margins into plateaus.
+pub const CC_INLAND_HEXES: u32 = 2;
 
 /// Inland uplift spread for oceanic–continental (§5.3).
-pub const OC_INLAND_HEXES: u32 = 3;
+pub const OC_INLAND_HEXES: u32 = 2;
 
 /// Coastal shelf spread depth on the oceanic side of oceanic–continental boundaries (§5.3).
 pub const COASTAL_SHELF_HEXES: u32 = 2;
@@ -61,10 +63,14 @@ pub const COASTAL_SHELF_HEXES: u32 = 2;
 const COASTAL_SHELF_FALLOFF: [f64; 2] = [0.4, 0.15];
 
 /// Coastal uplift fraction of orogeny delta on continental boundary hex.
-const OC_COASTAL_UPLIFT_FACTOR: f64 = 0.5;
+/// Calibrated for persistent boundaries: equilibrium against erosion sits at
+/// coastal-range height, not plateau height.
+const OC_COASTAL_UPLIFT_FACTOR: f64 = 0.25;
 
 /// Island-arc uplift fraction of subduction delta on overriding oceanic hex.
-const OO_ARC_UPLIFT_FACTOR: f64 = 0.5;
+/// Low enough that arcs equilibrate as island chains near sea level instead of
+/// continuous land bridges along every subduction zone.
+const OO_ARC_UPLIFT_FACTOR: f64 = 0.15;
 
 const INLAND_FALLOFF: [f64; 3] = [1.0, 0.67, 0.33];
 
@@ -191,6 +197,38 @@ fn delta_entry<'a>(
 
 fn tag_boundary_age(entry: &mut HexDeltas, tick_year: WorldYear) {
     entry.age_year = tick_year.value();
+}
+
+/// Elevation above which every uplift source tapers off (m).
+///
+/// With material plate footprints, convergent boundaries persist at the same
+/// hexes for hundreds of ticks; stacked per-edge orogeny plus volcanism would
+/// otherwise drive them into the §5.7 clamp. Isostasy: crust roots deepen and
+/// uplift stalls as mountains approach the support limit.
+pub const UPLIFT_TAPER_START_M: f32 = 6000.0;
+
+/// Scales a positive uplift delta by remaining headroom: 1.0 at or below
+/// [`UPLIFT_TAPER_START_M`], linearly down to 0.0 at [`MAX_ELEVATION_M`].
+pub fn uplift_headroom_factor(elevation_m: f32) -> f32 {
+    if elevation_m <= UPLIFT_TAPER_START_M {
+        return 1.0;
+    }
+    ((MAX_ELEVATION_M - elevation_m) / (MAX_ELEVATION_M - UPLIFT_TAPER_START_M)).clamp(0.0, 1.0)
+}
+
+/// Depth below which every subsidence source tapers off (m). Multiple trench
+/// edges can stack their deltas on one hex; the taper keeps depths asymptotic
+/// to the §5.7 floor instead of slamming into the clamp.
+pub const SUBSIDENCE_TAPER_START_M: f32 = -9_500.0;
+
+/// Scales a negative elevation delta by remaining depth headroom: 1.0 at or
+/// above [`SUBSIDENCE_TAPER_START_M`], linearly down to 0.0 at
+/// [`MIN_ELEVATION_M`].
+pub fn subsidence_headroom_factor(elevation_m: f32) -> f32 {
+    if elevation_m >= SUBSIDENCE_TAPER_START_M {
+        return 1.0;
+    }
+    ((elevation_m - MIN_ELEVATION_M) / (SUBSIDENCE_TAPER_START_M - MIN_ELEVATION_M)).clamp(0.0, 1.0)
 }
 
 fn asymptotic_fraction(distance_m: f32, scale_height_m: f32) -> f64 {
@@ -386,15 +424,18 @@ fn apply_continental_oceanic(
     deltas: &mut BTreeMap<SurfaceKey, HexDeltas>,
     owner_hex: HexId,
     owner_plate_id: PlateId,
-    owner_plate: &Plate,
+    _owner_plate: &Plate,
     other_plate_id: PlateId,
     current_elev: f32,
     velocity_cm_per_year: f64,
     tick_interval_years: f64,
     tick_year: WorldYear,
 ) {
-    match owner_plate.plate_type {
-        PlateType::Oceanic => {
+    // Which side subducts depends on the crust at THIS hex, not the owning
+    // plate's type: plates carry mixed crust, and only oceanic lithosphere
+    // sinks into a trench.
+    match crate::boundary::hex_crust_is_oceanic(data, owner_hex) {
+        true => {
             let entry = delta_entry(data, registry, deltas, owner_hex, owner_plate_id);
             entry.bedrock = Some(BedrockType::OceanicCrust);
             tag_boundary_age(entry, tick_year);
@@ -410,7 +451,7 @@ fn apply_continental_oceanic(
             let trench = max_trench * driving_fraction;
             entry.elev -= trench;
         }
-        PlateType::Continental => {
+        false => {
             let entry = delta_entry(data, registry, deltas, owner_hex, owner_plate_id);
             entry.bedrock = Some(BedrockType::Igneous);
             tag_boundary_age(entry, tick_year);
@@ -648,7 +689,13 @@ fn apply_surface_deltas(registry: &mut PlateRegistry, deltas: &BTreeMap<SurfaceK
                 f
             });
 
-        feature.elevation_m += delta.elev as f32;
+        let mut elev_delta = delta.elev as f32;
+        if elev_delta > 0.0 {
+            elev_delta *= uplift_headroom_factor(feature.elevation_m);
+        } else if elev_delta < 0.0 {
+            elev_delta *= subsidence_headroom_factor(feature.elevation_m);
+        }
+        feature.elevation_m += elev_delta;
         feature.relief_m += delta.relief as f32;
         if let Some(bedrock) = delta.bedrock {
             feature.bedrock = bedrock;
@@ -902,6 +949,8 @@ mod tests {
         let neighbor = data.grid.neighbors(hex)[0];
         data.plate_id[neighbor.0 as usize] = PlateId(3);
         data.elevation_mean[hex.0 as usize] = 0.0;
+        // Trench side selection keys on per-hex crust.
+        data.bedrock_type[hex.0 as usize] = BedrockType::OceanicCrust;
 
         let mut boundaries = BoundaryInfo::default();
         boundaries.boundary_hexes.push(hex);

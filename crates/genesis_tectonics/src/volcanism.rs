@@ -73,7 +73,8 @@ pub fn apply_boundary_volcanism(
             hex,
             tick_year.value(),
             |feature| {
-                feature.elevation_m += elev_change;
+                feature.elevation_m +=
+                    elev_change * crate::elevation::uplift_headroom_factor(feature.elevation_m);
                 feature.relief_m += relief_change;
                 feature.bedrock = BedrockType::Igneous;
             },

@@ -12,10 +12,11 @@ use glam::DVec3;
 use rand::Rng;
 
 use crate::events::{alloc_event_id, maybe_emit};
+use crate::frames::rebase_birth_frame;
 use crate::motion::sample_motion_axis;
 use crate::partition::repartition_hexes;
 use crate::plate::{Plate, PlateClass, PlateRegistry, PlateType, TectonicsState};
-use crate::plate_surface::modify_surface_at_world_hex;
+use crate::plate_surface::{PlateSurface, modify_surface_at_world_hex};
 
 /// Per-tick reorganization probability gate (§4.5).
 pub const REORGANIZATION_CHECK_STREAM: &str = "tectonics.reorganization_check";
@@ -122,6 +123,12 @@ fn apply_split(
     candidates.sort_by_key(|id| id.0);
     let parent_id = *candidates.first()?;
 
+    // Re-anchor the parent so the split operates on current world positions and
+    // the child's fresh axis starts from zero accumulated rotation (no teleport).
+    {
+        let parent_mut = registry.plates_mut().get_mut(&parent_id)?;
+        rebase_birth_frame(&data.grid, parent_mut);
+    }
     let parent = registry.get(parent_id)?.clone();
     let child_seed = farthest_hex_from_seed(&data.grid, &parent, data)?;
     let child_id = registry.next_id();
@@ -134,8 +141,33 @@ fn apply_split(
     );
     let child_axis = (parent_axis + DVec3::new(perturb, perturb * 0.5, -perturb)).normalize();
 
-    // Surfaces are birth-indexed by world HexId; cloning preserves stable birth indices
-    // across split children. Post-repartition ownership determines which features display.
+    // Divide the parent's footprint along the bisector between the parent seed
+    // and the child seed: each feature (anchored at its current world hex after
+    // the rebase) goes to whichever anchor is closer.
+    let n = parent.surface.features.len();
+    let mut child_surface = PlateSurface::new(n);
+    let parent_dir = data.grid.cell_center_direction(parent.seed_hex);
+    let child_dir = data.grid.cell_center_direction(child_seed);
+    let parent_v = DVec3::new(parent_dir[0], parent_dir[1], parent_dir[2]);
+    let child_v = DVec3::new(child_dir[0], child_dir[1], child_dir[2]);
+    let mut child_hexes: Vec<usize> = Vec::new();
+    for (idx, slot) in parent.surface.features.iter().enumerate() {
+        if slot.is_none() {
+            continue;
+        }
+        let dir = data.grid.cell_center_direction(HexId(idx as u32));
+        let v = DVec3::new(dir[0], dir[1], dir[2]);
+        if v.dot(child_v) > v.dot(parent_v) {
+            child_hexes.push(idx);
+        }
+    }
+    if child_hexes.is_empty() {
+        return None;
+    }
+    for &idx in &child_hexes {
+        child_surface.features[idx] = parent.surface.features[idx].clone();
+    }
+
     let child = Plate {
         id: child_id,
         plate_type: parent.plate_type,
@@ -145,13 +177,16 @@ fn apply_split(
         motion_rate_rad_per_year: parent.motion_rate_rad_per_year,
         age_year: tick_year,
         target_fraction: parent.target_fraction * 0.5,
-        accumulated_rotation_rad: parent.accumulated_rotation_rad,
+        accumulated_rotation_rad: 0.0,
         last_nonempty_year: tick_year,
-        surface: parent.surface.clone(),
+        surface: child_surface,
     };
     registry.insert(child);
 
     if let Some(parent_mut) = registry.plates_mut().get_mut(&parent_id) {
+        for &idx in &child_hexes {
+            parent_mut.surface.features[idx] = None;
+        }
         parent_mut.age_year = tick_year;
         parent_mut.last_nonempty_year = tick_year;
     }
@@ -191,6 +226,9 @@ fn apply_motion_change(
     );
 
     let plate = registry.plates_mut().get_mut(&plate_id)?;
+    // Re-anchor before swapping the axis: accumulated rotation is only valid
+    // around the axis it accumulated on.
+    rebase_birth_frame(&data.grid, plate);
     plate.motion_axis = [axis.x, axis.y, axis.z];
     plate.motion_rate_rad_per_year = rate;
     plate.age_year = tick_year;
@@ -223,10 +261,17 @@ fn apply_merge(
 
     reassign_plate_hexes(data, absorbed, into);
 
+    // Re-anchor both plates so their birth indices agree on world positions,
+    // then merge; the combined footprint continues on `into`'s motion.
+    if let Some(p) = registry.plates_mut().get_mut(&absorbed) {
+        rebase_birth_frame(&data.grid, p);
+    }
+    if let Some(p) = registry.plates_mut().get_mut(&into) {
+        rebase_birth_frame(&data.grid, p);
+    }
     if let Some(absorbed_plate) = registry.get(absorbed) {
         let absorbed_surface = absorbed_plate.surface.clone();
         if let Some(into_plate) = registry.plates_mut().get_mut(&into) {
-            // Birth indices are plate-independent world HexIds, so merge is stable here.
             into_plate.surface.merge_from(&absorbed_surface);
         }
     }

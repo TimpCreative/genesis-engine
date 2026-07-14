@@ -72,6 +72,45 @@ pub fn rebuild_world_from_plate_surfaces(data: &mut WorldData, registry: &PlateR
             }
         }
     }
+
+    // Patch projection holes from written neighbors. Rigid-rotation quantization
+    // leaves a lattice of owned hexes that no feature projected onto; the static
+    // plate-type baseline is wrong wherever the surrounding crust has evolved
+    // (e.g. 800 m land dots inside a submerged margin). Display-only smoothing;
+    // surfaces are untouched.
+    for i in 0..n {
+        if written_priority[i].is_some() {
+            continue;
+        }
+        let hex = HexId(i as u32);
+        let mut elev_sum = 0.0_f64;
+        let mut relief_sum = 0.0_f64;
+        let mut fert_sum = 0.0_f64;
+        let mut count = 0_u32;
+        let mut bedrock = None;
+        for neighbor in grid.neighbors(hex) {
+            let j = neighbor.0 as usize;
+            if j >= n || written_priority[j].is_none() {
+                continue;
+            }
+            elev_sum += f64::from(data.elevation_mean[j]);
+            relief_sum += f64::from(data.elevation_relief[j]);
+            fert_sum += f64::from(data.fertility[j]);
+            if bedrock.is_none() {
+                bedrock = Some(data.bedrock_type[j]);
+            }
+            count += 1;
+        }
+        if count == 0 {
+            continue;
+        }
+        data.elevation_mean[i] = (elev_sum / f64::from(count)) as f32;
+        data.elevation_relief[i] = (relief_sum / f64::from(count)) as f32;
+        data.fertility[i] = (fert_sum / f64::from(count)) as f32;
+        if let Some(b) = bedrock {
+            data.bedrock_type[i] = b;
+        }
+    }
 }
 
 #[cfg(test)]

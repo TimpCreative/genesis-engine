@@ -152,7 +152,8 @@ pub fn apply_hotspot_tick(
         let elev_change: f32 =
             activity_rng.gen_range(HOTSPOT_ELEVATION_CHANGE_MIN_M..=HOTSPOT_ELEVATION_CHANGE_MAX_M);
         modify_surface_at_world_hex(&mut state.registry, data, hex, tick_value, |feature| {
-            feature.elevation_m += elev_change;
+            feature.elevation_m +=
+                elev_change * crate::elevation::uplift_headroom_factor(feature.elevation_m);
             feature.bedrock = BedrockType::Igneous;
         });
 

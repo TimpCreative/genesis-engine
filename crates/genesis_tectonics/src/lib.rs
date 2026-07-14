@@ -52,8 +52,9 @@ pub use hotspots::{
 };
 pub use initial_generation::{generate_initial_plates, generate_initial_plates_data};
 pub use initial_terrain::{
-    CONTINENTAL_BASE_ELEVATION_M, INITIAL_ELEVATION_NOISE_RANGE_M, INITIAL_ELEVATION_NOISE_STREAM,
-    OCEANIC_BASE_ELEVATION_M, apply_formation_terrain,
+    COARSE_NOISE_AMPLITUDE_M, CONTINENTAL_BASE_ELEVATION_M, FINE_NOISE_AMPLITUDE_M,
+    INITIAL_ELEVATION_NOISE_STREAM, MEDIUM_NOISE_AMPLITUDE_M, OCEANIC_BASE_ELEVATION_M,
+    apply_formation_terrain,
 };
 pub use layer::{DEFAULT_GEOLOGICAL_TICK_YEARS, TectonicsLayer, geological_tick_interval};
 pub use motion::{advance_plate_motion, effective_position_direction, surface_velocity_m_per_year};
@@ -243,14 +244,16 @@ mod integration_tests {
     }
 
     #[test]
-    fn one_geological_tick_changes_some_plate_ids() {
+    fn accumulated_geological_ticks_change_some_plate_ids() {
         let mut world = test_world();
         let mut state = TectonicsState::new();
         run_formation(&mut world, &mut state);
         let after_formation = world.data.plate_id.clone();
 
-        generate_full_history_with_tectonics(&mut world, &mut state, WorldYear(500_000), |_| {})
-            .expect("one tick");
+        // Material footprints move sub-hex per 500k-year tick (~25 km vs ~330 km
+        // hexes at subdiv 5); give drift enough ticks to cross hex boundaries.
+        generate_full_history_with_tectonics(&mut world, &mut state, WorldYear(20_000_000), |_| {})
+            .expect("forty ticks");
 
         let changed = after_formation
             .iter()
@@ -259,7 +262,7 @@ mod integration_tests {
             .count();
         assert!(
             changed > 0,
-            "expected repartition after 500k years to change some hex assignments"
+            "expected accumulated drift over 20M years to change some hex assignments"
         );
     }
 
@@ -400,6 +403,16 @@ mod integration_tests {
         for hex in hexes {
             let (lat, _) = world.data.grid.center_lat_lon(hex);
             if lat.abs() >= lat_limit {
+                continue;
+            }
+            // A lone shallow pocket enclosed by land is an artifact that coast
+            // cleanup rightly fills; seed a geologically justified shelf hex
+            // instead — one adjacent to open ocean.
+            let touches_open_ocean = world.data.grid.neighbors(hex).iter().any(|n| {
+                let j = n.0 as usize;
+                j < world.data.elevation_mean.len() && world.data.elevation_mean[j] < sea - 500.0
+            });
+            if !touches_open_ocean {
                 continue;
             }
             let idx = hex.0 as usize;

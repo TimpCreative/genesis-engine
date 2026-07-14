@@ -93,6 +93,18 @@ pub fn advance_with_coordinator(
     coordinator: &mut TickCoordinator,
     target_year: WorldYear,
 ) -> Result<(), GenerationError> {
+    advance_with_coordinator_observed(world, coordinator, target_year, |_| {})
+}
+
+/// Like [`advance_with_coordinator`], invoking `on_tick` with the world year
+/// after each processed tick (for progress reporting). Observational only;
+/// simulation output is identical.
+pub fn advance_with_coordinator_observed(
+    world: &mut World,
+    coordinator: &mut TickCoordinator,
+    target_year: WorldYear,
+    mut on_tick: impl FnMut(WorldYear),
+) -> Result<(), GenerationError> {
     let current = world.data.current_year;
     if target_year < current {
         return Err(GenerationError::TargetInPast {
@@ -105,7 +117,13 @@ pub fn advance_with_coordinator(
     }
 
     let parameters = world.data.parameters.clone();
-    coordinator.advance_to(target_year, &mut world.data, &world.rng, &parameters);
+    coordinator.advance_to_with(
+        target_year,
+        &mut world.data,
+        &world.rng,
+        &parameters,
+        &mut on_tick,
+    );
 
     if world.data.current_year < target_year {
         world.data.current_year = target_year;

@@ -54,6 +54,32 @@ pub fn convergent_subtype(a: PlateType, b: PlateType) -> ConvergentSubtype {
     }
 }
 
+/// Elevation below which a hex counts as oceanic crust even when sediment or
+/// volcanism has overwritten its `OceanicCrust` bedrock label (m).
+pub const OCEANIC_CRUST_ELEVATION_CEILING_M: f32 = -1500.0;
+
+/// Whether the crust AT this hex is oceanic. Plates carry mixed crust (a
+/// continental plate accretes oceanic floor at rifts, like the South American
+/// Plate), so boundary behavior keys on per-hex crust, not the owning plate's
+/// type.
+pub fn hex_crust_is_oceanic(data: &WorldData, hex: HexId) -> bool {
+    let i = hex.0 as usize;
+    if i >= data.plate_id.len() {
+        return true;
+    }
+    data.bedrock_type[i] == genesis_core::data::BedrockType::OceanicCrust
+        || data.elevation_mean[i] < OCEANIC_CRUST_ELEVATION_CEILING_M
+}
+
+/// Maps two per-hex crust kinds to a convergent subtype (order-independent).
+fn convergent_subtype_from_crust(owner_oceanic: bool, other_oceanic: bool) -> ConvergentSubtype {
+    match (owner_oceanic, other_oceanic) {
+        (false, false) => ConvergentSubtype::ContinentalContinental,
+        (true, true) => ConvergentSubtype::OceanicOceanic,
+        _ => ConvergentSubtype::ContinentalOceanic,
+    }
+}
+
 /// Scans all hexes and classifies cross-plate neighbor edges.
 ///
 /// Hexes are visited in ascending [`HexId`] order; edges per hex are sorted by
@@ -95,7 +121,16 @@ pub fn detect_and_classify_boundaries(data: &WorldData, registry: &PlateRegistry
                 None => continue,
             };
 
-            let edge = classify_edge(grid, hex, neighbor_hex, owner, other, planet_radius_km);
+            let edge = classify_edge(
+                grid,
+                hex,
+                neighbor_hex,
+                owner,
+                other,
+                planet_radius_km,
+                hex_crust_is_oceanic(data, hex),
+                hex_crust_is_oceanic(data, neighbor_hex),
+            );
             contacts.insert(other_plate);
             edges.push(edge);
         }
@@ -112,6 +147,7 @@ pub fn detect_and_classify_boundaries(data: &WorldData, registry: &PlateRegistry
     info
 }
 
+#[allow(clippy::too_many_arguments)]
 fn classify_edge(
     grid: &HexGrid,
     owner_hex: HexId,
@@ -119,6 +155,8 @@ fn classify_edge(
     owner: &Plate,
     other: &Plate,
     planet_radius_km: f64,
+    owner_crust_oceanic: bool,
+    other_crust_oceanic: bool,
 ) -> ClassifiedEdge {
     let p_h = grid.cell_center_direction(owner_hex);
     let p_n = grid.cell_center_direction(neighbor_hex);
@@ -141,7 +179,12 @@ fn classify_edge(
     let normal_velocity = v_rel.dot(n_hat);
     let tangential_velocity = v_rel.dot(t_hat);
 
-    let class = classify_from_velocities(normal_velocity, tangential_velocity, owner, other);
+    let class = classify_from_velocities(
+        normal_velocity,
+        tangential_velocity,
+        owner_crust_oceanic,
+        other_crust_oceanic,
+    );
 
     ClassifiedEdge {
         neighbor_hex,
@@ -166,15 +209,18 @@ fn edge_frame(p_h: [f64; 3], p_n: [f64; 3]) -> (DVec3, DVec3) {
 fn classify_from_velocities(
     normal_velocity: f64,
     tangential_velocity: f64,
-    owner: &Plate,
-    other: &Plate,
+    owner_crust_oceanic: bool,
+    other_crust_oceanic: bool,
 ) -> BoundaryClass {
     if normal_velocity.abs() < 0.3 * tangential_velocity.abs() {
         BoundaryClass::Transform
     } else if normal_velocity < 0.0 {
         BoundaryClass::Divergent
     } else {
-        BoundaryClass::Convergent(convergent_subtype(owner.plate_type, other.plate_type))
+        BoundaryClass::Convergent(convergent_subtype_from_crust(
+            owner_crust_oceanic,
+            other_crust_oceanic,
+        ))
     }
 }
 
@@ -249,7 +295,16 @@ mod tests {
         let owner = plate_with_motion(0, PlateType::Oceanic, 0, [1.0, 0.0, 0.0], 1e-6);
         let other = plate_with_motion(1, PlateType::Oceanic, 100, [0.0, 0.0, 1.0], 0.0);
 
-        let edge = classify_edge(&grid, hex, neighbor, &owner, &other, EARTH_RADIUS_KM);
+        let edge = classify_edge(
+            &grid,
+            hex,
+            neighbor,
+            &owner,
+            &other,
+            EARTH_RADIUS_KM,
+            true,
+            true,
+        );
         assert!(
             matches!(edge.class, BoundaryClass::Divergent),
             "expected divergent (negative normal), got {:?} v_n={}",
@@ -264,9 +319,8 @@ mod tests {
 
     #[test]
     fn convergent_when_normal_velocity_positive() {
-        let owner = plate_with_motion(0, PlateType::Continental, 0, [0.0, 0.0, 1.0], 1e-6);
-        let other = plate_with_motion(1, PlateType::Continental, 1, [0.0, 0.0, 1.0], 0.0);
-        let class = classify_from_velocities(1.0, 0.1, &owner, &other);
+        // Continental crust on both sides.
+        let class = classify_from_velocities(1.0, 0.1, false, false);
         assert!(matches!(
             class,
             BoundaryClass::Convergent(ConvergentSubtype::ContinentalContinental)
@@ -287,7 +341,16 @@ mod tests {
         let owner = plate_with_motion(0, PlateType::Oceanic, 0, axis, 1e-6);
         let other = plate_with_motion(1, PlateType::Oceanic, 100, axis, 5e-7);
 
-        let edge = classify_edge(&grid, hex, neighbor, &owner, &other, EARTH_RADIUS_KM);
+        let edge = classify_edge(
+            &grid,
+            hex,
+            neighbor,
+            &owner,
+            &other,
+            EARTH_RADIUS_KM,
+            true,
+            true,
+        );
         assert!(
             matches!(edge.class, BoundaryClass::Transform),
             "expected transform, got {:?} v_n={} v_t={}",
@@ -302,9 +365,7 @@ mod tests {
 
     #[test]
     fn classify_transform_at_threshold() {
-        let owner = plate_with_motion(0, PlateType::Oceanic, 0, [0.0, 0.0, 1.0], 1e-6);
-        let other = plate_with_motion(1, PlateType::Oceanic, 1, [0.0, 0.0, 1.0], 1e-6);
-        let class = classify_from_velocities(0.2, 1.0, &owner, &other);
+        let class = classify_from_velocities(0.2, 1.0, true, true);
         assert!(matches!(class, BoundaryClass::Transform));
     }
 

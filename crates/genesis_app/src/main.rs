@@ -157,12 +157,26 @@ fn main() {
     } else {
         requested_year
     };
+    // Print progress every 100M simulated years so long generations are
+    // visibly alive (a 4.5B-year run is minutes of otherwise silent compute).
+    let mut last_reported_year: i64 = 0;
     generate_full_history(
         &mut world,
         &mut tectonics,
         &mut climate,
         simulate_year,
-        |_| {},
+        |p| {
+            const REPORT_EVERY_YEARS: i64 = 100_000_000;
+            let current = p.current_year.value();
+            if current - last_reported_year >= REPORT_EVERY_YEARS {
+                last_reported_year = current;
+                eprintln!(
+                    "[genesis] simulated year {:.2}B / {:.2}B",
+                    current as f64 / 1e9,
+                    p.target_year.value() as f64 / 1e9
+                );
+            }
+        },
     )
     .expect("tectonic and climate history generation");
     if requested_year.value() == 0 {

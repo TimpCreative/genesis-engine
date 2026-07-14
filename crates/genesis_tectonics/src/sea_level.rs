@@ -17,7 +17,13 @@ use crate::reorganization::REORGANIZATION_ACTION_STREAM;
 const DIVERGENT_LENGTH_SCALE: f64 = 1e-6;
 
 /// Equilibrium damping toward zero sea level (per tick).
-const SEA_LEVEL_EQUILIBRIUM_K: f64 = 1e-6;
+///
+/// Balances the divergent-length forcing at a bounded steady state: with
+/// persistent material-footprint ridges the forcing runs ~0.1–0.2 m/tick, so
+/// k = 0.005 caps steady-state sea level near ±40 m and relaxes reorg
+/// excursions over ~200 ticks (100M years) instead of letting the level
+/// random-walk unbounded across deep time.
+const SEA_LEVEL_EQUILIBRIUM_K: f64 = 0.005;
 
 /// Reorganization-driven sea level excursion magnitude (m).
 const REORG_SEA_LEVEL_EXCURSION_M: f64 = 100.0;

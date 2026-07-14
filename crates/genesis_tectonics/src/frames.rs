@@ -45,6 +45,45 @@ pub fn current_world_to_birth_hex(
     grid.nearest_hex_direction_from(current_world_hex, [birth_v.x, birth_v.y, birth_v.z])
 }
 
+/// Re-anchors a plate's birth frame to the present: every feature is re-stored
+/// at its CURRENT world hex and `accumulated_rotation_rad` resets to zero.
+///
+/// Must be called before changing a plate's `motion_axis` — the accumulated
+/// rotation is only meaningful around the axis it accumulated on, so swapping
+/// the axis without re-anchoring teleports every feature. Collisions from
+/// quantization keep the higher-elevation (then newer, then lower-index)
+/// feature, mirroring `world_rebuild`'s display priority.
+pub fn rebase_birth_frame(grid: &HexGrid, plate: &mut Plate) {
+    let n = plate.surface.features.len();
+    let mut rebased: Vec<Option<crate::plate_surface::SurfaceFeature>> = vec![None; n];
+
+    for (birth_idx, slot) in plate.surface.features.iter().enumerate() {
+        let Some(feature) = slot else {
+            continue;
+        };
+        let birth_hex = HexId(birth_idx as u32);
+        let current = birth_hex_to_current_world(grid, birth_hex, plate);
+        let w = current.0 as usize;
+        if w >= n {
+            continue;
+        }
+        let replace = match &rebased[w] {
+            None => true,
+            Some(existing) => {
+                feature.elevation_m > existing.elevation_m
+                    || (feature.elevation_m == existing.elevation_m
+                        && feature.age_year > existing.age_year)
+            }
+        };
+        if replace {
+            rebased[w] = Some(feature.clone());
+        }
+    }
+
+    plate.surface.features = rebased;
+    plate.accumulated_rotation_rad = 0.0;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -113,6 +152,45 @@ mod tests {
                 "inverse(forward({hex:?})) should be {hex:?} or neighbor, got {recovered:?}"
             );
         }
+    }
+
+    #[test]
+    fn rebase_preserves_feature_world_positions() {
+        let mut params = WorldParameters::default();
+        params.core.grid.subdivision_level = 5;
+        let world = create_world(params).expect("world");
+        let grid = &world.data.grid;
+        let n = grid.cell_count() as usize;
+
+        let mut plate = test_plate(0.4);
+        plate.surface = PlateSurface::new(n);
+        let birth_hex = HexId(30);
+        plate.surface.set(
+            birth_hex,
+            crate::plate_surface::SurfaceFeature {
+                elevation_m: 1234.0,
+                relief_m: 10.0,
+                bedrock: genesis_core::data::BedrockType::Igneous,
+                fertility: 0.0,
+                age_year: 5,
+            },
+        );
+
+        let world_pos_before = birth_hex_to_current_world(grid, birth_hex, &plate);
+        rebase_birth_frame(grid, &mut plate);
+
+        assert_eq!(plate.accumulated_rotation_rad, 0.0);
+        // After rebase, the feature lives AT its world position (identity mapping).
+        let feature = plate
+            .surface
+            .get(world_pos_before)
+            .expect("feature stored at current world hex");
+        assert_eq!(feature.elevation_m, 1234.0);
+        assert_eq!(
+            birth_hex_to_current_world(grid, world_pos_before, &plate),
+            world_pos_before,
+            "zero rotation after rebase keeps the feature in place"
+        );
     }
 
     #[test]

@@ -18,15 +18,27 @@ pub const CONTINENTAL_BASE_ELEVATION_M: f32 = 800.0;
 /// Mean elevation for oceanic plates at formation (meters).
 pub const OCEANIC_BASE_ELEVATION_M: f32 = -3500.0;
 
-/// Uniform noise half-range added to base elevation (±meters).
-pub const INITIAL_ELEVATION_NOISE_RANGE_M: f32 = 400.0;
+/// Long-wavelength noise amplitude (m): regional highlands, plateaus, lowlands,
+/// and submerged continental margins.
+pub const COARSE_NOISE_AMPLITUDE_M: f32 = 900.0;
+
+/// Medium-wavelength noise amplitude (m): hills and basins.
+pub const MEDIUM_NOISE_AMPLITUDE_M: f32 = 300.0;
+
+/// Per-hex noise amplitude (m): local texture.
+pub const FINE_NOISE_AMPLITUDE_M: f32 = 60.0;
+
+/// Neighbor-averaging passes for the coarse octave.
+const COARSE_SMOOTHING_PASSES: u32 = 6;
+
+/// Neighbor-averaging passes for the medium octave.
+const MEDIUM_SMOOTHING_PASSES: u32 = 2;
 
 /// Populates plate surfaces with initial terrain, then rebuilds `WorldData`.
 pub fn apply_formation_terrain(data: &mut WorldData, registry: &mut PlateRegistry, rng: &WorldRng) {
-    let mut noise_rng = rng.stream(INITIAL_ELEVATION_NOISE_STREAM);
-    let n = data.plate_id.len();
+    let noise = correlated_elevation_noise(data, rng);
 
-    for i in 0..n {
+    for (i, &hex_noise) in noise.iter().enumerate() {
         let hex = HexId(i as u32);
         let plate_id = data.plate_id[i];
         if plate_id == PlateId::NONE {
@@ -49,14 +61,11 @@ pub fn apply_formation_terrain(data: &mut WorldData, registry: &mut PlateRegistr
             PlateType::Oceanic => (OCEANIC_BASE_ELEVATION_M, BedrockType::OceanicCrust),
         };
 
-        let noise: f32 =
-            noise_rng.gen_range(-INITIAL_ELEVATION_NOISE_RANGE_M..=INITIAL_ELEVATION_NOISE_RANGE_M);
-
         // At year 0, birth hex == world hex (zero accumulated rotation).
         plate.surface.set(
             hex,
             SurfaceFeature {
-                elevation_m: base + noise,
+                elevation_m: base + hex_noise,
                 relief_m: 0.0,
                 bedrock,
                 fertility: 0.0,
@@ -67,6 +76,68 @@ pub fn apply_formation_terrain(data: &mut WorldData, registry: &mut PlateRegistr
 
     data.sea_level_m = 0.0;
     rebuild_world_from_plate_surfaces(data, registry);
+}
+
+/// Multi-octave, spatially correlated elevation noise.
+///
+/// Uncorrelated per-hex noise reads as salt-and-pepper speckle; summing a
+/// heavily smoothed octave (regional highlands/lowlands), a lightly smoothed
+/// octave (hills and basins), and raw texture yields natural-looking terrain
+/// variation. Deterministic: one dedicated RNG stream, fixed draw order,
+/// neighbor sums in ascending `HexId` order.
+fn correlated_elevation_noise(data: &WorldData, rng: &WorldRng) -> Vec<f32> {
+    let n = data.plate_id.len();
+    let mut noise_rng = rng.stream(INITIAL_ELEVATION_NOISE_STREAM);
+
+    let coarse_white: Vec<f32> = (0..n).map(|_| noise_rng.gen_range(-1.0f32..=1.0)).collect();
+    let fine_white: Vec<f32> = (0..n).map(|_| noise_rng.gen_range(-1.0f32..=1.0)).collect();
+
+    let coarse = normalized(smoothed(&coarse_white, data, COARSE_SMOOTHING_PASSES));
+    let medium = normalized(smoothed(&fine_white, data, MEDIUM_SMOOTHING_PASSES));
+
+    (0..n)
+        .map(|i| {
+            coarse[i] * COARSE_NOISE_AMPLITUDE_M
+                + medium[i] * MEDIUM_NOISE_AMPLITUDE_M
+                + fine_white[i] * FINE_NOISE_AMPLITUDE_M
+        })
+        .collect()
+}
+
+/// Repeated neighbor averaging: each pass replaces every value with the mean
+/// of itself and its neighbors.
+fn smoothed(values: &[f32], data: &WorldData, passes: u32) -> Vec<f32> {
+    let grid = &data.grid;
+    let n = values.len();
+    let mut current = values.to_vec();
+    let mut next = vec![0.0f32; n];
+
+    for _ in 0..passes {
+        for (i, out) in next.iter_mut().enumerate() {
+            let hex = HexId(i as u32);
+            let mut sum = f64::from(current[i]);
+            let mut count = 1u32;
+            for neighbor in grid.neighbors(hex) {
+                let j = neighbor.0 as usize;
+                if j < n {
+                    sum += f64::from(current[j]);
+                    count += 1;
+                }
+            }
+            *out = (sum / f64::from(count)) as f32;
+        }
+        std::mem::swap(&mut current, &mut next);
+    }
+    current
+}
+
+/// Rescales so the maximum absolute value is 1 (no-op for an all-zero field).
+fn normalized(values: Vec<f32>) -> Vec<f32> {
+    let max_abs = values.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+    if max_abs <= f32::EPSILON {
+        return values;
+    }
+    values.into_iter().map(|v| v / max_abs).collect()
 }
 
 #[cfg(test)]

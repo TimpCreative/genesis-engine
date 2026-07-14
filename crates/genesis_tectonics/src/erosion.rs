@@ -27,6 +27,12 @@ pub const TROPICAL_LATITUDE_DEG: f64 = 30.0;
 /// Maximum water depth for shallow-shelf fertility proxy (§8.4).
 pub const SHALLOW_SEA_DEPTH_M: f32 = 200.0;
 
+/// Isostatic freeboard: land elevation (m above sea level) that net erosion
+/// asymptotes to. Crustal rebound offsets denudation on low continents, so
+/// erosion only removes elevation above this floor (Earth's mean continental
+/// elevation is ~840 m; old cratons sit near 300–500 m).
+pub const CONTINENTAL_FREEBOARD_M: f32 = 400.0;
+
 /// Per-hex multiplicative noise amplitude: factor ∈ [1 - A, 1 + A] (Phase 1).
 const EROSION_NOISE_AMPLITUDE: f64 = 0.05;
 
@@ -80,16 +86,25 @@ pub fn apply_land_erosion(
             continue;
         }
 
+        // Net erosion drives land toward the isostatic freeboard, not sea
+        // level: rebound compensates most denudation on low continents, so
+        // only elevation above the freeboard erodes away. Without this,
+        // persistent-crust continents grind to sea level within ~100M years.
+        let erodible = elev_above - CONTINENTAL_FREEBOARD_M;
+        if erodible <= 0.0 {
+            continue;
+        }
+
         let bedrock_mult = bedrock_erosion_multiplier(data.bedrock_type[idx]);
         let climate = climate_modifier_phase1(data, hex);
         let noise = noise_factors.get(&hex).copied().unwrap_or(1.0);
-        let raw = f64::from(elev_above)
+        let raw = f64::from(erodible)
             * base_rate_per_year
             * climate
             * tick_interval_years
             * noise
             * bedrock_mult;
-        let amount = raw.min(f64::from(elev_above));
+        let amount = raw.min(f64::from(erodible));
         if amount <= 0.0 {
             continue;
         }
@@ -225,6 +240,8 @@ pub fn apply_erosion_tick(
 ) {
     ensure_deposition_buffer(state, data.grid.cell_count() as usize);
 
+    apply_oceanic_thermal_subsidence(&mut state.registry, data.sea_level_m, tick_interval_years);
+
     let base_rate = data.parameters.core.geology.base_erosion_rate_per_year;
     if base_rate <= 0.0 {
         increment_shallow_tropical_fertility(data, &mut state.registry, tick_year);
@@ -248,6 +265,53 @@ pub fn apply_erosion_tick(
         tick_year,
     );
     increment_shallow_tropical_fertility(data, &mut state.registry, tick_year);
+}
+
+/// Thermal subsidence rate for submerged oceanic crust (fraction of the
+/// remaining gap to [`crate::elevation::OCEAN_FLOOR_BASELINE_M`] per year).
+///
+/// Young ridge crust cools and sinks toward the abyssal baseline as it ages;
+/// at 4e-8/yr a 500k-year tick closes ~2% of the gap, so fresh crust drops
+/// below -3000 m within ~10M years and the active ridge line stays narrow
+/// instead of walling deep basins apart.
+pub const THERMAL_SUBSIDENCE_RATE_PER_YEAR: f64 = 4e-8;
+
+/// Crust deeper than this subsides regardless of its bedrock label (m).
+///
+/// Volcanism and sediment routing overwrite ocean-floor bedrock (Igneous,
+/// Sedimentary), so depth — not bedrock — identifies oceanic lithosphere.
+/// Submerged continental margins sit above this ceiling and are protected.
+pub const DEEP_CRUST_SUBSIDENCE_CEILING_M: f32 = -800.0;
+
+/// Sinks deep submerged crust toward the abyssal baseline as it ages.
+/// Deterministic: iterates plates and birth indices in ascending order; no RNG.
+pub fn apply_oceanic_thermal_subsidence(
+    registry: &mut PlateRegistry,
+    sea_level_m: f32,
+    tick_interval_years: f64,
+) {
+    let baseline = crate::elevation::OCEAN_FLOOR_BASELINE_M;
+    let fraction = (THERMAL_SUBSIDENCE_RATE_PER_YEAR * tick_interval_years).min(1.0) as f32;
+    if fraction <= 0.0 {
+        return;
+    }
+    let ceiling = DEEP_CRUST_SUBSIDENCE_CEILING_M.min(sea_level_m);
+
+    let plate_ids = registry.plate_ids();
+    for plate_id in plate_ids {
+        let Some(plate) = registry.plates_mut().get_mut(&plate_id) else {
+            continue;
+        };
+        for slot in plate.surface.features.iter_mut() {
+            let Some(feature) = slot else {
+                continue;
+            };
+            if feature.elevation_m >= ceiling || feature.elevation_m <= baseline {
+                continue;
+            }
+            feature.elevation_m += (baseline - feature.elevation_m) * fraction;
+        }
+    }
 }
 
 #[cfg(test)]
