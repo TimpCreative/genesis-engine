@@ -8,20 +8,27 @@
 pub mod circulation;
 pub mod events;
 pub mod formation;
+pub mod glaciation;
 pub mod layer;
 pub mod ocean_basins;
 pub mod ocean_currents;
 pub mod ocean_distance;
 pub mod precipitation;
+pub mod regimes;
 pub mod state;
 pub mod temperature;
 pub mod wind;
 
 pub use circulation::compute_circulation;
+pub use glaciation::{
+    MILANKOVITCH_AMPLITUDE_C, advance_glaciation, advance_orbital_phase,
+    orbital_temperature_modifier_c,
+};
 pub use ocean_basins::identify_ocean_basins;
 pub use ocean_currents::compute_ocean_currents;
 pub use ocean_distance::compute_distance_to_ocean;
 pub use precipitation::compute_precipitation_field;
+pub use regimes::{classify, classify_regimes};
 pub use temperature::compute_temperature_field;
 pub use wind::compute_wind_field;
 

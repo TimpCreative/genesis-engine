@@ -216,7 +216,34 @@ pub fn hex_color_for_mode(
                 precipitation_to_color(data.precipitation[hex_idx])
             }
         }
+        RenderMode::ClimateRegime => {
+            if elev < sea_level {
+                OCEAN_BASELINE_COLOR
+            } else {
+                regime_to_color(data.climate_regime[hex_idx])
+            }
+        }
     }
+}
+
+/// Distinct fill per Köppen-like regime (Doc 07 §10), loosely following the
+/// conventional Köppen map palette.
+pub fn regime_to_color(regime: genesis_core::data::ClimateRegimePlaceholder) -> Color {
+    use genesis_core::data::ClimateRegimePlaceholder as R;
+    let (r, g, b) = match regime {
+        R::Unset => (0.25, 0.25, 0.25),
+        R::Tropical => (0.00, 0.35, 0.85),
+        R::Subtropical => (0.25, 0.60, 0.95),
+        R::HotDesert => (0.95, 0.35, 0.20),
+        R::ColdDesert => (0.95, 0.65, 0.45),
+        R::Mediterranean => (0.95, 0.85, 0.20),
+        R::Temperate => (0.35, 0.75, 0.30),
+        R::ContinentalCool => (0.15, 0.55, 0.35),
+        R::Boreal => (0.40, 0.65, 0.75),
+        R::Tundra => (0.70, 0.75, 0.80),
+        R::Polar => (0.92, 0.94, 0.97),
+    };
+    Color::srgb(r, g, b)
 }
 
 #[cfg(test)]

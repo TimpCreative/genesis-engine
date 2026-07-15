@@ -37,6 +37,9 @@ pub fn compute_temperature_field(data: &mut WorldData, climate: &ClimateState) {
     let glaciation = climate.glaciation;
 
     let p = latitude_exponent(axial_tilt_rad);
+    // Global Milankovitch-like offset (Doc 07 §12.1); zero at phase 0, so
+    // formation-era and orbital-free tests are unaffected.
+    let t_orbital = crate::glaciation::orbital_temperature_modifier_c(climate);
 
     for i in 0..n {
         let hex = HexId(i as u32);
@@ -56,7 +59,8 @@ pub fn compute_temperature_field(data: &mut WorldData, climate: &ClimateState) {
             + t_continentality
             + t_ocean_current
             + t_glaciation
-            + t_greenhouse;
+            + t_greenhouse
+            + t_orbital;
 
         data.temperature_mean[i] = temperature;
         data.temperature_range[i] = seasonal_range_c(lat_rad, distance_km, axial_tilt_rad);

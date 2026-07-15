@@ -89,4 +89,8 @@ pub enum EventKind {
         final_temperature_c: f32,
         final_co2_ppm: f32,
     },
+    /// The world entered a full glacial (Doc 07 §12.4).
+    GlaciationBegan { global_temperature_c: f32 },
+    /// A glacial ended and an interglacial returned (Doc 07 §12.4).
+    GlaciationEnded { duration_years: i64 },
 }

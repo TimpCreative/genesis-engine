@@ -3,6 +3,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use genesis_core::branches::BranchId;
 use genesis_core::data::WorldData;
 use genesis_core::parameters::WorldParameters;
 use genesis_core::rng::WorldRng;
@@ -162,6 +163,21 @@ impl SimulationLayer for ClimateLayer {
                 );
             }
 
+            // Orbital cycles and glaciation advance before temperature so the
+            // field reflects this tick's state (Doc 07 §12). Dormant during
+            // Formation: the cooling curve owns global temperature there.
+            if state.formation_complete {
+                let interval_years = (world.current_year - self.last_tick_year.get()) as f64;
+                crate::glaciation::advance_orbital_phase(&mut state, interval_years.max(0.0));
+                crate::glaciation::advance_glaciation(
+                    world,
+                    &mut state,
+                    world.current_year,
+                    world.parameters.core.climate.event_granularity,
+                    BranchId::ROOT,
+                );
+            }
+
             let temp_start = std::time::Instant::now();
             crate::temperature::compute_temperature_field(world, &state);
             let temp_elapsed = temp_start.elapsed();
@@ -183,6 +199,9 @@ impl SimulationLayer for ClimateLayer {
                     precip_elapsed.as_millis()
                 );
             }
+
+            // Regimes classify off the fields computed above (Doc 07 §10).
+            crate::regimes::classify_regimes(world);
 
             let era = Era::for_year(world.current_year, &world.parameters);
             if state.formation_complete && !state.circulation_logged_once && era != Era::Formation {
@@ -569,7 +588,16 @@ mod tests {
         );
         drop(coordinator);
 
-        let _climate = ClimateLayer::detach_state(shared);
+        let mut climate = ClimateLayer::detach_state(shared);
+
+        // Year 1B may land anywhere in the orbital/glaciation cycle (a glacial
+        // maximum is legitimately ~20% drier). This test validates the
+        // precipitation MODEL's distribution, so recompute the fields at the
+        // baseline climate: interglacial, zero orbital phase.
+        climate.glaciation = crate::state::GlaciationState::Interglacial;
+        climate.cumulative_orbital_phase_rad = 0.0;
+        crate::temperature::compute_temperature_field(&mut world.data, &climate);
+        crate::precipitation::compute_precipitation_field(&mut world.data, &climate);
 
         let sea = world.data.sea_level_m;
         let mut land_count = 0_u64;
@@ -632,6 +660,24 @@ mod tests {
         assert!(
             mean_tropical > mean_subtropical,
             "tropical mean {mean_tropical} should exceed subtropical {mean_subtropical}"
+        );
+
+        // Doc 07 §17 #5: at least 7 of the 10 regimes exist somewhere.
+        // Piggybacks on this test because the full-history fields are already
+        // computed here (the run costs ~30 s).
+        crate::regimes::classify_regimes(&mut world.data);
+        let mut regimes = std::collections::BTreeSet::new();
+        for (i, &regime) in world.data.climate_regime.iter().enumerate() {
+            if world.data.elevation_mean[i] >= sea
+                && regime != genesis_core::data::ClimateRegimePlaceholder::Unset
+            {
+                regimes.insert(regime as u8);
+            }
+        }
+        assert!(
+            regimes.len() >= 7,
+            "Doc 07 §17 #5: expected >=7 distinct regimes on land, got {} ({regimes:?})",
+            regimes.len()
         );
     }
 }

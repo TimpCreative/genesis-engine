@@ -47,6 +47,7 @@ fn auto_screenshot_system(
         0 => (RenderMode::Elevation, "elevation"),
         1 => (RenderMode::Temperature, "temperature"),
         2 => (RenderMode::Precipitation, "precipitation"),
+        3 => (RenderMode::ClimateRegime, "regime"),
         _ => {
             exit.write(AppExit::Success);
             return;

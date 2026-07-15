@@ -12,6 +12,8 @@ pub enum RenderMode {
     Temperature,
     /// Color by annual precipitation.
     Precipitation,
+    /// Color by Köppen-like climate regime (Doc 07 §10).
+    ClimateRegime,
 }
 
 impl RenderMode {
@@ -19,7 +21,8 @@ impl RenderMode {
         match self {
             Self::Elevation => Self::Temperature,
             Self::Temperature => Self::Precipitation,
-            Self::Precipitation => Self::Elevation,
+            Self::Precipitation => Self::ClimateRegime,
+            Self::ClimateRegime => Self::Elevation,
         }
     }
 
@@ -28,6 +31,7 @@ impl RenderMode {
             Self::Elevation => "Elevation",
             Self::Temperature => "Temperature",
             Self::Precipitation => "Precipitation",
+            Self::ClimateRegime => "Climate Regime",
         }
     }
 }

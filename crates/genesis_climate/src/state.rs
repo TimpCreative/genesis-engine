@@ -201,6 +201,9 @@ pub struct ClimateState {
     pub cumulative_orbital_phase_rad: f64,
     /// Glaciation state.
     pub glaciation: GlaciationState,
+    /// Year the current (or most recent) full glacial began; cleared when an
+    /// interglacial returns. Drives `GlaciationEnded { duration_years }`.
+    pub glacial_started_year: Option<i64>,
     /// Previous regime per hex for regime-shift event emission (P2-12+).
     pub previous_regime: BTreeMap<HexId, ClimateRegime>,
     /// Current formation sub-phase (Doc 07 §3.2).
@@ -226,6 +229,7 @@ impl Default for ClimateState {
             atmospheric_composition: AtmosphericComposition::default(),
             cumulative_orbital_phase_rad: 0.0,
             glaciation: GlaciationState::default(),
+            glacial_started_year: None,
             previous_regime: BTreeMap::new(),
             formation_sub_phase: FormationSubPhase::Molten,
             formation_complete: false,
