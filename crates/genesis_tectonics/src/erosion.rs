@@ -51,9 +51,45 @@ pub const EPEIROGENIC_REBOUND_FLOOR_M: f32 = -2000.0;
 /// Per-hex multiplicative noise amplitude: factor ∈ [1 - A, 1 + A] (Phase 1).
 const EROSION_NOISE_AMPLITUDE: f64 = 0.05;
 
-/// Phase 1 stub: uniform modifier until climate drives precipitation (§8.2).
-pub fn climate_modifier_phase1(_data: &WorldData, _hex: HexId) -> f64 {
-    1.0
+/// Earth's global mean precipitation (mm/year); modifier 1.0 at this value (§8.2).
+pub const EROSION_PRECIPITATION_BASELINE_MM: f32 = 800.0;
+
+/// Clamp range for the precipitation-driven erosion modifier: hyper-arid land
+/// still weathers slowly; monsoon belts erode a few times faster, not 15x.
+pub const EROSION_CLIMATE_MODIFIER_MIN: f64 = 0.05;
+pub const EROSION_CLIMATE_MODIFIER_MAX: f64 = 4.0;
+
+/// Below this mean temperature (°C) land is permanently frozen: little liquid
+/// water, mechanical weathering only.
+pub const EROSION_FROZEN_TEMPERATURE_C: f32 = -15.0;
+
+/// Erosion multiplier applied to frozen hexes.
+pub const EROSION_FROZEN_FACTOR: f64 = 0.3;
+
+/// Whether the climate layer has populated the precipitation field.
+/// Tectonics-only runs (validation worlds, Phase 1 tests) leave it all zero
+/// and must keep the spec's uniform 1.0 modifier.
+pub fn climate_fields_active(data: &WorldData) -> bool {
+    data.precipitation.iter().any(|&p| p > 0.0)
+}
+
+/// Precipitation- and temperature-driven erosion modifier (Doc 06 §8.2):
+/// `precipitation / 800 mm/yr`, clamped, and damped on permanently frozen
+/// hexes. Uniform 1.0 while climate is inactive.
+pub fn climate_modifier(data: &WorldData, hex: HexId, climate_active: bool) -> f64 {
+    if !climate_active {
+        return 1.0;
+    }
+    let i = hex.0 as usize;
+    if i >= data.precipitation.len() {
+        return 1.0;
+    }
+    let mut modifier = f64::from(data.precipitation[i] / EROSION_PRECIPITATION_BASELINE_MM)
+        .clamp(EROSION_CLIMATE_MODIFIER_MIN, EROSION_CLIMATE_MODIFIER_MAX);
+    if data.temperature_mean[i] < EROSION_FROZEN_TEMPERATURE_C {
+        modifier *= EROSION_FROZEN_FACTOR;
+    }
+    modifier
 }
 
 /// Erosion rate multiplier per bedrock type. Continental cratons resist erosion;
@@ -92,6 +128,7 @@ pub fn apply_land_erosion(
     let mut eroded = BTreeMap::new();
     let sea = data.sea_level_m;
     let tick_value = tick_year.value();
+    let climate_active = climate_fields_active(data);
 
     for hex in data.grid.iter() {
         let idx = hex.0 as usize;
@@ -118,7 +155,7 @@ pub fn apply_land_erosion(
         }
 
         let bedrock_mult = bedrock_erosion_multiplier(data.bedrock_type[idx]);
-        let climate = climate_modifier_phase1(data, hex);
+        let climate = climate_modifier(data, hex, climate_active);
         let noise = noise_factors.get(&hex).copied().unwrap_or(1.0);
         let raw = f64::from(erodible)
             * base_rate_per_year
@@ -354,6 +391,40 @@ mod tests {
     use crate::world_rebuild::rebuild_world_from_plate_surfaces;
 
     const EARTH_RADIUS_KM: f64 = 6371.0;
+
+    #[test]
+    fn climate_modifier_uniform_when_climate_inactive() {
+        let world = small_world();
+        assert!(!climate_fields_active(&world.data));
+        for hex in world.data.grid.iter().take(20) {
+            assert_eq!(climate_modifier(&world.data, hex, false), 1.0);
+        }
+    }
+
+    #[test]
+    fn climate_modifier_scales_with_precipitation_and_freezes() {
+        let mut world = small_world();
+        let wet = HexId(1);
+        let dry = HexId(2);
+        let frozen = HexId(3);
+        world.data.precipitation[wet.0 as usize] = 1600.0;
+        world.data.precipitation[dry.0 as usize] = 80.0;
+        world.data.precipitation[frozen.0 as usize] = 800.0;
+        world.data.temperature_mean[frozen.0 as usize] = -30.0;
+        assert!(climate_fields_active(&world.data));
+
+        let wet_m = climate_modifier(&world.data, wet, true);
+        let dry_m = climate_modifier(&world.data, dry, true);
+        let frozen_m = climate_modifier(&world.data, frozen, true);
+
+        assert!((wet_m - 2.0).abs() < 1e-6, "1600 mm → 2x, got {wet_m}");
+        assert!((dry_m - 0.1).abs() < 1e-6, "80 mm → 0.1x, got {dry_m}");
+        assert!(
+            (frozen_m - EROSION_FROZEN_FACTOR).abs() < 1e-6,
+            "frozen 800 mm hex → frozen factor, got {frozen_m}"
+        );
+        assert!(wet_m > dry_m);
+    }
 
     #[test]
     fn drowned_continental_crust_rebounds_toward_freeboard() {

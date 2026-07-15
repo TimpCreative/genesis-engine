@@ -38,8 +38,8 @@ pub use elevation::{
 pub use erosion::{
     DEPOSITION_THRESHOLD_M, EROSION_NOISE_STREAM, FERTILITY_INCREMENT_PER_TICK,
     SHALLOW_SEA_DEPTH_M, TROPICAL_LATITUDE_DEG, apply_erosion_tick, apply_land_erosion,
-    climate_modifier_phase1, ensure_deposition_buffer, increment_shallow_tropical_fertility,
-    lowest_elevation_neighbor, route_eroded_mass,
+    climate_fields_active, climate_modifier, ensure_deposition_buffer,
+    increment_shallow_tropical_fertility, lowest_elevation_neighbor, route_eroded_mass,
 };
 pub use events::flush_events_to_branch;
 pub use frames::{birth_hex_to_current_world, current_world_to_birth_hex};
