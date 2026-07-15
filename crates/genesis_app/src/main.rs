@@ -1,6 +1,7 @@
 // Environment variables read by the app:
 // - GENESIS_TARGET_YEAR (i64): simulated year to advance to. Default 1_000_000.
 // - GENESIS_SUBDIVISION_LEVEL (u8): ISEA3H subdivision level. Default 7 (valid 5–9).
+// - GENESIS_SEED (u64): world seed. Default from WorldParameters::default().
 // - GENESIS_SCREENSHOT_DIR: if set, writes elevation/temperature/precipitation PNGs then exits.
 //   Examples:
 //     cargo run -p genesis_app                       # 1M years (default)
@@ -145,6 +146,15 @@ fn main() {
     let subdivision_level = subdivision_level_from_env();
     parameters.core.grid.subdivision_level = subdivision_level;
     eprintln!("GENESIS_SUBDIVISION_LEVEL={subdivision_level}");
+    if let Ok(seed_str) = std::env::var("GENESIS_SEED") {
+        match seed_str.parse::<u64>() {
+            Ok(seed) => {
+                parameters.core.seed = genesis_core::parameters::WorldSeed::from_integer(seed);
+                eprintln!("GENESIS_SEED={seed}");
+            }
+            Err(_) => eprintln!("GENESIS_SEED={seed_str} is not a valid u64; using default seed"),
+        }
+    }
 
     let mut world = create_world(parameters).expect("default world creates successfully");
     let mut tectonics = TectonicsState::new();

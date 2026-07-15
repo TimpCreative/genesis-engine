@@ -328,8 +328,9 @@ pub fn summarize_world(world: &World, state: &TectonicsState) -> String {
     };
 
     let land_pct = land_frac * 100.0;
+    let seed = data.parameters.core.seed.value;
     format!(
-        "seed={VALIDATION_SEED} subdiv={} year={} land={land_pct:.1}% elev=[{min_e:.0},{max_e:.0}] \
+        "seed={seed} subdiv={} year={} land={land_pct:.1}% elev=[{min_e:.0},{max_e:.0}] \
          sea_level={:.1}m plates={} bedrock=[{}] notable_events={notable_events} \
          mountain_regions(>{MOUNTAIN_ELEVATION_THRESHOLD_M}m)={} \
          deep_ocean_basins(>={ocean_threshold} hex)={} motion={motion_summary}",

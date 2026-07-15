@@ -932,6 +932,52 @@ mod integration_tests {
     }
 
     #[test]
+    #[ignore = "deep time: Earthlike metrics at 1B years (cargo test -p genesis_tectonics -- --ignored)"]
+    fn deep_time_metrics_stay_earthlike() {
+        use crate::validation::{
+            OCEAN_BASIN_ELEVATION_THRESHOLD_M, min_ocean_basin_hex_threshold,
+            ocean_basins_below_elevation,
+        };
+
+        // Every deep-time regression found during P1-17/P1-18 development —
+        // sea level integrating unbounded, continents grinding to sea level,
+        // margin-minting ballooning land past 50% — was invisible at the 100M
+        // years the §11 suite covers and only surfaced by 1B. This gate runs
+        // the validation world 10x deeper and pins the Earthlike envelope.
+        let (world, _state) =
+            run_validation_world(WorldYear(1_000_000_000)).expect("validation world runs");
+
+        let land_fraction = continental_fraction(&world.data);
+        assert!(
+            (0.15..=0.45).contains(&land_fraction),
+            "land fraction {land_fraction} at 1B years outside Earthlike envelope [0.15, 0.45]"
+        );
+
+        let sea = world.data.sea_level_m;
+        assert!(
+            sea.abs() < 200.0,
+            "sea level {sea} m at 1B years should stay bounded (|sea| < 200 m)"
+        );
+
+        let threshold = min_ocean_basin_hex_threshold(world.data.cell_count());
+        let basins = ocean_basins_below_elevation(&world.data, OCEAN_BASIN_ELEVATION_THRESHOLD_M);
+        let largest = basins.iter().copied().max().unwrap_or(0);
+        assert!(
+            largest >= threshold,
+            "largest deep ocean basin at 1B years is {largest} hexes; expected >= {threshold} \
+             (a connected world ocean)"
+        );
+
+        let (saturated_max, saturated_min) = crate::validation::count_saturated_hexes(&world.data);
+        let max_allowed = world.data.cell_count() as usize / 200;
+        assert!(
+            saturated_max <= max_allowed && saturated_min <= max_allowed,
+            "elevation clamp saturation at 1B years: {saturated_max} at MAX, {saturated_min} at MIN \
+             (allowed {max_allowed})"
+        );
+    }
+
+    #[test]
     fn event_granularity_pivotal_logs_only_pivotal_events() {
         let mut params = validation_parameters();
         params.core.geology.event_granularity = Significance::Pivotal;
