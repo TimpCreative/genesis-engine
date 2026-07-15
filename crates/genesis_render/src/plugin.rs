@@ -3,7 +3,7 @@
 use bevy::prelude::*;
 
 use crate::render_mode::CurrentRenderMode;
-use crate::resources::{CameraState, ColorsDirty, HexEntityCache, WorldDirty};
+use crate::resources::{CameraState, ColorsDirty, HexEntityCache, HexMeshIndex, WorldDirty};
 use crate::systems::{
     cycle_render_mode_on_keypress, handle_camera_input, render_world_if_dirty, setup_camera,
     sync_camera, update_hex_colors, update_window_title,
@@ -18,6 +18,7 @@ impl Plugin for GenesisRenderPlugin {
             .init_resource::<WorldDirty>()
             .init_resource::<ColorsDirty>()
             .init_resource::<HexEntityCache>()
+            .init_resource::<HexMeshIndex>()
             .init_resource::<CurrentRenderMode>()
             .add_systems(Startup, setup_camera)
             .add_systems(
@@ -26,9 +27,9 @@ impl Plugin for GenesisRenderPlugin {
                     handle_camera_input,
                     cycle_render_mode_on_keypress,
                     update_window_title,
-                    update_hex_colors,
                     sync_camera,
                     render_world_if_dirty,
+                    update_hex_colors,
                 )
                     .chain(),
             );

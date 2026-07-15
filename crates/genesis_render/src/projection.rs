@@ -1,7 +1,5 @@
 //! Equirectangular projection and polar skip rules.
 
-use bevy::prelude::*;
-
 /// Equirectangular projection: longitude → x, latitude → y (radians).
 pub fn project(lat_rad: f64, lon_rad: f64) -> (f32, f32) {
     (lon_rad as f32, lat_rad as f32)
@@ -29,33 +27,6 @@ const POLE_SKIP_LAT_RAD: f64 = 1.22; // ~70 degrees
 /// out of scope for Phase 0.
 pub fn should_skip_for_equirectangular(center_lat_rad: f64) -> bool {
     center_lat_rad.abs() > POLE_SKIP_LAT_RAD
-}
-
-/// Builds a 2D triangle-fan mesh for one hex in projected space.
-pub fn hex_mesh_2d(center: (f32, f32), ring: &[(f32, f32)]) -> Mesh {
-    let mut positions = Vec::with_capacity(1 + ring.len());
-    let mut indices = Vec::with_capacity(ring.len() * 3);
-
-    positions.push([center.0, center.1, 0.0]);
-    for &(x, y) in ring {
-        positions.push([x, y, 0.0]);
-    }
-
-    let n = ring.len();
-    for i in 0..n {
-        let a = 0u32;
-        let b = (i + 1) as u32;
-        let c = ((i + 1) % n + 1) as u32;
-        indices.extend_from_slice(&[a, b, c]);
-    }
-
-    let mut mesh = Mesh::new(
-        bevy::mesh::PrimitiveTopology::TriangleList,
-        bevy::asset::RenderAssetUsages::default(),
-    );
-    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-    mesh.insert_indices(bevy::mesh::Indices::U32(indices));
-    mesh
 }
 
 #[cfg(test)]

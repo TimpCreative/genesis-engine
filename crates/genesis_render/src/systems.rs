@@ -4,23 +4,22 @@ use std::f64::consts::PI;
 
 use bevy::camera::{OrthographicProjection, ScalingMode};
 use bevy::input::mouse::{AccumulatedMouseMotion, MouseWheel};
+use bevy::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use genesis_core::HexId;
 
 use crate::color::hex_color_for_mode;
 use crate::polygon::{direction_to_lat_lon, hex_polygon_vertices, unwrap_lon_relative};
-use crate::projection::{hex_mesh_2d, project, should_skip_for_equirectangular};
+use crate::projection::{project, should_skip_for_equirectangular};
 use crate::render_mode::CurrentRenderMode;
-use crate::resources::{CameraState, ColorsDirty, HexEntityCache, WorldDirty, WorldResource};
+use crate::resources::{
+    CameraState, ColorsDirty, HexChunk, HexEntityCache, HexMeshIndex, WorldDirty, WorldResource,
+};
 
 const MIN_ZOOM: f32 = 0.1;
 const MAX_ZOOM: f32 = 50.0;
 const ZOOM_SENSITIVITY: f32 = 0.1;
-
-/// Maps a spawned mesh entity back to its hex for color updates.
-#[derive(Component)]
-pub(crate) struct HexCell(pub HexId);
 
 /// World width/height in projected radians (equirectangular).
 const WORLD_WIDTH: f32 = (2.0 * PI) as f32;
@@ -154,39 +153,63 @@ pub fn update_hex_colors(
     world_res: Option<Res<WorldResource>>,
     render_mode: Res<CurrentRenderMode>,
     mut colors_dirty: ResMut<ColorsDirty>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
-    query: Query<(&HexCell, &MeshMaterial2d<ColorMaterial>)>,
+    index: Res<HexMeshIndex>,
+    mut meshes: ResMut<Assets<Mesh>>,
 ) {
     if !render_mode.is_changed() && !colors_dirty.0 {
         return;
     }
-    colors_dirty.0 = false;
     let Some(world_res) = world_res else {
+        colors_dirty.0 = false;
         return;
     };
+    if index.chunks.is_empty() {
+        // Rebuild hasn't run yet this frame; keep the flag so we retry.
+        return;
+    }
+    colors_dirty.0 = false;
 
     let data = &world_res.0.data;
     let grid = &data.grid;
+    let n = data.cell_count() as usize;
 
-    for (hex_cell, mat_handle) in &query {
-        let idx = hex_cell.0.0 as usize;
-        if idx >= data.cell_count() as usize {
+    for chunk in &index.chunks {
+        let Some(mesh) = meshes.get_mut(&chunk.mesh) else {
             continue;
-        }
-        let is_pentagon = grid.is_pentagon(hex_cell.0);
-        let color = hex_color_for_mode(data, idx, render_mode.0, is_pentagon);
-        if let Some(material) = materials.get_mut(&mat_handle.0) {
-            material.color = color;
+        };
+        let Some(VertexAttributeValues::Float32x4(colors)) =
+            mesh.attribute_mut(Mesh::ATTRIBUTE_COLOR)
+        else {
+            continue;
+        };
+        for &(hex, base, count) in &chunk.slots {
+            let idx = hex.0 as usize;
+            if idx >= n {
+                continue;
+            }
+            let color = hex_color_for_mode(data, idx, render_mode.0, grid.is_pentagon(hex))
+                .to_linear()
+                .to_f32_array();
+            let start = base as usize;
+            for v in &mut colors[start..start + count as usize] {
+                *v = color;
+            }
         }
     }
 }
 
+/// Hexes per combined mesh. Bounds the unit of GPU re-upload on recolor and
+/// gives per-chunk frustum culling; level 8 (65,612 hexes) yields ~17 chunks.
+const HEXES_PER_CHUNK: usize = 4096;
+
+#[allow(clippy::too_many_arguments)]
 pub fn render_world_if_dirty(
     mut commands: Commands,
     world_res: Option<Res<WorldResource>>,
     render_mode: Res<CurrentRenderMode>,
     mut world_dirty: ResMut<WorldDirty>,
     mut cache: ResMut<HexEntityCache>,
+    mut index: ResMut<HexMeshIndex>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
@@ -200,10 +223,53 @@ pub fn render_world_if_dirty(
     for entity in cache.entities.drain(..) {
         commands.entity(entity).despawn();
     }
+    index.clear();
 
-    let grid = &world_res.0.data.grid;
+    let data = &world_res.0.data;
+    let grid = &data.grid;
+    // White base material shared by every chunk: the shader multiplies it by
+    // per-vertex colors, so the vertex color IS the hex color.
+    let shared_material = materials.add(ColorMaterial::default());
+
+    let mut positions: Vec<[f32; 3]> = Vec::new();
+    let mut colors: Vec<[f32; 4]> = Vec::new();
+    let mut indices: Vec<u32> = Vec::new();
+    let mut slots: Vec<(HexId, u32, u8)> = Vec::new();
     let mut spawned = 0u32;
     let mut skipped = 0u32;
+
+    let flush = |commands: &mut Commands,
+                 meshes: &mut Assets<Mesh>,
+                 cache: &mut HexEntityCache,
+                 index: &mut HexMeshIndex,
+                 positions: &mut Vec<[f32; 3]>,
+                 colors: &mut Vec<[f32; 4]>,
+                 indices: &mut Vec<u32>,
+                 slots: &mut Vec<(HexId, u32, u8)>| {
+        if slots.is_empty() {
+            return;
+        }
+        let mut mesh = Mesh::new(
+            PrimitiveTopology::TriangleList,
+            bevy::asset::RenderAssetUsages::default(),
+        );
+        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, std::mem::take(positions));
+        mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, std::mem::take(colors));
+        mesh.insert_indices(Indices::U32(std::mem::take(indices)));
+        let handle = meshes.add(mesh);
+        let entity = commands
+            .spawn((
+                Mesh2d(handle.clone()),
+                MeshMaterial2d(shared_material.clone()),
+                Transform::from_xyz(0.0, 0.0, 0.0),
+            ))
+            .id();
+        cache.entities.push(entity);
+        index.chunks.push(HexChunk {
+            mesh: handle,
+            slots: std::mem::take(slots),
+        });
+    };
 
     for hex in grid.iter() {
         let (center_lat, center_lon) = grid.center_lat_lon(hex);
@@ -228,26 +294,54 @@ pub fn render_world_if_dirty(
                 project(lat, unwrapped_lon)
             })
             .collect();
-        let mesh = hex_mesh_2d(center_2d, &ring);
 
-        let mesh_handle = meshes.add(mesh);
         let idx = hex.0 as usize;
-        let is_pentagon = grid.is_pentagon(hex);
-        let fill = hex_color_for_mode(&world_res.0.data, idx, render_mode.0, is_pentagon);
-        let material = materials.add(ColorMaterial::from_color(fill));
+        let color = hex_color_for_mode(data, idx, render_mode.0, grid.is_pentagon(hex))
+            .to_linear()
+            .to_f32_array();
 
-        let entity = commands
-            .spawn((
-                HexCell(hex),
-                Mesh2d(mesh_handle),
-                MeshMaterial2d(material),
-                Transform::from_xyz(0.0, 0.0, 0.0),
-            ))
-            .id();
-        cache.entities.push(entity);
+        // Triangle fan: center vertex + ring, offset into the chunk buffers.
+        let base = positions.len() as u32;
+        positions.push([center_2d.0, center_2d.1, 0.0]);
+        colors.push(color);
+        for &(x, y) in &ring {
+            positions.push([x, y, 0.0]);
+            colors.push(color);
+        }
+        let ring_len = ring.len() as u32;
+        for i in 0..ring_len {
+            indices.extend_from_slice(&[base, base + 1 + i, base + 1 + (i + 1) % ring_len]);
+        }
+        slots.push((hex, base, (1 + ring_len) as u8));
         spawned += 1;
-    }
 
-    info!("Rendered {spawned} hexes ({skipped} skipped near poles)");
+        if slots.len() >= HEXES_PER_CHUNK {
+            flush(
+                &mut commands,
+                &mut meshes,
+                &mut cache,
+                &mut index,
+                &mut positions,
+                &mut colors,
+                &mut indices,
+                &mut slots,
+            );
+        }
+    }
+    flush(
+        &mut commands,
+        &mut meshes,
+        &mut cache,
+        &mut index,
+        &mut positions,
+        &mut colors,
+        &mut indices,
+        &mut slots,
+    );
+
+    info!(
+        "Rendered {spawned} hexes in {} chunks ({skipped} skipped near poles)",
+        index.chunks.len()
+    );
     world_dirty.0 = false;
 }

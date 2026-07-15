@@ -42,8 +42,30 @@ impl Default for CameraState {
     }
 }
 
-/// Spawned hex entities, despawned on world rebuild.
+/// Spawned map entities (chunk meshes), despawned on world rebuild.
 #[derive(Resource, Default)]
 pub struct HexEntityCache {
     pub entities: Vec<Entity>,
+}
+
+/// One combined mesh carrying a batch of hexes with per-vertex colors.
+pub struct HexChunk {
+    pub mesh: Handle<Mesh>,
+    /// `(hex, first_vertex, vertex_count)` — the hex's fan vertices within
+    /// this chunk's buffers (7 for hexagons, 6 for pentagons).
+    pub slots: Vec<(genesis_core::HexId, u32, u8)>,
+}
+
+/// Chunk lookup for in-place recoloring. Hexes are merged into a few large
+/// meshes (one draw call each) instead of one entity per hex; recoloring
+/// rewrites the color attribute buffers rather than touching materials.
+#[derive(Resource, Default)]
+pub struct HexMeshIndex {
+    pub chunks: Vec<HexChunk>,
+}
+
+impl HexMeshIndex {
+    pub fn clear(&mut self) {
+        self.chunks.clear();
+    }
 }
