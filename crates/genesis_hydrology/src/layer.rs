@@ -39,6 +39,7 @@ impl SimulationLayer for HydrologyLayer {
     fn advance(&mut self, world: &mut WorldData, _rng: &WorldRng) -> Vec<()> {
         compute_flow_directions(world);
         compute_flow_accumulation(world);
+        crate::soil::compute_soil_fertility(world);
         Vec::new()
     }
 }

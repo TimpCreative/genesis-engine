@@ -5,9 +5,11 @@
 
 pub mod flow;
 pub mod layer;
+pub mod soil;
 
 pub use flow::{
     DEFAULT_PRECIPITATION_MM, RUNOFF_COEFFICIENT, compute_flow_accumulation,
     compute_flow_directions, hex_area_m2,
 };
 pub use layer::HydrologyLayer;
+pub use soil::compute_soil_fertility;
