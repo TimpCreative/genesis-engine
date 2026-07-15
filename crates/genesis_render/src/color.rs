@@ -223,7 +223,34 @@ pub fn hex_color_for_mode(
                 regime_to_color(data.climate_regime[hex_idx])
             }
         }
+        RenderMode::Rivers => {
+            if elev < sea_level {
+                OCEAN_BASELINE_COLOR
+            } else {
+                flow_volume_to_color(data.flow_volume[hex_idx])
+            }
+        }
     }
+}
+
+/// Land fill by accumulated discharge: pale ground through deepening blue as
+/// log10(flow m³/year) rises. Major rivers (Mississippi-scale, ~1e11 m³/yr)
+/// read as saturated blue channels.
+pub fn flow_volume_to_color(flow_m3_per_year: f32) -> Color {
+    let ground = (0.82, 0.78, 0.68);
+    if flow_m3_per_year <= 0.0 {
+        return Color::srgb(ground.0, ground.1, ground.2);
+    }
+    // Typical single-hex runoff is ~1e9–1e10 m³/yr at level 7; treat volumes a
+    // decade above local runoff as river-bearing and saturate two decades up.
+    let log = flow_m3_per_year.max(1.0).log10();
+    let t = ((log - 10.0) / 2.0).clamp(0.0, 1.0);
+    let river = (0.05, 0.25, 0.75);
+    Color::srgb(
+        ground.0 + (river.0 - ground.0) * t,
+        ground.1 + (river.1 - ground.1) * t,
+        ground.2 + (river.2 - ground.2) * t,
+    )
 }
 
 /// Distinct fill per Köppen-like regime (Doc 07 §10), loosely following the

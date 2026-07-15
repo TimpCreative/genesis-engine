@@ -1,13 +1,13 @@
-pub fn hello() -> &'static str {
-    "genesis_hydrology"
-}
+//! Hydrology layer for Genesis Engine (Doc 08 scope, Phase 2/3).
+//!
+//! Surface water flow derived from terrain and precipitation: flow directions,
+//! accumulated discharge (rivers), and endorheic sinks (future lakes).
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+pub mod flow;
+pub mod layer;
 
-    #[test]
-    fn hello_returns_crate_name() {
-        assert_eq!(hello(), "genesis_hydrology");
-    }
-}
+pub use flow::{
+    DEFAULT_PRECIPITATION_MM, RUNOFF_COEFFICIENT, compute_flow_accumulation,
+    compute_flow_directions, hex_area_m2,
+};
+pub use layer::HydrologyLayer;

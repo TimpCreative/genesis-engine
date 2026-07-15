@@ -6,13 +6,16 @@ use genesis_core::lifecycle::{
     GenerationError, GenerationProgress, advance_with_coordinator_observed,
 };
 use genesis_core::time::{TickCoordinator, WorldYear};
+use genesis_hydrology::HydrologyLayer;
 use genesis_tectonics::{
     TectonicsLayer, TectonicsState, flush_events_to_branch as flush_tectonic_events,
 };
 
-/// Advances simulation to `target_year` with tectonics and climate registered on the coordinator.
+/// Advances simulation to `target_year` with tectonics, climate, and hydrology
+/// registered on the coordinator.
 ///
-/// Tectonics registers first; climate second (Doc 07 §13) so climate sees updated terrain each tick.
+/// Tectonics registers first; climate second (Doc 07 §13) so climate sees
+/// updated terrain each tick; hydrology third so flow reflects both.
 pub fn generate_full_history(
     world: &mut World,
     tectonics: &mut TectonicsState,
@@ -43,6 +46,7 @@ pub fn generate_full_history(
     let mut coordinator = TickCoordinator::new();
     coordinator.add_layer(Box::new(tectonics_layer));
     coordinator.add_layer(Box::new(climate_layer));
+    coordinator.add_layer(Box::new(HydrologyLayer));
 
     advance_with_coordinator_observed(world, &mut coordinator, target_year, |year| {
         progress(GenerationProgress {
