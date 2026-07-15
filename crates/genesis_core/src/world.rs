@@ -9,6 +9,7 @@ use crate::rng::WorldRng;
 /// Bundles the data layer, the branch tree, and the deterministic RNG.
 /// This is the unit that `create_world`, `generate_full_history`,
 /// `save_world`, and `load_world` operate on.
+#[derive(Clone)]
 pub struct World {
     pub data: WorldData,
     pub branch_tree: BranchTree,

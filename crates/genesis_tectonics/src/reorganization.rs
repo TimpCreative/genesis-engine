@@ -62,7 +62,18 @@ pub fn maybe_reorganize(
     let result = if action_roll < 0.4 {
         apply_split(data, &mut state.registry, tick_year, &mut action_rng)
     } else if action_roll < 0.8 {
-        apply_motion_change(data, &mut state.registry, tick_year, &mut action_rng)
+        let TectonicsState {
+            registry,
+            base_motion_rates,
+            ..
+        } = &mut *state;
+        apply_motion_change(
+            data,
+            registry,
+            base_motion_rates,
+            tick_year,
+            &mut action_rng,
+        )
     } else {
         apply_merge(data, &mut state.registry, tick_year, &mut action_rng)
     };
@@ -76,7 +87,19 @@ pub fn maybe_reorganize(
         _ => None,
     };
 
-    repartition_hexes(data, &mut state.registry);
+    // A reorganization assigns fresh motion: reset the rift-recovery base so
+    // recovery targets the NEW rate, not a pre-reorg one.
+    for id in &affected_plates {
+        if let Some(plate) = state.registry.get(*id) {
+            state
+                .base_motion_rates
+                .insert(*id, plate.motion_rate_rad_per_year);
+        } else {
+            state.base_motion_rates.remove(id);
+        }
+    }
+
+    let _ = repartition_hexes(data, &mut state.registry);
 
     if let Some((parent, child)) = split_pair {
         apply_split_boundary_subsidence(data, &mut state.registry, parent, child);
@@ -203,6 +226,7 @@ fn apply_split(
 fn apply_motion_change(
     data: &WorldData,
     registry: &mut PlateRegistry,
+    base_rates: &BTreeMap<PlateId, f64>,
     tick_year: WorldYear,
     rng: &mut rand::rngs::SmallRng,
 ) -> Option<(PlateReorgAction, Vec<PlateId>)> {
@@ -212,8 +236,26 @@ fn apply_motion_change(
     if plate_ids.is_empty() {
         return None;
     }
-    let idx = rng.gen_range(0..plate_ids.len());
-    let plate_id = plate_ids[idx];
+    // Prefer stalled plates (rate far below their unstressed base): stagnant
+    // sutured continents get redirected sooner, feeding the Wilson cycle.
+    let stalled: Vec<PlateId> = plate_ids
+        .iter()
+        .copied()
+        .filter(|id| {
+            registry.get(*id).is_some_and(|p| {
+                base_rates
+                    .get(id)
+                    .is_some_and(|&base| p.motion_rate_rad_per_year < base * 0.5)
+            })
+        })
+        .collect();
+    let pool = if stalled.is_empty() {
+        &plate_ids
+    } else {
+        &stalled
+    };
+    let idx = rng.gen_range(0..pool.len());
+    let plate_id = pool[idx];
 
     let plate_type = registry.get(plate_id)?.plate_type;
     let centroid = plate_centroid(&data.grid, plate_id, data);

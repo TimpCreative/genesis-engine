@@ -72,7 +72,7 @@ impl Default for WorldParameters {
                     max_ephemeral_island_height_m: 100.0,
                     max_ephemeral_island_relief_m: 250.0,
                     max_artifact_lake_hexes: 20,
-                    min_geologic_lake_depth_m: 200.0,
+                    min_geologic_lake_depth_m: 400.0,
                 },
                 climate_initial: ClimateInitialParameters {
                     initial_mean_temperature_c: 15.0,

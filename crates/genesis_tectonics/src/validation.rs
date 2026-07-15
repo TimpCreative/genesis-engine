@@ -85,7 +85,10 @@ pub const EVENT_COUNT_NOTABLE_MAX_DOC: usize = 3000;
 
 /// Upper bound for [`VALIDATION_TARGET_YEAR_FULL`] at seed 42 (implementation emits
 /// more Notable events per tick than §6.4 table; calibrated empirically).
-pub const EVENT_COUNT_NOTABLE_MAX_AT_FULL_YEAR: usize = 15_000;
+// Raised 15k → 17k when Wilson-cycle rift recovery (P1-19) kept sutured
+// plates moving: persistent activity emits ~0.1% more Notable events. Loose
+// calibration bound per §11 note, not a physical limit.
+pub const EVENT_COUNT_NOTABLE_MAX_AT_FULL_YEAR: usize = 17_000;
 
 /// Minimum distinct mountain regions (§11 #3).
 pub const MIN_MOUNTAIN_REGIONS: usize = 3;

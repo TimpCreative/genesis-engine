@@ -4,6 +4,7 @@ use bevy::prelude::*;
 
 use crate::render_mode::CurrentRenderMode;
 use crate::resources::{CameraState, ColorsDirty, HexEntityCache, HexMeshIndex, WorldDirty};
+use crate::rivers::{RiverOverlay, update_river_overlay};
 use crate::systems::{
     cycle_render_mode_on_keypress, handle_camera_input, render_world_if_dirty, setup_camera,
     sync_camera, update_hex_colors, update_window_title,
@@ -19,6 +20,7 @@ impl Plugin for GenesisRenderPlugin {
             .init_resource::<ColorsDirty>()
             .init_resource::<HexEntityCache>()
             .init_resource::<HexMeshIndex>()
+            .init_resource::<RiverOverlay>()
             .init_resource::<CurrentRenderMode>()
             .add_systems(Startup, setup_camera)
             .add_systems(
@@ -29,6 +31,8 @@ impl Plugin for GenesisRenderPlugin {
                     update_window_title,
                     sync_camera,
                     render_world_if_dirty,
+                    // Overlay reads ColorsDirty before update_hex_colors clears it.
+                    update_river_overlay,
                     update_hex_colors,
                 )
                     .chain(),

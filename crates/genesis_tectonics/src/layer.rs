@@ -120,9 +120,19 @@ impl SimulationLayer for TectonicsLayer {
                 }
             });
 
-            timed_tick_step("partition", tick_year, || {
-                repartition_hexes(world, &mut state.registry);
+            let colliding = timed_tick_step_value("partition", tick_year, || {
+                repartition_hexes(world, &mut state.registry)
             });
+            // Wilson cycle: plates recover toward their base rate once out of
+            // active continental collision, so continents never stall forever.
+            {
+                let TectonicsState {
+                    registry,
+                    base_motion_rates,
+                    ..
+                } = &mut *state;
+                crate::partition::recover_motion_rates(registry, base_motion_rates, &colliding);
+            }
 
             timed_tick_step("rebuild_world", tick_year, || {
                 rebuild_world_from_plate_surfaces(world, &state.registry);

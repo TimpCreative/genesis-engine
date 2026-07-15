@@ -23,6 +23,7 @@ pub use crate::time::WorldYear;
 ///
 /// Engine-agnostic plain struct (not a Bevy resource). `genesis_app` wraps this as a
 /// Bevy resource when the application binary is assembled.
+#[derive(Clone)]
 pub struct WorldData {
     // ---- Infrastructure ----
     pub grid: HexGrid,

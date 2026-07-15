@@ -96,13 +96,44 @@ fn correlated_elevation_noise(data: &WorldData, rng: &WorldRng) -> Vec<f32> {
     let coarse = normalized(smoothed(&coarse_white, data, COARSE_SMOOTHING_PASSES));
     let medium = normalized(smoothed(&fine_white, data, MEDIUM_SMOOTHING_PASSES));
 
-    (0..n)
+    let combined: Vec<f32> = (0..n)
         .map(|i| {
             coarse[i] * COARSE_NOISE_AMPLITUDE_M
                 + medium[i] * MEDIUM_NOISE_AMPLITUDE_M
                 + fine_white[i] * FINE_NOISE_AMPLITUDE_M
         })
-        .collect()
+        .collect();
+    fill_single_hex_pits(&combined, data)
+}
+
+/// Elevation drop below the lowest neighbor above which a lone hex counts as
+/// a noise pit rather than terrain (m).
+const PIT_DEPTH_THRESHOLD_M: f32 = 150.0;
+
+/// Residual depth left when a pit is raised to blend with its surroundings (m).
+const PIT_FILL_MARGIN_M: f32 = 50.0;
+
+/// Raises single-hex noise pits to just below their lowest neighbor. Lone
+/// deep dips render as near-black one-hex "holes" inside continents; real
+/// basins are multi-hex and survive this pass untouched.
+fn fill_single_hex_pits(noise: &[f32], data: &WorldData) -> Vec<f32> {
+    let grid = &data.grid;
+    let n = noise.len();
+    let mut out = noise.to_vec();
+    for (i, value) in out.iter_mut().enumerate() {
+        let hex = HexId(i as u32);
+        let mut min_neighbor = f32::MAX;
+        for neighbor in grid.neighbors(hex) {
+            let j = neighbor.0 as usize;
+            if j < n {
+                min_neighbor = min_neighbor.min(noise[j]);
+            }
+        }
+        if min_neighbor < f32::MAX && *value < min_neighbor - PIT_DEPTH_THRESHOLD_M {
+            *value = min_neighbor - PIT_FILL_MARGIN_M;
+        }
+    }
+    out
 }
 
 /// Repeated neighbor averaging: each pass replaces every value with the mean

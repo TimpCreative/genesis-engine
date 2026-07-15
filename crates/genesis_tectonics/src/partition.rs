@@ -93,7 +93,14 @@ pub const COLLISION_CONTACT_HEXES: usize = 3;
 /// within a few ticks of suturing, as on Earth (India–Asia slowdown).
 pub const COLLISION_MOTION_DAMPING: f64 = 0.5;
 
-/// Recomputes hex ownership from plate footprints.
+/// Fraction of the gap back to a plate's base motion rate recovered per tick
+/// while it is NOT in an active continental collision (Wilson cycle rifting
+/// pressure): sutured plates stall, then creep back to speed over ~25M years
+/// once convergence ends, so continents never stay parked forever.
+pub const MOTION_RECOVERY_PER_TICK: f64 = 0.02;
+
+/// Recomputes hex ownership from plate footprints. Returns the plates that
+/// were in an active continental collision this tick (for rift recovery).
 ///
 /// 1. Projects every plate's birth features to current world hexes (claims).
 /// 2. Resolves contested hexes by [`claim_beats`]; oceanic crust that loses a
@@ -102,7 +109,10 @@ pub const COLLISION_MOTION_DAMPING: f64 = 0.5;
 ///    new oceanic crust on the adopting plate: divergent gaps (touching ≥2
 ///    plates or no claimed neighbor) get young ridge crust, single-plate
 ///    quantization gaps are patched with the neighbors' mean elevation.
-pub fn repartition_hexes(data: &mut WorldData, registry: &mut PlateRegistry) {
+pub fn repartition_hexes(
+    data: &mut WorldData,
+    registry: &mut PlateRegistry,
+) -> std::collections::BTreeSet<PlateId> {
     let n = data.plate_id.len();
     let tick_year = data.current_year.value();
     let radius_km = data.parameters.core.planet.radius_km;
@@ -214,11 +224,13 @@ pub fn repartition_hexes(data: &mut WorldData, registry: &mut PlateRegistry) {
 
     // Continental collision resistance: converging continental pairs suture and
     // stall instead of sailing through each other.
+    let mut colliding: std::collections::BTreeSet<PlateId> = std::collections::BTreeSet::new();
     for ((a, b), count) in &cc_collisions {
         if *count < COLLISION_CONTACT_HEXES {
             continue;
         }
         for id in [a, b] {
+            colliding.insert(*id);
             if let Some(plate) = registry.plates_mut().get_mut(id) {
                 plate.motion_rate_rad_per_year *= COLLISION_MOTION_DAMPING;
             }
@@ -237,7 +249,7 @@ pub fn repartition_hexes(data: &mut WorldData, registry: &mut PlateRegistry) {
 
     // No claims at all (empty registry): leave ownership untouched.
     if queue.is_empty() {
-        return;
+        return colliding;
     }
 
     let mut adopted: Vec<usize> = Vec::new();
@@ -321,6 +333,32 @@ pub fn repartition_hexes(data: &mut WorldData, registry: &mut PlateRegistry) {
     }
 
     data.plate_id.copy_from_slice(&owner);
+    colliding
+}
+
+/// Rift recovery: plates not in an active continental collision drift back
+/// toward their unstressed base rate (Wilson cycle — sutures eventually rift
+/// and continents resume moving). Bases initialize lazily to the first
+/// observed rate and are reset by reorganizations.
+pub fn recover_motion_rates(
+    registry: &mut PlateRegistry,
+    base_rates: &mut BTreeMap<PlateId, f64>,
+    colliding: &std::collections::BTreeSet<PlateId>,
+) {
+    let plate_ids = registry.plate_ids();
+    for id in plate_ids {
+        let Some(plate) = registry.plates_mut().get_mut(&id) else {
+            continue;
+        };
+        let base = *base_rates
+            .entry(id)
+            .or_insert(plate.motion_rate_rad_per_year);
+        if colliding.contains(&id) || plate.motion_rate_rad_per_year >= base {
+            continue;
+        }
+        plate.motion_rate_rad_per_year +=
+            (base - plate.motion_rate_rad_per_year) * MOTION_RECOVERY_PER_TICK;
+    }
 }
 
 #[cfg(test)]
@@ -522,6 +560,50 @@ mod tests {
                 .get(contested)
                 .is_some(),
             "winning continental crust remains"
+        );
+    }
+
+    #[test]
+    fn stalled_plates_recover_toward_base_rate_when_not_colliding() {
+        let n = 100;
+        let mut registry = PlateRegistry::new();
+        let mut plate = plate_at(0, 0, [0.0, 0.0, 1.0], 0.0, PlateType::Continental);
+        plate.surface = PlateSurface::new(n);
+        registry.insert(plate);
+
+        let base_rate = 8e-9_f64;
+        let mut base_rates = BTreeMap::new();
+        base_rates.insert(PlateId(0), base_rate);
+        // Collision damping stalled the plate to 1% of its base.
+        registry
+            .plates_mut()
+            .get_mut(&PlateId(0))
+            .unwrap()
+            .motion_rate_rad_per_year = base_rate * 0.01;
+
+        let no_collisions = std::collections::BTreeSet::new();
+        for _ in 0..100 {
+            recover_motion_rates(&mut registry, &mut base_rates, &no_collisions);
+        }
+        let recovered = registry.get(PlateId(0)).unwrap().motion_rate_rad_per_year;
+        assert!(
+            recovered > base_rate * 0.5,
+            "stalled plate should recover most of its base rate over 100 ticks, got {recovered}"
+        );
+
+        // While colliding, no recovery happens.
+        let mut colliding = std::collections::BTreeSet::new();
+        colliding.insert(PlateId(0));
+        registry
+            .plates_mut()
+            .get_mut(&PlateId(0))
+            .unwrap()
+            .motion_rate_rad_per_year = base_rate * 0.01;
+        recover_motion_rates(&mut registry, &mut base_rates, &colliding);
+        assert_eq!(
+            registry.get(PlateId(0)).unwrap().motion_rate_rad_per_year,
+            base_rate * 0.01,
+            "colliding plates must not recover"
         );
     }
 

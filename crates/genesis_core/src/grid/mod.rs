@@ -27,6 +27,7 @@ use isea3h::{Isea3hCoord, Vec3};
 ///   lexicographic within each variant).
 /// - [`HexGrid::is_pentagon`] is `hex.0 < 12`.
 /// - Neighbor slices have length 5 for pentagons and 6 for hexes.
+#[derive(Clone)]
 pub struct HexGrid {
     subdivision_level: u8,
     planet_radius_km: f64,

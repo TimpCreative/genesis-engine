@@ -93,25 +93,42 @@ fn drive_smoke(
             else {
                 return;
             };
-            // Screenshots capture asynchronously a frame or two later, so the
-            // shot and the scrub must happen in separate steps or the capture
-            // records the post-scrub state.
+            // Screenshots capture asynchronously a frame or two later, so each
+            // shot and the next mutation happen in separate steps.
             match driver.scrub_steps_done {
+                // While (probably) still buffering: capture the partial bar.
                 0 => {
-                    snapshot(&mut commands, &mut driver, "4_viewing_final_year");
+                    snapshot(&mut commands, &mut driver, "4_viewing_buffering");
                     driver.scrub_steps_done = 1;
                 }
+                // Wait for generation to finish, then jump to the final year.
                 1 => {
-                    timeline.current = 0;
-                    if let Some(frame) = timeline.frames.first() {
+                    if !timeline.complete {
+                        return;
+                    }
+                    timeline.playing = false;
+                    timeline.current = timeline.frames.len().saturating_sub(1);
+                    if let Some(frame) = timeline.frames.get(timeline.current) {
                         frame.apply(&mut world_res.0.data);
                         colors_dirty.0 = true;
                     }
                     driver.scrub_steps_done = 2;
                 }
                 2 => {
-                    snapshot(&mut commands, &mut driver, "5_viewing_scrubbed_to_start");
+                    snapshot(&mut commands, &mut driver, "5_viewing_final_year");
                     driver.scrub_steps_done = 3;
+                }
+                3 => {
+                    timeline.current = 0;
+                    if let Some(frame) = timeline.frames.first() {
+                        frame.apply(&mut world_res.0.data);
+                        colors_dirty.0 = true;
+                    }
+                    driver.scrub_steps_done = 4;
+                }
+                4 => {
+                    snapshot(&mut commands, &mut driver, "6_viewing_scrubbed_to_start");
+                    driver.scrub_steps_done = 5;
                 }
                 _ => {
                     exit.write(AppExit::Success);

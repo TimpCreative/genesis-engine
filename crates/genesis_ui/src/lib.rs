@@ -12,6 +12,6 @@ pub mod worldgen;
 pub use smoke::SmokePlugin;
 pub use ui::{AppScreen, GenesisUiPlugin, WorldTimeline};
 pub use worldgen::{
-    HistoryFrame, MAX_HISTORY_FRAMES, WorldGenConfig, generate_full_history,
-    generate_world_with_history, history_stride_years,
+    GenEvent, HistoryFrame, WorldGenConfig, generate_full_history, generate_world_streaming,
+    generate_world_with_history, history_stride_years, max_history_frames,
 };

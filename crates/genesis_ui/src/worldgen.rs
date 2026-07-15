@@ -16,9 +16,16 @@ use genesis_tectonics::{
     TectonicsLayer, TectonicsState, flush_events_to_branch as flush_tectonic_events,
 };
 
-/// Maximum buffered history frames per generation. Bounds viewer memory at
-/// ~32 MB regardless of target year (Doc 05 snapshot-interval decision).
-pub const MAX_HISTORY_FRAMES: usize = 64;
+/// Memory budget for buffered history frames (Doc 05 §A).
+pub const FRAME_MEMORY_BUDGET_BYTES: usize = 256 << 20;
+
+/// Approximate bytes per cell in a [`HistoryFrame`]: 4 × f32 fields + regime.
+const FRAME_BYTES_PER_CELL: usize = 17;
+
+/// Frame cap for a grid size, from the memory budget.
+pub fn max_history_frames(cell_count: u32) -> usize {
+    (FRAME_MEMORY_BUDGET_BYTES / (cell_count as usize * FRAME_BYTES_PER_CELL).max(1)).clamp(16, 256)
+}
 
 /// User-adjustable world configuration (the "recipe" surface of the setup menu).
 #[derive(Clone, Debug)]
@@ -94,9 +101,9 @@ impl HistoryFrame {
     }
 }
 
-/// Snapshot stride for a run: capped frame count, at least one Geological tick.
-pub fn history_stride_years(target_year: i64) -> i64 {
-    (target_year / MAX_HISTORY_FRAMES as i64).max(500_000)
+/// Snapshot stride for a run: budgeted frame count, at least one Geological tick.
+pub fn history_stride_years(target_year: i64, cell_count: u32) -> i64 {
+    (target_year / max_history_frames(cell_count) as i64).max(500_000)
 }
 
 /// Advances simulation to `target_year` with tectonics, climate, and hydrology
@@ -143,24 +150,52 @@ pub fn generate_full_history(
     Ok(())
 }
 
-/// Runs a full generation from `config`, buffering history frames at the
-/// stride from [`history_stride_years`]. Returns the finished world and its
-/// timeline (first frame at the first tick, last frame at `target_year`).
-pub fn generate_world_with_history(
-    config: &WorldGenConfig,
-    mut on_progress: impl FnMut(i64, i64),
-) -> Result<(World, Vec<HistoryFrame>), String> {
+/// Events streamed from the generation thread to the UI (Doc 05 §A).
+pub enum GenEvent {
+    /// Coarse phase before per-tick progress exists (grid build, formation).
+    Stage(&'static str),
+    /// Per-tick progress (throttled).
+    Progress { year: i64, target: i64 },
+    /// Display copy of the freshly created world (year 0); the generation
+    /// thread keeps the original and continues simulating.
+    InitialWorld(Box<World>),
+    /// A buffered history frame, in strictly increasing year order.
+    Frame(Box<HistoryFrame>),
+    /// Generation finished; the last emitted frame is the final state.
+    Done { final_year: i64 },
+    /// Generation failed.
+    Failed(String),
+}
+
+/// Runs a full generation from `config`, streaming [`GenEvent`]s as the world
+/// is built: stage markers, the initial display world, history frames at the
+/// stride from [`history_stride_years`], throttled progress, and completion.
+/// The viewer can open on the first frame and buffer the rest like a video.
+pub fn generate_world_streaming(config: &WorldGenConfig, mut emit: impl FnMut(GenEvent)) {
     let params = config.to_parameters();
-    let mut world = genesis_core::create_world(params).map_err(|e| format!("{e:?}"))?;
+
+    emit(GenEvent::Stage("building hex grid..."));
+    let mut world = match genesis_core::create_world(params) {
+        Ok(world) => world,
+        Err(e) => {
+            emit(GenEvent::Failed(format!("{e:?}")));
+            return;
+        }
+    };
+    emit(GenEvent::InitialWorld(Box::new(world.clone())));
+    emit(GenEvent::Stage("running planetary formation..."));
+
     let mut tectonics = TectonicsState::new();
     let mut climate = ClimateState::new();
 
     let target = config.target_year.max(1);
-    let stride = history_stride_years(target);
-    let mut frames: Vec<HistoryFrame> = Vec::new();
+    let stride = history_stride_years(target, world.data.cell_count());
     let mut next_capture_year = 0_i64;
+    let mut last_frame_year = -1_i64;
+    let mut last_progress_year = -1_i64;
+    let progress_step = (target / 200).max(1);
 
-    generate_full_history(
+    let result = generate_full_history(
         &mut world,
         &mut tectonics,
         &mut climate,
@@ -168,19 +203,57 @@ pub fn generate_world_with_history(
         |data| {
             let year = data.current_year.value();
             if year >= next_capture_year {
-                frames.push(HistoryFrame::capture(data));
+                emit(GenEvent::Frame(Box::new(HistoryFrame::capture(data))));
+                last_frame_year = year;
                 next_capture_year = year + stride;
             }
-            on_progress(year, target);
+            if year - last_progress_year >= progress_step {
+                last_progress_year = year;
+                emit(GenEvent::Progress { year, target });
+            }
         },
-    )
-    .map_err(|e| format!("{e:?}"))?;
+    );
 
-    match frames.last() {
-        Some(last) if last.year == world.data.current_year.value() => {}
-        _ => frames.push(HistoryFrame::capture(&world.data)),
+    match result {
+        Ok(()) => {
+            let final_year = world.data.current_year.value();
+            if last_frame_year != final_year {
+                emit(GenEvent::Frame(Box::new(HistoryFrame::capture(
+                    &world.data,
+                ))));
+            }
+            emit(GenEvent::Done { final_year });
+        }
+        Err(e) => emit(GenEvent::Failed(format!("{e:?}"))),
     }
+}
 
+/// Blocking wrapper collecting the stream into `(final world equivalent, frames)`.
+/// Kept for the headless path and tests; the final display state equals the
+/// last frame applied onto the initial world.
+pub fn generate_world_with_history(
+    config: &WorldGenConfig,
+    mut on_progress: impl FnMut(i64, i64),
+) -> Result<(World, Vec<HistoryFrame>), String> {
+    let mut initial: Option<Box<World>> = None;
+    let mut frames: Vec<HistoryFrame> = Vec::new();
+    let mut failure: Option<String> = None;
+
+    generate_world_streaming(config, |event| match event {
+        GenEvent::InitialWorld(world) => initial = Some(world),
+        GenEvent::Frame(frame) => frames.push(*frame),
+        GenEvent::Progress { year, target } => on_progress(year, target),
+        GenEvent::Failed(e) => failure = Some(e),
+        GenEvent::Stage(_) | GenEvent::Done { .. } => {}
+    });
+
+    if let Some(e) = failure {
+        return Err(e);
+    }
+    let mut world = *initial.ok_or_else(|| "generation produced no world".to_string())?;
+    if let Some(last) = frames.last() {
+        last.apply(&mut world.data);
+    }
     Ok((world, frames))
 }
 
@@ -202,7 +275,8 @@ mod tests {
 
         assert!(reports > 0, "progress must fire");
         assert!(!frames.is_empty());
-        assert!(frames.len() <= MAX_HISTORY_FRAMES + 2, "{}", frames.len());
+        let cap = max_history_frames(world.data.cell_count());
+        assert!(frames.len() <= cap + 2, "{} > {cap}", frames.len());
         assert!(
             frames.windows(2).all(|w| w[0].year < w[1].year),
             "frames strictly ordered"

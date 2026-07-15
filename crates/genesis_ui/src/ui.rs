@@ -10,9 +10,11 @@ use std::sync::Mutex;
 use std::sync::mpsc::{Receiver, channel};
 
 use bevy::prelude::*;
-use genesis_render::{ColorsDirty, CurrentRenderMode, HexEntityCache, WorldDirty, WorldResource};
+use genesis_render::{
+    ColorsDirty, CurrentRenderMode, HexEntityCache, HexMeshIndex, WorldDirty, WorldResource,
+};
 
-use crate::worldgen::{HistoryFrame, WorldGenConfig, generate_world_with_history};
+use crate::worldgen::{GenEvent, HistoryFrame, WorldGenConfig, generate_world_streaming};
 
 /// Top-level application screen.
 #[derive(States, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -70,29 +72,47 @@ pub struct HudText;
 #[derive(Component)]
 pub struct TimelineBarFill;
 
+/// Marks the timeline buffered-region fill node (dim, behind the position).
+#[derive(Component)]
+pub struct TimelineBufferedFill;
+
 /// Active world configuration being edited on the setup screen.
 #[derive(Resource, Default)]
 pub struct ActiveConfig(pub WorldGenConfig);
 
-/// Messages from the generation thread.
-pub enum GenMsg {
-    Progress { year: i64, target: i64 },
-    Done(Box<(genesis_core::World, Vec<HistoryFrame>)>),
-    Failed(String),
-}
-
-/// Channel receiver for the in-flight generation.
+/// Channel receiver for the in-flight generation's [`GenEvent`] stream.
 #[derive(Resource)]
-pub struct GenerationTask(pub Mutex<Receiver<GenMsg>>);
+pub struct GenerationTask(pub Mutex<Receiver<GenEvent>>);
 
-/// Buffered history for timeline scrubbing.
+/// Buffered history for timeline scrubbing. Grows while generation streams
+/// (YouTube-style buffering); `complete` flips when the thread finishes.
 #[derive(Resource)]
 pub struct WorldTimeline {
     pub frames: Vec<HistoryFrame>,
     pub current: usize,
     pub playing: bool,
     pub play_timer: Timer,
+    pub target_year: i64,
+    pub complete: bool,
+    /// Set when `current` changed before the display world existed; the next
+    /// poll applies the frame once the inserted `WorldResource` is visible.
+    pub needs_apply: bool,
 }
+
+/// Key-repeat state for hold-to-scrub.
+#[derive(Resource)]
+pub struct ScrubRepeat(pub Timer);
+
+impl Default for ScrubRepeat {
+    fn default() -> Self {
+        Self(Timer::from_seconds(SCRUB_INITIAL_DELAY_S, TimerMode::Once))
+    }
+}
+
+/// Delay before hold-to-scrub starts repeating (s).
+pub const SCRUB_INITIAL_DELAY_S: f32 = 0.35;
+/// Repeat interval while an arrow key is held (s).
+pub const SCRUB_REPEAT_INTERVAL_S: f32 = 0.06;
 
 /// Target-year presets cycled by the setup screen.
 pub const TARGET_YEAR_PRESETS: [i64; 7] = [
@@ -111,6 +131,7 @@ impl Plugin for GenesisUiPlugin {
     fn build(&self, app: &mut App) {
         app.init_state::<AppScreen>()
             .init_resource::<ActiveConfig>()
+            .init_resource::<ScrubRepeat>()
             .add_systems(OnEnter(AppScreen::MainMenu), spawn_main_menu)
             .add_systems(OnEnter(AppScreen::Setup), spawn_setup_screen)
             .add_systems(OnEnter(AppScreen::Generating), spawn_generating_screen)
@@ -125,7 +146,7 @@ impl Plugin for GenesisUiPlugin {
                     button_hover_feedback,
                     handle_actions,
                     refresh_param_values.run_if(in_state(AppScreen::Setup)),
-                    poll_generation.run_if(in_state(AppScreen::Generating)),
+                    poll_generation.run_if(resource_exists::<GenerationTask>),
                     (timeline_keyboard, timeline_playback, refresh_hud)
                         .run_if(in_state(AppScreen::Viewing)),
                     escape_navigation,
@@ -153,13 +174,21 @@ fn despawn_screen(mut commands: Commands, roots: Query<Entity, With<ScreenRoot>>
     }
 }
 
-/// Removes the world and its hex entities when leaving the viewer.
-fn teardown_world(mut commands: Commands, mut cache: ResMut<HexEntityCache>) {
+/// Removes the world, its chunk entities, and any in-flight generation when
+/// leaving the viewer. Dropping the receiver makes the orphaned generation
+/// thread's sends fail silently; it drains its tick loop and exits.
+fn teardown_world(
+    mut commands: Commands,
+    mut cache: ResMut<HexEntityCache>,
+    mut index: ResMut<HexMeshIndex>,
+) {
     for entity in cache.entities.drain(..) {
         commands.entity(entity).despawn();
     }
+    index.clear();
     commands.remove_resource::<WorldResource>();
     commands.remove_resource::<WorldTimeline>();
+    commands.remove_resource::<GenerationTask>();
 }
 
 fn full_screen_root(screen: AppScreen) -> (ScreenRoot, Node, BackgroundColor) {
@@ -384,7 +413,7 @@ fn spawn_generating_screen(mut commands: Commands) {
     commands
         .spawn(full_screen_root(AppScreen::Generating))
         .with_children(|parent| {
-            parent.spawn(label("Generating world…", 30.0));
+            parent.spawn(label("Generating world...", 30.0));
             parent.spawn((
                 label("simulating year 0", 18.0).0,
                 label("", 18.0).1,
@@ -417,19 +446,11 @@ fn spawn_generating_screen(mut commands: Commands) {
 pub fn start_generation(commands: &mut Commands, config: WorldGenConfig) {
     let (tx, rx) = channel();
     std::thread::spawn(move || {
-        let tx_progress = tx.clone();
-        let mut last_report = -1_i64;
-        let result = generate_world_with_history(&config, |year, target| {
-            // Throttle channel traffic: report at most once per 1/200 of the run.
-            if year - last_report >= (target / 200).max(1) {
-                last_report = year;
-                let _ = tx_progress.send(GenMsg::Progress { year, target });
-            }
+        // Progress throttling and frame striding happen inside the generator;
+        // worst-case channel backlog is the frame memory budget (Doc 05 §A).
+        generate_world_streaming(&config, |event| {
+            let _ = tx.send(event);
         });
-        let _ = match result {
-            Ok(done) => tx.send(GenMsg::Done(Box::new(done))),
-            Err(e) => tx.send(GenMsg::Failed(e)),
-        };
     });
     commands.insert_resource(GenerationTask(Mutex::new(rx)));
 }
@@ -438,8 +459,13 @@ pub fn start_generation(commands: &mut Commands, config: WorldGenConfig) {
 fn poll_generation(
     mut commands: Commands,
     task: Option<Res<GenerationTask>>,
+    screen: Res<State<AppScreen>>,
     mut next_screen: ResMut<NextState<AppScreen>>,
     mut world_dirty: ResMut<WorldDirty>,
+    mut colors_dirty: ResMut<ColorsDirty>,
+    config: Res<ActiveConfig>,
+    timeline: Option<ResMut<WorldTimeline>>,
+    world_res: Option<ResMut<WorldResource>>,
     mut bar: Query<&mut Node, With<ProgressBarFill>>,
     mut progress_text: Query<&mut Text, With<ProgressText>>,
 ) {
@@ -449,10 +475,28 @@ fn poll_generation(
     let Ok(rx) = task.0.lock() else {
         return;
     };
+    let mut timeline = timeline;
+    let mut world_res = world_res;
 
-    for msg in rx.try_iter() {
-        match msg {
-            GenMsg::Progress { year, target } => {
+    // Deferred apply: a frame landed before the freshly inserted WorldResource
+    // was visible to this system (commands apply between frames).
+    if let (Some(timeline), Some(world_res)) = (timeline.as_mut(), world_res.as_mut())
+        && timeline.needs_apply
+        && let Some(frame) = timeline.frames.get(timeline.current)
+    {
+        frame.apply(&mut world_res.0.data);
+        colors_dirty.0 = true;
+        timeline.needs_apply = false;
+    }
+
+    for event in rx.try_iter() {
+        match event {
+            GenEvent::Stage(stage) => {
+                if let Ok(mut text) = progress_text.single_mut() {
+                    text.0 = stage.to_string();
+                }
+            }
+            GenEvent::Progress { year, target } => {
                 let fraction = (year as f64 / target.max(1) as f64).clamp(0.0, 1.0);
                 if let Ok(mut node) = bar.single_mut() {
                     node.width = Val::Percent((fraction * 100.0) as f32);
@@ -465,23 +509,56 @@ fn poll_generation(
                     );
                 }
             }
-            GenMsg::Done(done) => {
-                let (world, frames) = *done;
-                let last = frames.len().saturating_sub(1);
-                commands.insert_resource(WorldResource(world));
+            GenEvent::InitialWorld(world) => {
+                commands.insert_resource(WorldResource(*world));
+                world_res = None; // stale handle; re-fetched next frame
                 commands.insert_resource(WorldTimeline {
-                    frames,
-                    current: last,
-                    playing: false,
+                    frames: Vec::new(),
+                    current: 0,
+                    // Play from year 0 as history streams in (YouTube-style).
+                    playing: true,
                     play_timer: Timer::from_seconds(0.25, TimerMode::Repeating),
+                    target_year: config.0.target_year.max(1),
+                    complete: false,
+                    needs_apply: false,
                 });
+                timeline = None;
                 world_dirty.0 = true;
-                commands.remove_resource::<GenerationTask>();
-                next_screen.set(AppScreen::Viewing);
             }
-            GenMsg::Failed(err) => {
+            GenEvent::Frame(frame) => {
+                let Some(timeline) = timeline.as_mut() else {
+                    continue;
+                };
+                let first = timeline.frames.is_empty();
+                timeline.frames.push(*frame);
+                if first {
+                    if let Some(world_res) = world_res.as_mut()
+                        && let Some(frame) = timeline.frames.first()
+                    {
+                        frame.apply(&mut world_res.0.data);
+                        colors_dirty.0 = true;
+                    } else {
+                        timeline.needs_apply = true;
+                    }
+                    // The world is visible from its first buffered year on;
+                    // the rest of history streams in behind the viewer.
+                    if *screen.get() == AppScreen::Generating {
+                        next_screen.set(AppScreen::Viewing);
+                    }
+                }
+            }
+            GenEvent::Done { .. } => {
+                if let Some(timeline) = timeline.as_mut() {
+                    timeline.complete = true;
+                }
+                commands.remove_resource::<GenerationTask>();
+            }
+            GenEvent::Failed(err) => {
                 if let Ok(mut text) = progress_text.single_mut() {
-                    text.0 = format!("generation failed: {err} — Esc to return");
+                    text.0 = format!("generation failed: {err} - Esc to return");
+                }
+                if let Some(timeline) = timeline.as_mut() {
+                    timeline.complete = true;
                 }
                 commands.remove_resource::<GenerationTask>();
             }
@@ -551,9 +628,26 @@ fn spawn_viewing_hud(mut commands: Commands) {
                                 BackgroundColor(Color::srgb(0.15, 0.16, 0.20)),
                             ))
                             .with_children(|bar| {
+                                // Dim buffered region (grows as frames stream in)...
                                 bar.spawn((
                                     Node {
-                                        width: Val::Percent(100.0),
+                                        position_type: PositionType::Absolute,
+                                        left: Val::Px(0.0),
+                                        top: Val::Px(0.0),
+                                        width: Val::Percent(0.0),
+                                        height: Val::Percent(100.0),
+                                        ..default()
+                                    },
+                                    BackgroundColor(Color::srgb(0.24, 0.34, 0.48)),
+                                    TimelineBufferedFill,
+                                ));
+                                // ...under the bright playhead position.
+                                bar.spawn((
+                                    Node {
+                                        position_type: PositionType::Absolute,
+                                        left: Val::Px(0.0),
+                                        top: Val::Px(0.0),
+                                        width: Val::Percent(0.0),
                                         height: Val::Percent(100.0),
                                         ..default()
                                     },
@@ -583,6 +677,8 @@ fn apply_current_frame(
 
 fn timeline_keyboard(
     keys: Res<ButtonInput<KeyCode>>,
+    time: Res<Time>,
+    mut repeat: ResMut<ScrubRepeat>,
     timeline: Option<ResMut<WorldTimeline>>,
     world_res: Option<ResMut<WorldResource>>,
     mut colors_dirty: ResMut<ColorsDirty>,
@@ -590,19 +686,37 @@ fn timeline_keyboard(
     let (Some(mut timeline), Some(mut world_res)) = (timeline, world_res) else {
         return;
     };
-    let step: i64 = if keys.just_pressed(KeyCode::ArrowLeft) {
-        -1
-    } else if keys.just_pressed(KeyCode::ArrowRight) {
-        1
-    } else if keys.just_pressed(KeyCode::Space) {
+    if keys.just_pressed(KeyCode::Space) {
         timeline.playing = !timeline.playing;
-        0
+    }
+
+    let held: i64 = if keys.pressed(KeyCode::ArrowLeft) {
+        -1
+    } else if keys.pressed(KeyCode::ArrowRight) {
+        1
     } else {
+        repeat.0 = Timer::from_seconds(SCRUB_INITIAL_DELAY_S, TimerMode::Once);
         return;
     };
-    if step != 0 {
+
+    // Step immediately on press, then repeat while held after an initial delay.
+    let step_now =
+        if keys.just_pressed(KeyCode::ArrowLeft) || keys.just_pressed(KeyCode::ArrowRight) {
+            repeat.0 = Timer::from_seconds(SCRUB_INITIAL_DELAY_S, TimerMode::Once);
+            true
+        } else {
+            repeat.0.tick(time.delta());
+            if repeat.0.is_finished() {
+                repeat.0 = Timer::from_seconds(SCRUB_REPEAT_INTERVAL_S, TimerMode::Once);
+                true
+            } else {
+                false
+            }
+        };
+
+    if step_now {
         timeline.playing = false;
-        step_timeline(&mut timeline, step);
+        step_timeline(&mut timeline, held);
         apply_current_frame(&timeline, &mut world_res, &mut colors_dirty);
     }
 }
@@ -630,18 +744,26 @@ fn timeline_playback(
         return;
     }
     if timeline.current + 1 >= timeline.frames.len() {
-        timeline.playing = false;
+        // At the live edge: stall (stay playing) while frames still stream in,
+        // like a video buffering; only stop at the true end of history.
+        if timeline.complete {
+            timeline.playing = false;
+        }
         return;
     }
     timeline.current += 1;
     apply_current_frame(&timeline, &mut world_res, &mut colors_dirty);
 }
 
+#[allow(clippy::type_complexity)]
 fn refresh_hud(
     timeline: Option<Res<WorldTimeline>>,
     mode: Res<CurrentRenderMode>,
     mut hud: Query<&mut Text, With<HudText>>,
-    mut bar: Query<&mut Node, With<TimelineBarFill>>,
+    mut bars: ParamSet<(
+        Query<&mut Node, With<TimelineBarFill>>,
+        Query<&mut Node, With<TimelineBufferedFill>>,
+    )>,
 ) {
     let Some(timeline) = timeline else {
         return;
@@ -649,16 +771,32 @@ fn refresh_hud(
     let Some(frame) = timeline.frames.get(timeline.current) else {
         return;
     };
+    let target = timeline.target_year.max(1) as f32;
+    let buffered_year = timeline.frames.last().map(|f| f.year).unwrap_or(0);
+
     if let Ok(mut text) = hud.single_mut() {
+        let generating = if timeline.complete {
+            String::new()
+        } else {
+            format!(
+                "Generating... {} / {} buffered  |  ",
+                format_year(buffered_year),
+                format_year(timeline.target_year)
+            )
+        };
         text.0 = format!(
-            "Year {}  |  Mode: {} [M]  |  scrub with < > or arrow keys, Space plays, Esc for menu",
+            "{generating}Year {}  |  Mode: {} [M]  |  scrub/hold < >, Space plays, Esc for menu",
             format_year(frame.year),
             mode.0.label(),
         );
     }
-    if let Ok(mut node) = bar.single_mut() {
-        let last = timeline.frames.len().saturating_sub(1).max(1);
-        node.width = Val::Percent(timeline.current as f32 / last as f32 * 100.0);
+    // Both widths are year-based so the playhead sits correctly inside the
+    // buffered region even with uneven frame strides.
+    if let Ok(mut node) = bars.p0().single_mut() {
+        node.width = Val::Percent((frame.year as f32 / target * 100.0).clamp(0.0, 100.0));
+    }
+    if let Ok(mut node) = bars.p1().single_mut() {
+        node.width = Val::Percent((buffered_year as f32 / target * 100.0).clamp(0.0, 100.0));
     }
 }
 

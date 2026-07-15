@@ -56,19 +56,43 @@ frames**, not disk snapshots. Decision record:
 - A `HistoryFrame` captures only the RENDERABLE per-hex fields (`elevation_mean`,
   `temperature_mean`, `precipitation`, `climate_regime`, `flow_volume`) plus
   `sea_level_m` and the year — ~0.5 MB at subdivision 7. The grid and
-  non-rendered simulation state are never duplicated.
-- Frames are captured during generation by the tick observer
-  (`TickCoordinator::advance_to_with`), at a stride of
-  `max(target_year / 64, 500_000)` years — at most **64 frames per run**
-  (~32 MB at subdivision 7), always including the first tick and the final
-  state. `genesis_ui::worldgen::{HistoryFrame, history_stride_years}`.
+  non-rendered simulation state are never duplicated. Render modes may only
+  read fields a frame carries; anything else is stale during scrubbing.
+- **Streaming (July 2026 revision):** generation runs on a background thread
+  and STREAMS `GenEvent`s to the viewer: stage markers (grid build, formation),
+  a display clone of the world at year 0, history frames as they are captured,
+  throttled progress, and completion. The viewer opens on the FIRST frame and
+  the timeline grows behind it like a video buffer; playback stalls at the
+  live edge until more frames arrive. `genesis_ui::worldgen::{GenEvent,
+  generate_world_streaming}`.
+- Frame budget is level-aware: `max_frames = clamp(256 MB / (cells × 17 B),
+  16, 256)`, stride `max(target_year / max_frames, 500_000)` years, always
+  including the first tick and the final state
+  (`genesis_ui::worldgen::{max_history_frames, history_stride_years}`).
 - Scrubbing copies a frame's fields onto the displayed `WorldData` and sets the
-  render layer's `ColorsDirty` flag: hex materials are recolored without
-  rebuilding meshes (the grid is immutable within a run). Scrub cost is
-  ~one memcpy of the frame plus one material pass.
+  render layer's `ColorsDirty` flag: chunk meshes are recolored in place via
+  their vertex-color buffers (the grid is immutable within a run); no meshes
+  or materials are rebuilt. Hold-to-scrub repeats at 60 ms after a 350 ms
+  initial delay.
 - Frames are display-only. Re-simulation, branching, and byte-exact restore
   go through the deterministic pipeline and (future) Doc 13 disk snapshots —
   a `HistoryFrame` is NOT a save state.
+
+## §B. Forward Design Notes (recorded July 2026, not yet implemented)
+
+- **Era transitions should eventually key off emergence milestones, not fixed
+  years.** Era tick intervals shrink from 500k years (Geological) to 1k years
+  (Recent) at year-based boundaries (Doc 04 §7.2). Per design direction: the
+  point of finer ticks is watching life and intelligence develop, so the
+  Geological→Prehistoric→Ancient→Recent transitions should be TRIGGERED by
+  biology milestones (life emerges, intelligence threshold, tech threshold)
+  once Phase 4+ exists — a world where life never emerges should keep coarse
+  ticks indefinitely. Revisit when Doc 09 (Biology) is drafted.
+- **River/lake rendering is pre-Doc-08 provisional.** The viewer draws rivers
+  as discharge-thresholded polylines along `flow_direction` paths and pools
+  lake discs at endorheic sinks (`genesis_render::rivers`). Real hydrology —
+  lake filling and spill, groundwater, deltas — is Doc 08 scope and will
+  replace this presentation layer's assumptions.
 
 ## Rule for Future Docs
 

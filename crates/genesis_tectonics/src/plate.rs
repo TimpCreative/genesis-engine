@@ -207,6 +207,11 @@ pub struct TectonicsState {
     pub next_event_id: u64,
     /// Plate reorganizations fired during geological ticks (diagnostics).
     pub reorg_count: u64,
+    /// Each plate's unstressed motion rate (rad/year). Collision damping slows
+    /// the live rate; rift recovery restores it toward this base once the
+    /// collision ends (Wilson cycle). Reset when a reorganization assigns a
+    /// new rate; lazily initialized to the first observed rate.
+    pub base_motion_rates: BTreeMap<PlateId, f64>,
 }
 
 impl TectonicsState {
