@@ -15,4 +15,4 @@ pub use color::{
 pub use plugin::GenesisRenderPlugin;
 pub use polygon::hex_polygon_vertices;
 pub use render_mode::{CurrentRenderMode, RenderMode};
-pub use resources::{CameraState, WorldDirty, WorldResource};
+pub use resources::{CameraState, ColorsDirty, HexEntityCache, WorldDirty, WorldResource};

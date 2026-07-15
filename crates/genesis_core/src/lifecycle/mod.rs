@@ -7,6 +7,7 @@ pub use error::{CreateWorldError, GenerationError};
 pub use progress::{GenerationProgress, ProgressCallback};
 
 use crate::branches::BranchTree;
+use crate::data::WorldData;
 use crate::grid::HexGrid;
 use crate::parameters::WorldParameters;
 use crate::rng::WorldRng;
@@ -96,14 +97,14 @@ pub fn advance_with_coordinator(
     advance_with_coordinator_observed(world, coordinator, target_year, |_| {})
 }
 
-/// Like [`advance_with_coordinator`], invoking `on_tick` with the world year
-/// after each processed tick (for progress reporting). Observational only;
-/// simulation output is identical.
+/// Like [`advance_with_coordinator`], invoking `on_tick` with the world state
+/// after each processed tick (for progress reporting and history buffering).
+/// Observational only; simulation output is identical.
 pub fn advance_with_coordinator_observed(
     world: &mut World,
     coordinator: &mut TickCoordinator,
     target_year: WorldYear,
-    mut on_tick: impl FnMut(WorldYear),
+    mut on_tick: impl FnMut(&WorldData),
 ) -> Result<(), GenerationError> {
     let current = world.data.current_year;
     if target_year < current {

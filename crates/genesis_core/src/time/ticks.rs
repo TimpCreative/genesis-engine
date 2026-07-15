@@ -59,16 +59,17 @@ impl TickCoordinator {
         self.advance_to_with(target_year, world, rng, params, &mut |_| {});
     }
 
-    /// Like [`Self::advance_to`], invoking `on_tick` with the world year after
-    /// each processed tick. Purely observational — the callback cannot affect
-    /// simulation state, so output is identical to `advance_to`.
+    /// Like [`Self::advance_to`], invoking `on_tick` with the world state after
+    /// each processed tick (for progress reporting and history buffering).
+    /// Purely observational — the callback receives a shared reference and
+    /// cannot affect simulation state, so output is identical to `advance_to`.
     pub fn advance_to_with(
         &mut self,
         target_year: WorldYear,
         world: &mut WorldData,
         rng: &WorldRng,
         params: &WorldParameters,
-        on_tick: &mut dyn FnMut(WorldYear),
+        on_tick: &mut dyn FnMut(&WorldData),
     ) {
         self.init_next_ticks(world.current_year, params);
 
@@ -96,7 +97,7 @@ impl TickCoordinator {
                 }
             }
 
-            on_tick(world.current_year);
+            on_tick(world);
         }
 
         if world.current_year < target_year {

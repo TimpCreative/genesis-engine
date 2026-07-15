@@ -2,14 +2,14 @@
 // - GENESIS_TARGET_YEAR (i64): simulated year to advance to. Default 1_000_000.
 // - GENESIS_SUBDIVISION_LEVEL (u8): ISEA3H subdivision level. Default 7 (valid 5–9).
 // - GENESIS_SEED (u64): world seed. Default from WorldParameters::default().
-// - GENESIS_SCREENSHOT_DIR: if set, writes elevation/temperature/precipitation PNGs then exits.
+// - GENESIS_SCREENSHOT_DIR: if set, runs HEADLESS: generates the world up front,
+//   writes one PNG per render mode, then exits. Without it the app boots into
+//   the interactive menu (new world, parameters, timeline viewer).
 //   Examples:
 //     cargo run -p genesis_app                       # 1M years (default)
 //     GENESIS_TARGET_YEAR=10000000 cargo run -p genesis_app   # 10M years
 //     GENESIS_SUBDIVISION_LEVEL=8 GENESIS_SCREENSHOT_DIR=screenshots/y1m_subdiv8 \
 //       cargo run -p genesis_app --release
-
-mod history;
 
 use bevy::prelude::*;
 use bevy::render::view::screenshot::{Screenshot, save_to_disk};
@@ -18,7 +18,8 @@ use genesis_core::{WorldParameters, WorldYear, create_world};
 use genesis_render::{GenesisRenderPlugin, RenderMode, WorldResource};
 use genesis_tectonics::TectonicsState;
 
-use crate::history::generate_full_history;
+use genesis_ui::GenesisUiPlugin;
+use genesis_ui::worldgen::generate_full_history;
 
 #[derive(Resource)]
 struct AutoScreenshots {
@@ -143,6 +144,37 @@ fn print_world_summary(world: &genesis_core::World, tectonics: &TectonicsState) 
 }
 
 fn main() {
+    // Interactive mode unless a screenshot dir requests the headless pipeline.
+    let screenshot_dir = std::env::var("GENESIS_SCREENSHOT_DIR").ok();
+    if screenshot_dir.is_none() {
+        run_interactive();
+        return;
+    }
+    run_headless(screenshot_dir.expect("checked above"));
+}
+
+/// Boots straight into the menu; generation is driven by the UI.
+fn run_interactive() {
+    let mut app = App::new();
+    app.add_plugins(DefaultPlugins.set(WindowPlugin {
+        primary_window: Some(Window {
+            title: "Genesis Engine".to_string(),
+            resolution: (1280, 720).into(),
+            ..default()
+        }),
+        ..default()
+    }))
+    .add_plugins(GenesisRenderPlugin)
+    .add_plugins(GenesisUiPlugin);
+    if let Ok(dir) = std::env::var("GENESIS_UI_SMOKE_DIR") {
+        let _ = std::fs::create_dir_all(&dir);
+        app.add_plugins(genesis_ui::SmokePlugin { dir });
+    }
+    app.run();
+}
+
+/// Env-driven generation + auto screenshots (CI and review loops).
+fn run_headless(screenshot_dir: String) {
     let mut parameters = WorldParameters::default();
     // Default level 7 (~21.9k hexes) per Doc 06 §9.1; override via GENESIS_SUBDIVISION_LEVEL.
     let subdivision_level = subdivision_level_from_env();
@@ -177,15 +209,15 @@ fn main() {
         &mut tectonics,
         &mut climate,
         simulate_year,
-        |p| {
+        |data| {
             const REPORT_EVERY_YEARS: i64 = 100_000_000;
-            let current = p.current_year.value();
+            let current = data.current_year.value();
             if current - last_reported_year >= REPORT_EVERY_YEARS {
                 last_reported_year = current;
                 eprintln!(
                     "[genesis] simulated year {:.2}B / {:.2}B",
                     current as f64 / 1e9,
-                    p.target_year.value() as f64 / 1e9
+                    simulate_year.value() as f64 / 1e9
                 );
             }
         },
@@ -197,32 +229,26 @@ fn main() {
 
     print_world_summary(&world, &tectonics);
 
-    let screenshot_dir = std::env::var("GENESIS_SCREENSHOT_DIR").ok();
-    if let Some(dir) = screenshot_dir.as_deref() {
-        let _ = std::fs::create_dir_all(dir);
-    }
+    let _ = std::fs::create_dir_all(&screenshot_dir);
 
     let mut app = App::new();
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
         primary_window: Some(Window {
-            title: "Genesis Engine — Elevation (press M to cycle)".to_string(),
+            title: "Genesis Engine — headless screenshots".to_string(),
             resolution: (1280, 720).into(),
             ..default()
         }),
         ..default()
     }))
     .add_plugins(GenesisRenderPlugin)
-    .insert_resource(WorldResource(world));
-
-    if let Some(dir) = screenshot_dir {
-        app.insert_resource(AutoScreenshots {
-            dir,
-            year: requested_year.value(),
-            step: 0,
-            frames_until_next: 3,
-        })
-        .add_systems(Update, auto_screenshot_system);
-    }
+    .insert_resource(WorldResource(world))
+    .insert_resource(AutoScreenshots {
+        dir: screenshot_dir,
+        year: requested_year.value(),
+        step: 0,
+        frames_until_next: 3,
+    })
+    .add_systems(Update, auto_screenshot_system);
 
     app.run();
 }
@@ -236,7 +262,7 @@ mod tests {
     use genesis_render::GenesisRenderPlugin;
     use genesis_tectonics::{TectonicsState, generate_full_history_with_tectonics};
 
-    use crate::history::generate_full_history;
+    use genesis_ui::worldgen::generate_full_history;
 
     #[test]
     fn app_plugins_build_without_panicking() {

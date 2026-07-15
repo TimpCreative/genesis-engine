@@ -1,19 +1,18 @@
 //! Bevy systems for camera, input, and hex mesh rendering.
 
 use std::f64::consts::PI;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use bevy::camera::{OrthographicProjection, ScalingMode};
 use bevy::input::mouse::{AccumulatedMouseMotion, MouseWheel};
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
-use genesis_core::{HexId, WorldSeed, create_world};
+use genesis_core::HexId;
 
 use crate::color::hex_color_for_mode;
 use crate::polygon::{direction_to_lat_lon, hex_polygon_vertices, unwrap_lon_relative};
 use crate::projection::{hex_mesh_2d, project, should_skip_for_equirectangular};
 use crate::render_mode::CurrentRenderMode;
-use crate::resources::{CameraState, HexEntityCache, WorldDirty, WorldResource};
+use crate::resources::{CameraState, ColorsDirty, HexEntityCache, WorldDirty, WorldResource};
 
 const MIN_ZOOM: f32 = 0.1;
 const MAX_ZOOM: f32 = 50.0;
@@ -126,45 +125,6 @@ pub fn handle_camera_input(
     }
 }
 
-pub fn handle_regenerate(
-    keys: Res<ButtonInput<KeyCode>>,
-    mut world_res: ResMut<WorldResource>,
-    mut world_dirty: ResMut<WorldDirty>,
-) {
-    if !keys.just_pressed(KeyCode::KeyR) {
-        return;
-    }
-
-    let seed_value = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0);
-
-    let level = world_res.0.data.grid.subdivision_level();
-    let mut parameters = world_res.0.data.parameters.clone();
-    parameters.core.seed = WorldSeed::from_integer(seed_value);
-
-    match create_world(parameters) {
-        Ok(world) => {
-            info!(
-                "Regenerated world: seed {}, subdivision level {}",
-                seed_value, level
-            );
-            world_res.0 = world;
-            world_dirty.0 = true;
-        }
-        Err(e) => {
-            error!("Failed to regenerate world: {e}");
-        }
-    }
-}
-
-pub fn handle_quit(keys: Res<ButtonInput<KeyCode>>, mut exit: MessageWriter<AppExit>) {
-    if keys.just_pressed(KeyCode::Escape) {
-        exit.write(AppExit::Success);
-    }
-}
-
 pub fn cycle_render_mode_on_keypress(
     keys: Res<ButtonInput<KeyCode>>,
     mut render_mode: ResMut<CurrentRenderMode>,
@@ -193,12 +153,14 @@ pub fn update_window_title(
 pub fn update_hex_colors(
     world_res: Option<Res<WorldResource>>,
     render_mode: Res<CurrentRenderMode>,
+    mut colors_dirty: ResMut<ColorsDirty>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     query: Query<(&HexCell, &MeshMaterial2d<ColorMaterial>)>,
 ) {
-    if !render_mode.is_changed() {
+    if !render_mode.is_changed() && !colors_dirty.0 {
         return;
     }
+    colors_dirty.0 = false;
     let Some(world_res) = world_res else {
         return;
     };
@@ -252,29 +214,6 @@ pub fn render_world_if_dirty(
         }
 
         let vertices = hex_polygon_vertices(grid, hex);
-
-        // DIAGNOSTIC: log vertex info for a few sample hexes
-        if hex.0 < 3 || hex.0 == 100 || hex.0 == 500 || hex.0 == 1000 {
-            info!(
-                "Hex {:?}: center=(lat={:.3}, lon={:.3}), n_count={}",
-                hex,
-                center_lat,
-                center_lon,
-                grid.neighbors(hex).len()
-            );
-            for (i, &n) in grid.neighbors(hex).iter().enumerate() {
-                let (nlat, nlon) = grid.center_lat_lon(n);
-                info!(
-                    "  neighbor {} = {:?}: (lat={:.3}, lon={:.3})",
-                    i, n, nlat, nlon
-                );
-            }
-            for (i, v) in vertices.iter().enumerate() {
-                let (lat, lon) = direction_to_lat_lon(*v);
-                info!("  vertex {}: (lat={:.3}, lon={:.3})", i, lat, lon);
-            }
-        }
-
         let center_2d = project(center_lat, center_lon);
         let ring: Vec<(f32, f32)> = vertices
             .iter()
@@ -289,8 +228,8 @@ pub fn render_world_if_dirty(
                 project(lat, unwrapped_lon)
             })
             .collect();
-
         let mesh = hex_mesh_2d(center_2d, &ring);
+
         let mesh_handle = meshes.add(mesh);
         let idx = hex.0 as usize;
         let is_pentagon = grid.is_pentagon(hex);

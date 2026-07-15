@@ -17,6 +17,12 @@ impl Default for WorldDirty {
     }
 }
 
+/// When true, existing hex materials are recolored from [`WorldResource`]
+/// without rebuilding meshes. Set by timeline scrubbing: the grid never
+/// changes within a run, so recoloring is all a year change needs.
+#[derive(Resource, Default)]
+pub struct ColorsDirty(pub bool);
+
 /// Pan/zoom state for the 2D equirectangular view.
 #[derive(Resource)]
 pub struct CameraState {

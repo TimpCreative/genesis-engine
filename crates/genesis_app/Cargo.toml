@@ -15,3 +15,4 @@ genesis_hydrology = { path = "../genesis_hydrology" }
 genesis_core = { path = "../genesis_core" }
 genesis_render = { path = "../genesis_render" }
 genesis_tectonics = { path = "../genesis_tectonics" }
+genesis_ui = { path = "../genesis_ui" }

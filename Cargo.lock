@@ -2554,6 +2554,7 @@ dependencies = [
  "genesis_hydrology",
  "genesis_render",
  "genesis_tectonics",
+ "genesis_ui",
 ]
 
 [[package]]
@@ -2630,6 +2631,14 @@ dependencies = [
 [[package]]
 name = "genesis_ui"
 version = "0.1.0"
+dependencies = [
+ "bevy",
+ "genesis_climate",
+ "genesis_core",
+ "genesis_hydrology",
+ "genesis_render",
+ "genesis_tectonics",
+]
 
 [[package]]
 name = "gethostname"
