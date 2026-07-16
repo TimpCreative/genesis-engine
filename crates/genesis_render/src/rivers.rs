@@ -13,11 +13,14 @@ use bevy::prelude::*;
 
 use crate::projection::{project, should_skip_for_equirectangular};
 use crate::render_mode::{CurrentRenderMode, RenderMode};
-use crate::resources::{ColorsDirty, WorldResource};
+use crate::resources::WorldResource;
 
-/// Discharge multiple of the mean local runoff above which a river is drawn:
-/// a visible river needs a drainage basin of at least ~4 upstream hexes.
-pub const RIVER_SOURCE_FLOW_MULTIPLE: f64 = 4.0;
+/// Discharge multiple of the mean local runoff above which a river (or lake) is
+/// drawn. At the whole-planet view only major trunk rivers should show, so this
+/// requires a drainage basin of ~60 upstream hexes. Finer streams down to
+/// creeks are future zoom-dependent LOD (Doc 08); until then a low threshold
+/// spews a channel through nearly every hex on a fine grid.
+pub const RIVER_SOURCE_FLOW_MULTIPLE: f64 = 60.0;
 
 /// River line width as a fraction of hex spacing at minimum discharge.
 const RIVER_MIN_WIDTH_FRAC: f32 = 0.18;
@@ -34,36 +37,52 @@ const WATER_COLOR: Color = Color::srgb(0.10, 0.35, 0.80);
 #[derive(Resource, Default)]
 pub struct RiverOverlay {
     pub entity: Option<Entity>,
+    /// Simulated year the current mesh was built for. The overlay rebuilds only
+    /// when the displayed frame's year actually changes, not on every
+    /// `ColorsDirty` tick — a static view no longer re-tessellates each frame,
+    /// which is what read as "pulsing."
+    pub built_year: Option<i64>,
 }
 
-/// Rebuilds the river overlay whenever the Rivers mode is active and either
-/// the mode just changed or the displayed frame changed (`ColorsDirty` is
-/// still set — this system runs BEFORE `update_hex_colors` consumes it).
-#[allow(clippy::too_many_arguments)]
+/// Rebuilds the river overlay when Rivers mode is active and the displayed
+/// frame's year changed (or the mode just switched to Rivers). A static frame
+/// is not re-tessellated every render tick.
 pub fn update_river_overlay(
     mut commands: Commands,
     world_res: Option<Res<WorldResource>>,
     render_mode: Res<CurrentRenderMode>,
-    colors_dirty: Res<ColorsDirty>,
     mut overlay: ResMut<RiverOverlay>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
-    let is_rivers = render_mode.0 == RenderMode::Rivers;
-    let needs_refresh = render_mode.is_changed() || colors_dirty.0;
-
-    if (!is_rivers || needs_refresh)
-        && let Some(entity) = overlay.entity.take()
-    {
-        commands.entity(entity).despawn();
-    }
-    if !is_rivers || !needs_refresh {
+    // Leaving Rivers mode: tear the overlay down and forget which frame it held.
+    if render_mode.0 != RenderMode::Rivers {
+        if let Some(entity) = overlay.entity.take() {
+            commands.entity(entity).despawn();
+        }
+        overlay.built_year = None;
         return;
     }
+
     let Some(world_res) = world_res else {
         return;
     };
     let data = &world_res.0.data;
+    let current_year = data.current_year.value();
+
+    // Rebuild only when the displayed frame's year changes (or the mode just
+    // became Rivers, or the entity was torn down), never on every render tick —
+    // re-tessellating a static frame each frame is what read as "pulsing."
+    if !render_mode.is_changed()
+        && overlay.built_year == Some(current_year)
+        && overlay.entity.is_some()
+    {
+        return;
+    }
+    if let Some(entity) = overlay.entity.take() {
+        commands.entity(entity).despawn();
+    }
+    overlay.built_year = Some(current_year);
     let grid = &data.grid;
     let n = data.cell_count() as usize;
     let sea = data.sea_level_m;
