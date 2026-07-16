@@ -106,6 +106,14 @@ pub const COLLISION_MOTION_DAMPING: f64 = 0.5;
 /// once convergence ends, so continents never stay parked forever.
 pub const MOTION_RECOVERY_PER_TICK: f64 = 0.02;
 
+/// Floor on a plate's live motion rate as a fraction of its unstressed base.
+/// Collision damping compounds (×0.5/tick), which drives a plate boxed in by
+/// converging neighbors on all sides toward literal zero — it can never be
+/// flagged non-colliding, so ordinary recovery never fires. Enforcing this
+/// floor every tick keeps such an interior plate creeping like a slow craton
+/// (mantle drag never fully stops a plate) instead of freezing solid.
+pub const MIN_STALL_FRACTION: f64 = 0.05;
+
 /// Result of a repartition pass: plates in active continental collision this
 /// tick (for rift recovery) and the world→birth projection table derived from
 /// the claims (for the rest of the tick's surface lookups).
@@ -397,6 +405,14 @@ pub fn recover_motion_rates(
         let base = *base_rates
             .entry(id)
             .or_insert(plate.motion_rate_rad_per_year);
+        // Never let compounding collision damping drive a plate below a small
+        // fraction of its base rate — a boxed-in interior plate creeps instead
+        // of freezing to zero. Applies even while colliding (that is exactly
+        // when a permanently-sutured plate would otherwise decay to nothing).
+        let floor = base * MIN_STALL_FRACTION;
+        if plate.motion_rate_rad_per_year < floor {
+            plate.motion_rate_rad_per_year = floor;
+        }
         if colliding.contains(&id) || plate.motion_rate_rad_per_year >= base {
             continue;
         }
@@ -635,7 +651,8 @@ mod tests {
             "stalled plate should recover most of its base rate over 100 ticks, got {recovered}"
         );
 
-        // While colliding, no recovery happens.
+        // While colliding, no recovery toward base happens, but the stall
+        // floor keeps the plate from freezing below MIN_STALL_FRACTION.
         let mut colliding = std::collections::BTreeSet::new();
         colliding.insert(PlateId(0));
         registry
@@ -644,11 +661,49 @@ mod tests {
             .unwrap()
             .motion_rate_rad_per_year = base_rate * 0.01;
         recover_motion_rates(&mut registry, &mut base_rates, &colliding);
-        assert_eq!(
-            registry.get(PlateId(0)).unwrap().motion_rate_rad_per_year,
-            base_rate * 0.01,
-            "colliding plates must not recover"
+        let colliding_rate = registry.get(PlateId(0)).unwrap().motion_rate_rad_per_year;
+        assert!(
+            (colliding_rate - base_rate * MIN_STALL_FRACTION).abs() < 1e-18,
+            "a colliding plate is floored at MIN_STALL_FRACTION, not recovered: got {colliding_rate}"
         );
+        assert!(
+            colliding_rate < base_rate * 0.5,
+            "a colliding plate still does not recover toward base"
+        );
+    }
+
+    #[test]
+    fn boxed_in_plate_creeps_and_never_freezes() {
+        // A plate damped every tick (perpetual collision) must stay at the
+        // stall floor forever, never decaying toward zero.
+        let n = 100;
+        let mut registry = PlateRegistry::new();
+        let mut plate = plate_at(0, 0, [0.0, 0.0, 1.0], 0.0, PlateType::Continental);
+        plate.surface = PlateSurface::new(n);
+        registry.insert(plate);
+
+        let base_rate = 8e-9_f64;
+        let mut base_rates = BTreeMap::new();
+        base_rates.insert(PlateId(0), base_rate);
+
+        let mut colliding = std::collections::BTreeSet::new();
+        colliding.insert(PlateId(0));
+        for _ in 0..2000 {
+            // Simulate the per-tick collision damping, then the floor pass.
+            let r = &mut registry
+                .plates_mut()
+                .get_mut(&PlateId(0))
+                .unwrap()
+                .motion_rate_rad_per_year;
+            *r *= COLLISION_MOTION_DAMPING;
+            recover_motion_rates(&mut registry, &mut base_rates, &colliding);
+        }
+        let rate = registry.get(PlateId(0)).unwrap().motion_rate_rad_per_year;
+        assert!(
+            rate >= base_rate * MIN_STALL_FRACTION * COLLISION_MOTION_DAMPING,
+            "boxed-in plate must keep creeping, not freeze: got {rate}"
+        );
+        assert!(rate > 0.0, "motion never reaches literal zero");
     }
 
     #[test]
