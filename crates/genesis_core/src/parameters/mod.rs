@@ -59,7 +59,7 @@ impl Default for WorldParameters {
                     simulation_end_year: WorldYear(4_500_000_000),
                 },
                 geology: GeologyParameters {
-                    initial_continental_fraction: 0.29,
+                    initial_continental_fraction: 0.22,
                     plate_velocity_scale: 1.0,
                     volcanism_scale: 1.0,
                     geology_activity_scale: 1.0,

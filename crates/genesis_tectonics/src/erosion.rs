@@ -45,8 +45,15 @@ pub const CONTINENTAL_FREEBOARD_M: f32 = 550.0;
 /// (~25–30%) land fraction.
 pub const EPEIROGENIC_REBOUND_RATE_PER_YEAR: f64 = 2e-8;
 
-/// Continental crust below this is considered consumed/sutured and does not
-/// rebound (m).
+/// Depth BELOW SEA LEVEL past which continental crust is considered
+/// consumed/sutured and no longer rebounds (m, negative = below sea).
+///
+/// Relative to sea level, not absolute: sea level swings by kilometres over
+/// deep time (ridge growth, glaciation), so an absolute floor would freeze
+/// barely-drowned shelf crust as permanently submerged whenever the sea fell.
+/// A continental shelf 500–1000 m under a lowered sea must still rebound toward
+/// its freeboard; only crust driven a couple of kilometres under is treated as
+/// consumed. The rebound floor is `sea_level_m + EPEIROGENIC_REBOUND_FLOOR_M`.
 pub const EPEIROGENIC_REBOUND_FLOOR_M: f32 = -2000.0;
 
 /// Per-hex multiplicative noise amplitude: factor ∈ [1 - A, 1 + A] (Phase 1).
@@ -354,6 +361,7 @@ pub fn apply_isostasy(registry: &mut PlateRegistry, sea_level_m: f32, tick_inter
     let rebound_fraction =
         (EPEIROGENIC_REBOUND_RATE_PER_YEAR * tick_interval_years).min(1.0) as f32;
     let freeboard_target = sea_level_m + CONTINENTAL_FREEBOARD_M;
+    let rebound_floor = sea_level_m + EPEIROGENIC_REBOUND_FLOOR_M;
 
     let plate_ids = registry.plate_ids();
     for plate_id in plate_ids {
@@ -368,7 +376,7 @@ pub fn apply_isostasy(registry: &mut PlateRegistry, sea_level_m: f32, tick_inter
                 // Epeirogenic rebound: buoyant crust rises back toward the
                 // freeboard unless it has been consumed into a suture.
                 if feature.elevation_m < freeboard_target
-                    && feature.elevation_m > EPEIROGENIC_REBOUND_FLOOR_M
+                    && feature.elevation_m > rebound_floor
                     && rebound_fraction > 0.0
                 {
                     feature.elevation_m +=

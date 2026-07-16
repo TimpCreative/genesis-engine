@@ -3,7 +3,7 @@
 use genesis_core::HexId;
 use genesis_core::data::{BedrockType, WorldData};
 
-use crate::frames::birth_hex_to_current_world;
+use crate::frames::{birth_hex_to_current_world, current_world_to_birth_hex};
 use crate::plate::PlateRegistry;
 use crate::plate_surface::type_baseline;
 use crate::projection::ProjectionCache;
@@ -24,9 +24,8 @@ pub fn rebuild_world_from_plate_surfaces_cached(
     }
 
     let n = data.cell_count() as usize;
-    let mut written = vec![false; n];
 
-    for (i, written_slot) in written.iter_mut().enumerate() {
+    for i in 0..n {
         let hex = HexId(i as u32);
         let plate_id = data.plate_id[i];
         let Some(plate) = registry.get(plate_id) else {
@@ -36,20 +35,24 @@ pub fn rebuild_world_from_plate_surfaces_cached(
             data.fertility[i] = 0.0;
             continue;
         };
-        let feature = if cache.is_claimed(hex) {
-            cache
-                .birth_hex_for(data, hex)
-                .and_then(|birth| plate.surface.get(birth))
-        } else {
-            None
-        };
+        // Resolve EVERY owned hex through the cache's birth mapping — claimed
+        // hexes via their forward display-winner, adopted quantization holes via
+        // their inverse-rotated birth hex (both recorded by repartition). A hole
+        // therefore shows the plate material actually under it, not a
+        // neighbor-average that dips below sea level next to any coast/ridge and
+        // riddles continents with phantom "lakes". If the birth slot is empty,
+        // fall back to the plate-type baseline (continental +800 m, above the
+        // risen sea) rather than a sub-sea mean. Display-only: no feature is
+        // ever minted here.
+        let feature = cache
+            .birth_hex_for(data, hex)
+            .and_then(|birth| plate.surface.get(birth));
         match feature {
             Some(feature) => {
                 data.elevation_mean[i] = feature.elevation_m;
                 data.elevation_relief[i] = feature.relief_m;
                 data.bedrock_type[i] = feature.bedrock;
                 data.fertility[i] = feature.fertility;
-                *written_slot = true;
             }
             None => {
                 let (elev, bedrock) = type_baseline(plate.plate_type);
@@ -60,8 +63,6 @@ pub fn rebuild_world_from_plate_surfaces_cached(
             }
         }
     }
-
-    patch_projection_holes(data, &written);
 }
 
 /// Rebuilds `elevation_mean`, `elevation_relief`, `bedrock_type`, and `fertility` from
@@ -130,50 +131,30 @@ pub fn rebuild_world_from_plate_surfaces(data: &mut WorldData, registry: &PlateR
         }
     }
 
-    let written: Vec<bool> = written_priority.iter().map(|p| p.is_some()).collect();
-    patch_projection_holes(data, &written);
-}
-
-/// Patches projection holes from written neighbors. Rigid-rotation quantization
-/// leaves a lattice of owned hexes that no feature projected onto; the static
-/// plate-type baseline is wrong wherever the surrounding crust has evolved
-/// (e.g. 800 m land dots inside a submerged margin). Display-only smoothing;
-/// surfaces are untouched.
-fn patch_projection_holes(data: &mut WorldData, written: &[bool]) {
-    let n = data.cell_count() as usize;
-    let grid = &data.grid;
+    // Resolve projection holes (owned hexes no feature forward-projected onto)
+    // by INVERSE-rotating each hole to its birth hex and reading the plate's
+    // material there — the same result the cached rebuild gets from
+    // `ProjectionCache::birth_hex_for`, just recomputed since this fallback has
+    // no cache. Empty birth slot keeps the plate-type baseline already written
+    // above. This replaces neighbor-mean smoothing, which dipped continental
+    // holes below sea level and speckled continents with phantom water.
+    #[allow(clippy::needless_range_loop)]
     for i in 0..n {
-        if written[i] {
+        if written_priority[i].is_some() {
             continue;
         }
-        let hex = HexId(i as u32);
-        let mut elev_sum = 0.0_f64;
-        let mut relief_sum = 0.0_f64;
-        let mut fert_sum = 0.0_f64;
-        let mut count = 0_u32;
-        let mut bedrock = None;
-        for neighbor in grid.neighbors(hex) {
-            let j = neighbor.0 as usize;
-            if j >= n || !written[j] {
-                continue;
-            }
-            elev_sum += f64::from(data.elevation_mean[j]);
-            relief_sum += f64::from(data.elevation_relief[j]);
-            fert_sum += f64::from(data.fertility[j]);
-            if bedrock.is_none() {
-                bedrock = Some(data.bedrock_type[j]);
-            }
-            count += 1;
-        }
-        if count == 0 {
+        let plate_id = data.plate_id[i];
+        let Some(plate) = registry.get(plate_id) else {
             continue;
-        }
-        data.elevation_mean[i] = (elev_sum / f64::from(count)) as f32;
-        data.elevation_relief[i] = (relief_sum / f64::from(count)) as f32;
-        data.fertility[i] = (fert_sum / f64::from(count)) as f32;
-        if let Some(b) = bedrock {
-            data.bedrock_type[i] = b;
-        }
+        };
+        let birth = current_world_to_birth_hex(grid, HexId(i as u32), plate);
+        let Some(feature) = plate.surface.get(birth) else {
+            continue;
+        };
+        data.elevation_mean[i] = feature.elevation_m;
+        data.elevation_relief[i] = feature.relief_m;
+        data.bedrock_type[i] = feature.bedrock;
+        data.fertility[i] = feature.fertility;
     }
 }
 
