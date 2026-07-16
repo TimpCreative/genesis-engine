@@ -212,6 +212,10 @@ pub struct TectonicsState {
     /// collision ends (Wilson cycle). Reset when a reorganization assigns a
     /// new rate; lazily initialized to the first observed rate.
     pub base_motion_rates: BTreeMap<PlateId, f64>,
+    /// World→birth projection table from the latest repartition; consulted by
+    /// surface reads/writes for the rest of the tick instead of per-hex
+    /// inverse rotations (perf, subdivision level 8).
+    pub projection: crate::projection::ProjectionCache,
 }
 
 impl TectonicsState {

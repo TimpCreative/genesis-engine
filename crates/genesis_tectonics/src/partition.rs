@@ -8,7 +8,7 @@
 //! therefore drift as coherent material bodies — continents keep their shapes —
 //! instead of being re-clipped to moving Voronoi cells each tick.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use genesis_core::data::{BedrockType, WorldData};
 use genesis_core::{HexId, PlateId};
@@ -18,6 +18,7 @@ use crate::frames::{birth_hex_to_current_world, current_world_to_birth_hex};
 use crate::motion::{effective_position_direction, surface_velocity_m_per_year};
 use crate::plate::PlateRegistry;
 use crate::plate_surface::SurfaceFeature;
+use crate::projection::ProjectionCache;
 
 /// Elevation of freshly accreted oceanic crust at divergent gaps (m).
 /// Young ridge crust sits above the abyssal equilibrium; thermal subsidence
@@ -63,6 +64,12 @@ struct Claim {
     continental: bool,
     /// Plate creation year (smaller = older plate).
     plate_age_year: i64,
+    /// Among same-plate quantization collisions on this hex, the feature
+    /// `world_rebuild` will display (priority: elevation, then age, then lower
+    /// birth index). Recorded for the projection cache.
+    disp_birth: HexId,
+    disp_elev: f32,
+    disp_age: i64,
 }
 
 /// Returns true when `a` outranks `b` for ownership of a contested hex.
@@ -99,8 +106,15 @@ pub const COLLISION_MOTION_DAMPING: f64 = 0.5;
 /// once convergence ends, so continents never stay parked forever.
 pub const MOTION_RECOVERY_PER_TICK: f64 = 0.02;
 
-/// Recomputes hex ownership from plate footprints. Returns the plates that
-/// were in an active continental collision this tick (for rift recovery).
+/// Result of a repartition pass: plates in active continental collision this
+/// tick (for rift recovery) and the world→birth projection table derived from
+/// the claims (for the rest of the tick's surface lookups).
+pub struct RepartitionOutcome {
+    pub colliding: BTreeSet<PlateId>,
+    pub projection: ProjectionCache,
+}
+
+/// Recomputes hex ownership from plate footprints.
 ///
 /// 1. Projects every plate's birth features to current world hexes (claims).
 /// 2. Resolves contested hexes by [`claim_beats`]; oceanic crust that loses a
@@ -109,10 +123,7 @@ pub const MOTION_RECOVERY_PER_TICK: f64 = 0.02;
 ///    new oceanic crust on the adopting plate: divergent gaps (touching ≥2
 ///    plates or no claimed neighbor) get young ridge crust, single-plate
 ///    quantization gaps are patched with the neighbors' mean elevation.
-pub fn repartition_hexes(
-    data: &mut WorldData,
-    registry: &mut PlateRegistry,
-) -> std::collections::BTreeSet<PlateId> {
+pub fn repartition_hexes(data: &mut WorldData, registry: &mut PlateRegistry) -> RepartitionOutcome {
     let n = data.plate_id.len();
     let tick_year = data.current_year.value();
     let radius_km = data.parameters.core.planet.radius_km;
@@ -175,14 +186,25 @@ pub fn repartition_hexes(
                     birth_hex,
                     continental,
                     plate_age_year,
+                    disp_birth: birth_hex,
+                    disp_elev: feature.elevation_m,
+                    disp_age: feature.age_year,
                 };
-                match &winner[w] {
+                match winner[w].as_mut() {
                     None => winner[w] = Some(candidate),
                     Some(existing) => {
                         // Same-plate collisions are quantization artifacts, not
                         // convergence; keep both features and let world_rebuild's
-                        // display priority pick.
+                        // display priority pick. Track that pick for the cache.
                         if existing.plate_id == plate_id {
+                            let display_wins = feature.elevation_m > existing.disp_elev
+                                || (feature.elevation_m == existing.disp_elev
+                                    && feature.age_year > existing.disp_age);
+                            if display_wins {
+                                existing.disp_birth = birth_hex;
+                                existing.disp_elev = feature.elevation_m;
+                                existing.disp_age = feature.age_year;
+                            }
                             continue;
                         }
                         // Crust is only destroyed where the plates are actually
@@ -202,7 +224,7 @@ pub fn repartition_hexes(
                             if real_convergence && !existing.continental {
                                 subducted.push((existing.plate_id, existing.birth_hex));
                             }
-                            winner[w] = Some(candidate);
+                            *existing = candidate;
                         } else if real_convergence && !continental {
                             subducted.push((plate_id, birth_hex));
                         }
@@ -224,7 +246,7 @@ pub fn repartition_hexes(
 
     // Continental collision resistance: converging continental pairs suture and
     // stall instead of sailing through each other.
-    let mut colliding: std::collections::BTreeSet<PlateId> = std::collections::BTreeSet::new();
+    let mut colliding: BTreeSet<PlateId> = BTreeSet::new();
     for ((a, b), count) in &cc_collisions {
         if *count < COLLISION_CONTACT_HEXES {
             continue;
@@ -249,7 +271,10 @@ pub fn repartition_hexes(
 
     // No claims at all (empty registry): leave ownership untouched.
     if queue.is_empty() {
-        return colliding;
+        return RepartitionOutcome {
+            colliding,
+            projection: ProjectionCache::empty(),
+        };
     }
 
     let mut adopted: Vec<usize> = Vec::new();
@@ -271,10 +296,27 @@ pub fn repartition_hexes(
         }
     }
 
+    // Projection cache: claimed hexes map straight to the claim's displayed
+    // birth hex; adopted hexes get theirs from the inverse rotation below.
+    let mut projection = ProjectionCache::with_ownership(&owner);
+    for (i, claim) in winner.iter().enumerate() {
+        if let Some(claim) = claim {
+            projection.record(i, claim.disp_birth, true);
+        }
+    }
+
     // Accrete new oceanic crust on adopted hexes (in BFS discovery order).
     for &j in &adopted {
         let hex = HexId(j as u32);
         let plate_id = owner[j];
+
+        // Record the adopted hex's birth mapping so same-tick surface writes
+        // and reads resolve without re-deriving the rotation.
+        let Some(plate) = registry.get(plate_id) else {
+            continue;
+        };
+        let birth_hex = current_world_to_birth_hex(&data.grid, hex, plate);
+        projection.record(j, birth_hex, false);
 
         // Classify the gap from pre-fill claims. New crust is minted only for
         // genuinely opening gaps: zero claimed neighbors (interior of a wide
@@ -308,10 +350,6 @@ pub fn repartition_hexes(
             continue;
         }
 
-        let Some(plate) = registry.get(plate_id) else {
-            continue;
-        };
-        let birth_hex = current_world_to_birth_hex(&data.grid, hex, plate);
         let Some(plate) = registry.plates_mut().get_mut(&plate_id) else {
             continue;
         };
@@ -329,11 +367,17 @@ pub fn repartition_hexes(
                     continental_crust: false,
                 },
             );
+            // Fresh ridge crust projects onto exactly this hex; rebuilds may
+            // display it immediately.
+            projection.record(j, birth_hex, true);
         }
     }
 
     data.plate_id.copy_from_slice(&owner);
-    colliding
+    RepartitionOutcome {
+        colliding,
+        projection,
+    }
 }
 
 /// Rift recovery: plates not in an active continental collision drift back

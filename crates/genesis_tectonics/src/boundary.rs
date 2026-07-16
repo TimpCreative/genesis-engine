@@ -8,6 +8,7 @@ use glam::DVec3;
 
 use crate::motion::surface_velocity_m_per_year;
 use crate::plate::{Plate, PlateRegistry, PlateType};
+use crate::projection::ProjectionCache;
 
 /// High-level boundary classification between two plates at a hex edge.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,8 +59,13 @@ pub fn convergent_subtype(a: PlateType, b: PlateType) -> ConvergentSubtype {
 /// continental plate accretes oceanic floor at rifts, like the South American
 /// Plate), so boundary behavior keys on the per-hex crust flag, not the owning
 /// plate's type.
-pub fn hex_crust_is_oceanic(data: &WorldData, registry: &PlateRegistry, hex: HexId) -> bool {
-    !crate::plate_surface::continental_crust_at(data, registry, hex)
+pub fn hex_crust_is_oceanic(
+    data: &WorldData,
+    registry: &PlateRegistry,
+    cache: &ProjectionCache,
+    hex: HexId,
+) -> bool {
+    !crate::plate_surface::continental_crust_at(data, registry, cache, hex)
 }
 
 /// Maps two per-hex crust kinds to a convergent subtype (order-independent).
@@ -75,7 +81,11 @@ fn convergent_subtype_from_crust(owner_oceanic: bool, other_oceanic: bool) -> Co
 ///
 /// Hexes are visited in ascending [`HexId`] order; edges per hex are sorted by
 /// `neighbor_hex`. Directed owner-centric edges `h → n` are stored once per hex.
-pub fn detect_and_classify_boundaries(data: &WorldData, registry: &PlateRegistry) -> BoundaryInfo {
+pub fn detect_and_classify_boundaries(
+    data: &WorldData,
+    registry: &PlateRegistry,
+    cache: &ProjectionCache,
+) -> BoundaryInfo {
     let grid = &data.grid;
     let planet_radius_km = data.parameters.core.planet.radius_km;
     let n = data.plate_id.len();
@@ -119,8 +129,8 @@ pub fn detect_and_classify_boundaries(data: &WorldData, registry: &PlateRegistry
                 owner,
                 other,
                 planet_radius_km,
-                hex_crust_is_oceanic(data, registry, hex),
-                hex_crust_is_oceanic(data, registry, neighbor_hex),
+                hex_crust_is_oceanic(data, registry, cache, hex),
+                hex_crust_is_oceanic(data, registry, cache, neighbor_hex),
             );
             contacts.insert(other_plate);
             edges.push(edge);
@@ -388,7 +398,7 @@ mod tests {
             *pid = if i < mid { PlateId(0) } else { PlateId(1) };
         }
 
-        let info = detect_and_classify_boundaries(&data, &registry);
+        let info = detect_and_classify_boundaries(&data, &registry, &ProjectionCache::empty());
         assert!(
             !info.boundary_hexes.is_empty(),
             "expected boundary hexes along plate contact"
@@ -430,7 +440,7 @@ mod tests {
             data.plate_id[neighbors[2].0 as usize] = PlateId(1);
         }
 
-        let info = detect_and_classify_boundaries(&data, &registry);
+        let info = detect_and_classify_boundaries(&data, &registry, &ProjectionCache::empty());
         let contacts = info
             .plate_contacts
             .get(&junction)
@@ -468,7 +478,7 @@ mod tests {
             *pid = if i < n / 2 { PlateId(0) } else { PlateId(1) };
         }
 
-        let info = detect_and_classify_boundaries(&data, &registry);
+        let info = detect_and_classify_boundaries(&data, &registry, &ProjectionCache::empty());
         for &hex in &info.boundary_hexes {
             let owner = data.plate_id[hex.0 as usize];
             let mut expected: BTreeSet<PlateId> = BTreeSet::new();

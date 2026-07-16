@@ -17,6 +17,7 @@ use crate::motion::sample_motion_axis;
 use crate::partition::repartition_hexes;
 use crate::plate::{Plate, PlateClass, PlateRegistry, PlateType, TectonicsState};
 use crate::plate_surface::{PlateSurface, modify_surface_at_world_hex};
+use crate::projection::ProjectionCache;
 
 /// Per-tick reorganization probability gate (§4.5).
 pub const REORGANIZATION_CHECK_STREAM: &str = "tectonics.reorganization_check";
@@ -99,10 +100,16 @@ pub fn maybe_reorganize(
         }
     }
 
-    let _ = repartition_hexes(data, &mut state.registry);
+    state.projection = repartition_hexes(data, &mut state.registry).projection;
 
     if let Some((parent, child)) = split_pair {
-        apply_split_boundary_subsidence(data, &mut state.registry, parent, child);
+        apply_split_boundary_subsidence(
+            data,
+            &mut state.registry,
+            &state.projection,
+            parent,
+            child,
+        );
     }
     update_last_nonempty_years(data, &mut state.registry, tick_year);
     purge_extinct_plates(&mut state.registry, data, tick_year);
@@ -376,6 +383,7 @@ fn reassign_plate_hexes(data: &mut WorldData, from: PlateId, to: PlateId) {
 fn apply_split_boundary_subsidence(
     data: &WorldData,
     registry: &mut PlateRegistry,
+    cache: &ProjectionCache,
     parent: PlateId,
     child: PlateId,
 ) {
@@ -405,7 +413,7 @@ fn apply_split_boundary_subsidence(
             if (owner == parent && other_plate == child)
                 || (owner == child && other_plate == parent)
             {
-                modify_surface_at_world_hex(registry, data, hex, 0, |feature| {
+                modify_surface_at_world_hex(registry, data, cache, hex, 0, |feature| {
                     feature.elevation_m -= SPLIT_BOUNDARY_SUBSIDENCE_M;
                 });
             }

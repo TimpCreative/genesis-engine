@@ -6,6 +6,63 @@ use genesis_core::data::{BedrockType, WorldData};
 use crate::frames::birth_hex_to_current_world;
 use crate::plate::PlateRegistry;
 use crate::plate_surface::type_baseline;
+use crate::projection::ProjectionCache;
+
+/// Cache-driven variant of [`rebuild_world_from_plate_surfaces`]: resolves each
+/// world hex's displayed feature through the projection table instead of
+/// forward-rotating every stored feature (three rebuilds per tick otherwise
+/// dominate at subdivision level 8). Falls back to the direct rebuild when the
+/// cache does not cover the world's current ownership.
+pub fn rebuild_world_from_plate_surfaces_cached(
+    data: &mut WorldData,
+    registry: &PlateRegistry,
+    cache: &ProjectionCache,
+) {
+    if !cache.covers(data) {
+        rebuild_world_from_plate_surfaces(data, registry);
+        return;
+    }
+
+    let n = data.cell_count() as usize;
+    let mut written = vec![false; n];
+
+    for (i, written_slot) in written.iter_mut().enumerate() {
+        let hex = HexId(i as u32);
+        let plate_id = data.plate_id[i];
+        let Some(plate) = registry.get(plate_id) else {
+            data.elevation_mean[i] = 0.0;
+            data.elevation_relief[i] = 0.0;
+            data.bedrock_type[i] = BedrockType::Unknown;
+            data.fertility[i] = 0.0;
+            continue;
+        };
+        let feature = if cache.is_claimed(hex) {
+            cache
+                .birth_hex_for(data, hex)
+                .and_then(|birth| plate.surface.get(birth))
+        } else {
+            None
+        };
+        match feature {
+            Some(feature) => {
+                data.elevation_mean[i] = feature.elevation_m;
+                data.elevation_relief[i] = feature.relief_m;
+                data.bedrock_type[i] = feature.bedrock;
+                data.fertility[i] = feature.fertility;
+                *written_slot = true;
+            }
+            None => {
+                let (elev, bedrock) = type_baseline(plate.plate_type);
+                data.elevation_mean[i] = elev;
+                data.elevation_relief[i] = 0.0;
+                data.bedrock_type[i] = bedrock;
+                data.fertility[i] = 0.0;
+            }
+        }
+    }
+
+    patch_projection_holes(data, &written);
+}
 
 /// Rebuilds `elevation_mean`, `elevation_relief`, `bedrock_type`, and `fertility` from
 /// each plate's surface storage. Called after motion/repartition and again after surface
@@ -73,13 +130,20 @@ pub fn rebuild_world_from_plate_surfaces(data: &mut WorldData, registry: &PlateR
         }
     }
 
-    // Patch projection holes from written neighbors. Rigid-rotation quantization
-    // leaves a lattice of owned hexes that no feature projected onto; the static
-    // plate-type baseline is wrong wherever the surrounding crust has evolved
-    // (e.g. 800 m land dots inside a submerged margin). Display-only smoothing;
-    // surfaces are untouched.
+    let written: Vec<bool> = written_priority.iter().map(|p| p.is_some()).collect();
+    patch_projection_holes(data, &written);
+}
+
+/// Patches projection holes from written neighbors. Rigid-rotation quantization
+/// leaves a lattice of owned hexes that no feature projected onto; the static
+/// plate-type baseline is wrong wherever the surrounding crust has evolved
+/// (e.g. 800 m land dots inside a submerged margin). Display-only smoothing;
+/// surfaces are untouched.
+fn patch_projection_holes(data: &mut WorldData, written: &[bool]) {
+    let n = data.cell_count() as usize;
+    let grid = &data.grid;
     for i in 0..n {
-        if written_priority[i].is_some() {
+        if written[i] {
             continue;
         }
         let hex = HexId(i as u32);
@@ -90,7 +154,7 @@ pub fn rebuild_world_from_plate_surfaces(data: &mut WorldData, registry: &PlateR
         let mut bedrock = None;
         for neighbor in grid.neighbors(hex) {
             let j = neighbor.0 as usize;
-            if j >= n || written_priority[j].is_none() {
+            if j >= n || !written[j] {
                 continue;
             }
             elev_sum += f64::from(data.elevation_mean[j]);

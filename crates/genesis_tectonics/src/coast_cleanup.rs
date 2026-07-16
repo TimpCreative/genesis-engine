@@ -11,6 +11,7 @@ use genesis_core::{HexId, PlateId};
 use crate::boundary::BoundaryInfo;
 use crate::plate::{PlateRegistry, PlateType};
 use crate::plate_surface::modify_surface_at_world_hex;
+use crate::projection::ProjectionCache;
 
 /// Depth below sea level applied when submerging ephemeral islands (m).
 pub const SUBMERGE_DEPTH_M: f32 = 10.0;
@@ -22,6 +23,7 @@ pub const FILL_ABOVE_SEA_M: f32 = 1.0;
 pub fn cleanup_coast_artifacts(
     data: &mut WorldData,
     registry: &mut PlateRegistry,
+    cache: &ProjectionCache,
     boundaries: &BoundaryInfo,
     tick_year: i64,
 ) {
@@ -31,6 +33,7 @@ pub fn cleanup_coast_artifacts(
     submerge_ephemeral_islands(
         data,
         registry,
+        cache,
         &boundary_hexes,
         tick_year,
         geo.max_ephemeral_island_hexes,
@@ -41,6 +44,7 @@ pub fn cleanup_coast_artifacts(
     fill_artifact_inland_lakes(
         data,
         registry,
+        cache,
         tick_year,
         geo.max_artifact_lake_hexes,
         geo.min_geologic_lake_depth_m,
@@ -55,9 +59,11 @@ fn is_ocean(data: &WorldData, idx: usize) -> bool {
     data.elevation_mean[idx] < data.sea_level_m
 }
 
+#[allow(clippy::too_many_arguments)]
 fn submerge_ephemeral_islands(
     data: &mut WorldData,
     registry: &mut PlateRegistry,
+    cache: &ProjectionCache,
     boundary_hexes: &BTreeSet<HexId>,
     tick_year: i64,
     max_hexes: u32,
@@ -109,7 +115,7 @@ fn submerge_ephemeral_islands(
         let target = sea - SUBMERGE_DEPTH_M;
         for idx in component {
             let hex = HexId(idx as u32);
-            modify_surface_at_world_hex(registry, data, hex, tick_year, |feature| {
+            modify_surface_at_world_hex(registry, data, cache, hex, tick_year, |feature| {
                 feature.elevation_m = target;
                 feature.relief_m = 0.0;
             });
@@ -120,6 +126,7 @@ fn submerge_ephemeral_islands(
 fn fill_artifact_inland_lakes(
     data: &mut WorldData,
     registry: &mut PlateRegistry,
+    cache: &ProjectionCache,
     tick_year: i64,
     max_hexes: u32,
     min_geologic_lake_depth_m: f32,
@@ -177,7 +184,7 @@ fn fill_artifact_inland_lakes(
         let target = sea + FILL_ABOVE_SEA_M;
         for idx in component {
             let hex = HexId(idx as u32);
-            modify_surface_at_world_hex(registry, data, hex, tick_year, |feature| {
+            modify_surface_at_world_hex(registry, data, cache, hex, tick_year, |feature| {
                 feature.elevation_m = target;
                 feature.relief_m = 0.0;
             });
@@ -341,7 +348,13 @@ mod tests {
             );
 
         world.data.sea_level_m = 0.0;
-        cleanup_coast_artifacts(&mut world.data, &mut registry, &BoundaryInfo::default(), 0);
+        cleanup_coast_artifacts(
+            &mut world.data,
+            &mut registry,
+            &ProjectionCache::empty(),
+            &BoundaryInfo::default(),
+            0,
+        );
         rebuild_world_from_plate_surfaces(&mut world.data, &registry);
 
         assert!(
@@ -401,7 +414,13 @@ mod tests {
             );
 
         world.data.sea_level_m = 0.0;
-        cleanup_coast_artifacts(&mut world.data, &mut registry, &BoundaryInfo::default(), 0);
+        cleanup_coast_artifacts(
+            &mut world.data,
+            &mut registry,
+            &ProjectionCache::empty(),
+            &BoundaryInfo::default(),
+            0,
+        );
         rebuild_world_from_plate_surfaces(&mut world.data, &registry);
 
         assert!(
@@ -473,7 +492,13 @@ mod tests {
             );
 
         world.data.sea_level_m = 0.0;
-        cleanup_coast_artifacts(&mut world.data, &mut registry, &BoundaryInfo::default(), 0);
+        cleanup_coast_artifacts(
+            &mut world.data,
+            &mut registry,
+            &ProjectionCache::empty(),
+            &BoundaryInfo::default(),
+            0,
+        );
         rebuild_world_from_plate_surfaces(&mut world.data, &registry);
 
         assert!(
@@ -545,7 +570,13 @@ mod tests {
             );
 
         world.data.sea_level_m = 0.0;
-        cleanup_coast_artifacts(&mut world.data, &mut registry, &BoundaryInfo::default(), 0);
+        cleanup_coast_artifacts(
+            &mut world.data,
+            &mut registry,
+            &ProjectionCache::empty(),
+            &BoundaryInfo::default(),
+            0,
+        );
         rebuild_world_from_plate_surfaces(&mut world.data, &registry);
 
         assert!(

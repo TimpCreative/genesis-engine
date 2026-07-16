@@ -70,6 +70,7 @@ pub fn apply_boundary_volcanism(
         modify_surface_at_world_hex(
             &mut state.registry,
             data,
+            &state.projection,
             hex,
             tick_year.value(),
             |feature| {

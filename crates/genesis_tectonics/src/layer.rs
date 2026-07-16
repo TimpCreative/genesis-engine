@@ -25,7 +25,7 @@ use crate::plate::TectonicsState;
 use crate::reorganization::maybe_reorganize;
 use crate::sea_level::update_sea_level;
 use crate::volcanism::apply_boundary_volcanism;
-use crate::world_rebuild::rebuild_world_from_plate_surfaces;
+use crate::world_rebuild::rebuild_world_from_plate_surfaces_cached;
 
 /// Default Geological-era tick interval (Doc 06 §4.1).
 pub const DEFAULT_GEOLOGICAL_TICK_YEARS: i64 = 500_000;
@@ -120,9 +120,11 @@ impl SimulationLayer for TectonicsLayer {
                 }
             });
 
-            let colliding = timed_tick_step_value("partition", tick_year, || {
+            let outcome = timed_tick_step_value("partition", tick_year, || {
                 repartition_hexes(world, &mut state.registry)
             });
+            state.projection = outcome.projection;
+            let colliding = outcome.colliding;
             // Wilson cycle: plates recover toward their base rate once out of
             // active continental collision, so continents never stall forever.
             {
@@ -135,20 +137,23 @@ impl SimulationLayer for TectonicsLayer {
             }
 
             timed_tick_step("rebuild_world", tick_year, || {
-                rebuild_world_from_plate_surfaces(world, &state.registry);
+                rebuild_world_from_plate_surfaces_cached(world, &state.registry, &state.projection);
             });
 
             timed_tick_step("boundaries", tick_year, || {
-                state.boundaries = detect_and_classify_boundaries(world, &state.registry);
+                state.boundaries =
+                    detect_and_classify_boundaries(world, &state.registry, &state.projection);
             });
 
             state.elevation_at_tick_start = world.elevation_mean.clone();
 
             let boundaries_for_elevation = state.boundaries.clone();
             timed_tick_step("elevation", tick_year, || {
+                let s = &mut *state;
                 apply_boundary_elevation(
                     world,
-                    &mut state.registry,
+                    &mut s.registry,
+                    &s.projection,
                     &boundaries_for_elevation,
                     interval_years,
                     tick_year,
@@ -196,8 +201,10 @@ impl SimulationLayer for TectonicsLayer {
             if reorg_fired {
                 state.reorg_count += 1;
                 timed_tick_step("repartition_after_reorg", tick_year, || {
-                    repartition_hexes(world, &mut state.registry);
-                    state.boundaries = detect_and_classify_boundaries(world, &state.registry);
+                    let s = &mut *state;
+                    s.projection = repartition_hexes(world, &mut s.registry).projection;
+                    s.boundaries =
+                        detect_and_classify_boundaries(world, &s.registry, &s.projection);
                 });
             }
 
@@ -227,12 +234,19 @@ impl SimulationLayer for TectonicsLayer {
             });
 
             timed_tick_step("rebuild_world_final", tick_year, || {
-                rebuild_world_from_plate_surfaces(world, &state.registry);
+                rebuild_world_from_plate_surfaces_cached(world, &state.registry, &state.projection);
             });
 
             timed_tick_step("coast_cleanup", tick_year, || {
-                cleanup_coast_artifacts(world, &mut state.registry, &boundaries, tick_year.value());
-                rebuild_world_from_plate_surfaces(world, &state.registry);
+                let s = &mut *state;
+                cleanup_coast_artifacts(
+                    world,
+                    &mut s.registry,
+                    &s.projection,
+                    &boundaries,
+                    tick_year.value(),
+                );
+                rebuild_world_from_plate_surfaces_cached(world, &s.registry, &s.projection);
             });
 
             timed_tick_step("clamp", tick_year, || {

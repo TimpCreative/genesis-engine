@@ -324,6 +324,18 @@ fn grow_plates_to_coverage(
     let mut current_size: BTreeMap<PlateId, usize> =
         active_plate_ids.iter().map(|&id| (id, 0usize)).collect();
 
+    // Per-plate growth frontier: the set of unowned hexes adjacent to a plate's
+    // territory. Maintained incrementally so each hex-addition is O(neighbors +
+    // plates·log n) instead of rescanning the plate's whole footprint — the
+    // scan made formation O(n²) and dominated level-8 generation (~13s).
+    // A `BTreeSet` iterates in ascending `HexId`, matching the old
+    // sort+dedup exactly, so the same rng draw picks the same hex: worlds stay
+    // bit-for-bit identical.
+    let mut frontier: BTreeMap<PlateId, BTreeSet<HexId>> = active_plate_ids
+        .iter()
+        .map(|&id| (id, BTreeSet::new()))
+        .collect();
+
     for (i, plate_opt) in plate_id_for_hex.iter().enumerate() {
         if let Some(id) = plate_opt {
             owned_hexes
@@ -333,6 +345,16 @@ fn grow_plates_to_coverage(
             *current_size.get_mut(id).expect("plate tracked") += 1;
         }
     }
+    for (&id, owned) in &owned_hexes {
+        let set = frontier.get_mut(&id).expect("plate tracked");
+        for &hex in owned {
+            for &neighbor in grid.neighbors(hex) {
+                if plate_id_for_hex[neighbor.0 as usize].is_none() {
+                    set.insert(neighbor);
+                }
+            }
+        }
+    }
 
     let mut total_owned = current_size.values().sum::<usize>();
 
@@ -340,11 +362,9 @@ fn grow_plates_to_coverage(
         let Some(plate_id) = ({
             let growth_ctx = GrowthContext {
                 registry,
-                grid,
                 active_plate_ids,
-                owned_hexes: &owned_hexes,
-                plate_id_for_hex,
                 current_size: &current_size,
+                frontier: &frontier,
                 total_cells,
                 enforce_per_plate_budget,
             };
@@ -353,9 +373,14 @@ fn grow_plates_to_coverage(
             break;
         };
 
-        let owned = owned_hexes.get(&plate_id).expect("plate tracked");
-        let hex = find_growth_candidate(grid, owned, plate_id_for_hex, rng)
-            .expect("picked plate must have a growth candidate");
+        let candidates = frontier.get(&plate_id).expect("plate tracked");
+        let count = candidates.len();
+        debug_assert!(count > 0, "picked plate must have a growth candidate");
+        let hex = *candidates
+            .iter()
+            .nth(rng.gen_range(0..count))
+            .expect("frontier non-empty");
+
         plate_id_for_hex[hex.0 as usize] = Some(plate_id);
         owned_hexes
             .get_mut(&plate_id)
@@ -363,16 +388,26 @@ fn grow_plates_to_coverage(
             .push(hex);
         *current_size.get_mut(&plate_id).expect("plate id valid") += 1;
         total_owned += 1;
+
+        // `hex` is now owned: drop it from every plate's frontier, then add its
+        // still-unowned neighbors to the growing plate's frontier.
+        for set in frontier.values_mut() {
+            set.remove(&hex);
+        }
+        let growing = frontier.get_mut(&plate_id).expect("plate tracked");
+        for &neighbor in grid.neighbors(hex) {
+            if plate_id_for_hex[neighbor.0 as usize].is_none() {
+                growing.insert(neighbor);
+            }
+        }
     }
 }
 
 struct GrowthContext<'a> {
     registry: &'a PlateRegistry,
-    grid: &'a HexGrid,
     active_plate_ids: &'a [PlateId],
-    owned_hexes: &'a BTreeMap<PlateId, Vec<HexId>>,
-    plate_id_for_hex: &'a [Option<PlateId>],
     current_size: &'a BTreeMap<PlateId, usize>,
+    frontier: &'a BTreeMap<PlateId, BTreeSet<HexId>>,
     total_cells: usize,
     enforce_per_plate_budget: bool,
 }
@@ -396,8 +431,17 @@ fn pick_next_plate_to_grow(
                     return false;
                 }
             }
-            let owned = ctx.owned_hexes.get(&id).map(Vec::as_slice).unwrap_or(&[]);
-            find_growth_candidate(ctx.grid, owned, ctx.plate_id_for_hex, rng).is_some()
+            // A plate is growable iff its frontier is non-empty. Draw and
+            // discard one value for every probed non-empty plate: the old
+            // `find_growth_candidate` probe consumed the rng identically, so
+            // preserving that keeps generated worlds bit-for-bit unchanged.
+            match ctx.frontier.get(&id) {
+                Some(set) if !set.is_empty() => {
+                    let _ = rng.gen_range(0..set.len());
+                    true
+                }
+                _ => false,
+            }
         })
         .collect();
     eligible.sort_by_key(|id| id.0);
@@ -439,33 +483,6 @@ fn pick_next_plate_to_grow(
     }
 
     Some(weights.last().expect("non-empty").0)
-}
-
-/// Doc 06 §2.2 — random unowned frontier neighbor; candidates sorted by `HexId` before draw.
-fn find_growth_candidate(
-    grid: &HexGrid,
-    owned: &[HexId],
-    plate_id_for_hex: &[Option<PlateId>],
-    rng: &mut rand::rngs::SmallRng,
-) -> Option<HexId> {
-    let mut candidates: Vec<HexId> = Vec::new();
-
-    for &hex in owned {
-        for &neighbor in grid.neighbors(hex) {
-            if plate_id_for_hex[neighbor.0 as usize].is_none() {
-                candidates.push(neighbor);
-            }
-        }
-    }
-
-    candidates.sort_by_key(|h| h.0);
-    candidates.dedup();
-
-    if candidates.is_empty() {
-        return None;
-    }
-
-    Some(candidates[rng.gen_range(0..candidates.len())])
 }
 
 fn assign_plate_types(

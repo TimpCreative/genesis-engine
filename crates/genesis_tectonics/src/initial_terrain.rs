@@ -28,11 +28,25 @@ pub const MEDIUM_NOISE_AMPLITUDE_M: f32 = 300.0;
 /// Per-hex noise amplitude (m): local texture.
 pub const FINE_NOISE_AMPLITUDE_M: f32 = 60.0;
 
-/// Neighbor-averaging passes for the coarse octave.
+/// Neighbor-averaging passes for the coarse octave AT THE REFERENCE LEVEL.
 const COARSE_SMOOTHING_PASSES: u32 = 6;
 
-/// Neighbor-averaging passes for the medium octave.
+/// Neighbor-averaging passes for the medium octave AT THE REFERENCE LEVEL.
 const MEDIUM_SMOOTHING_PASSES: u32 = 2;
+
+/// Subdivision level the pass counts are calibrated for.
+const NOISE_REFERENCE_LEVEL: i32 = 7;
+
+/// Scales smoothing passes so the noise's PHYSICAL wavelength is the same at
+/// every subdivision level. Smoothing diffuses ~sqrt(passes) hexes; hex
+/// spacing shrinks by sqrt(3) per level (3x cells), so passes must scale by
+/// 3x per level. Without this, level-8 worlds get "regional" noise at local
+/// wavelengths — continents peppered with small inland seas.
+fn smoothing_passes_for_level(base: u32, subdivision_level: u8) -> u32 {
+    let delta = subdivision_level as i32 - NOISE_REFERENCE_LEVEL;
+    let factor = 3.0_f64.powi(delta);
+    ((f64::from(base) * factor).round() as u32).max(1)
+}
 
 /// Populates plate surfaces with initial terrain, then rebuilds `WorldData`.
 pub fn apply_formation_terrain(data: &mut WorldData, registry: &mut PlateRegistry, rng: &WorldRng) {
@@ -93,8 +107,11 @@ fn correlated_elevation_noise(data: &WorldData, rng: &WorldRng) -> Vec<f32> {
     let coarse_white: Vec<f32> = (0..n).map(|_| noise_rng.gen_range(-1.0f32..=1.0)).collect();
     let fine_white: Vec<f32> = (0..n).map(|_| noise_rng.gen_range(-1.0f32..=1.0)).collect();
 
-    let coarse = normalized(smoothed(&coarse_white, data, COARSE_SMOOTHING_PASSES));
-    let medium = normalized(smoothed(&fine_white, data, MEDIUM_SMOOTHING_PASSES));
+    let level = data.grid.subdivision_level();
+    let coarse_passes = smoothing_passes_for_level(COARSE_SMOOTHING_PASSES, level);
+    let medium_passes = smoothing_passes_for_level(MEDIUM_SMOOTHING_PASSES, level);
+    let coarse = normalized(smoothed(&coarse_white, data, coarse_passes));
+    let medium = normalized(smoothed(&fine_white, data, medium_passes));
 
     let combined: Vec<f32> = (0..n)
         .map(|i| {

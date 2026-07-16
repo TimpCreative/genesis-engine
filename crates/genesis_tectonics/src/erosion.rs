@@ -13,6 +13,7 @@ use crate::plate::{PlateRegistry, TectonicsState};
 use crate::plate_surface::{
     continental_crust_at, modify_surface_at_world_hex, surface_elevation_at,
 };
+use crate::projection::ProjectionCache;
 
 /// Per-tick erosion variation stream (§4.4).
 pub const EROSION_NOISE_STREAM: &str = "tectonics.erosion_noise";
@@ -120,9 +121,10 @@ pub fn ensure_deposition_buffer(state: &mut TectonicsState, cell_count: usize) {
 pub fn apply_land_erosion(
     data: &WorldData,
     registry: &mut PlateRegistry,
+    cache: &ProjectionCache,
     tick_interval_years: f64,
     base_rate_per_year: f64,
-    noise_factors: &BTreeMap<HexId, f64>,
+    noise_factors: &[f64],
     tick_year: WorldYear,
 ) -> BTreeMap<HexId, f64> {
     let mut eroded = BTreeMap::new();
@@ -144,7 +146,7 @@ pub fn apply_land_erosion(
         // buoyant root and erodes all the way to sea level, so abandoned
         // volcanic islands are transient. Without the freeboard,
         // persistent-crust continents grind to sea level within ~100M years.
-        let freeboard = if continental_crust_at(data, registry, hex) {
+        let freeboard = if continental_crust_at(data, registry, cache, hex) {
             CONTINENTAL_FREEBOARD_M
         } else {
             0.0
@@ -156,7 +158,7 @@ pub fn apply_land_erosion(
 
         let bedrock_mult = bedrock_erosion_multiplier(data.bedrock_type[idx]);
         let climate = climate_modifier(data, hex, climate_active);
-        let noise = noise_factors.get(&hex).copied().unwrap_or(1.0);
+        let noise = noise_factors.get(idx).copied().unwrap_or(1.0);
         let raw = f64::from(erodible)
             * base_rate_per_year
             * climate
@@ -169,7 +171,7 @@ pub fn apply_land_erosion(
         }
 
         let amount_f32 = amount as f32;
-        modify_surface_at_world_hex(registry, data, hex, tick_value, |feature| {
+        modify_surface_at_world_hex(registry, data, cache, hex, tick_value, |feature| {
             feature.elevation_m -= amount_f32;
             let remaining_above = elev_above - amount_f32;
             if elev_above > 0.0 {
@@ -211,6 +213,7 @@ pub fn route_eroded_mass(
     data: &WorldData,
     cumulative_deposition_m: &mut [f32],
     registry: &mut PlateRegistry,
+    cache: &ProjectionCache,
     eroded_per_hex: &BTreeMap<HexId, f64>,
     tick_year: WorldYear,
 ) {
@@ -227,7 +230,7 @@ pub fn route_eroded_mass(
         cumulative_deposition_m[idx] += mass as f32;
 
         if cumulative_deposition_m[idx] > DEPOSITION_THRESHOLD_M {
-            modify_surface_at_world_hex(registry, data, target, tick_value, |feature| {
+            modify_surface_at_world_hex(registry, data, cache, target, tick_value, |feature| {
                 if matches!(
                     feature.bedrock,
                     BedrockType::Igneous | BedrockType::Metamorphic
@@ -243,6 +246,7 @@ pub fn route_eroded_mass(
 pub fn increment_shallow_tropical_fertility(
     data: &WorldData,
     registry: &mut PlateRegistry,
+    cache: &ProjectionCache,
     tick_year: WorldYear,
 ) {
     let sea = data.sea_level_m;
@@ -250,7 +254,7 @@ pub fn increment_shallow_tropical_fertility(
     let tick_value = tick_year.value();
 
     for hex in data.grid.iter() {
-        let Some(elevation_m) = surface_elevation_at(data, registry, hex) else {
+        let Some(elevation_m) = surface_elevation_at(data, registry, cache, hex) else {
             continue;
         };
         if elevation_m >= sea {
@@ -267,24 +271,20 @@ pub fn increment_shallow_tropical_fertility(
             continue;
         }
 
-        modify_surface_at_world_hex(registry, data, hex, tick_value, |feature| {
+        modify_surface_at_world_hex(registry, data, cache, hex, tick_value, |feature| {
             feature.fertility = (feature.fertility + FERTILITY_INCREMENT_PER_TICK).min(1.0);
         });
     }
 }
 
 /// Builds per-hex erosion noise multipliers from `tectonics.erosion_noise` at this tick year.
-pub fn erosion_noise_factors(
-    data: &WorldData,
-    rng: &WorldRng,
-    tick_year: WorldYear,
-) -> BTreeMap<HexId, f64> {
+pub fn erosion_noise_factors(data: &WorldData, rng: &WorldRng, tick_year: WorldYear) -> Vec<f64> {
     let mut noise_rng = rng.stream_at(EROSION_NOISE_STREAM, tick_year.value() as u64);
-    let mut factors = BTreeMap::new();
-    for hex in data.grid.iter() {
+    let n = data.cell_count() as usize;
+    let mut factors = Vec::with_capacity(n);
+    for _ in 0..n {
         let u: f64 = noise_rng.gen_range(0.0..1.0);
-        let factor = 1.0 + (u * 2.0 - 1.0) * EROSION_NOISE_AMPLITUDE;
-        factors.insert(hex, factor);
+        factors.push(1.0 + (u * 2.0 - 1.0) * EROSION_NOISE_AMPLITUDE);
     }
     factors
 }
@@ -298,19 +298,26 @@ pub fn apply_erosion_tick(
     tick_interval_years: f64,
 ) {
     ensure_deposition_buffer(state, data.grid.cell_count() as usize);
+    let TectonicsState {
+        registry,
+        cumulative_deposition_m,
+        projection,
+        ..
+    } = state;
 
-    apply_isostasy(&mut state.registry, data.sea_level_m, tick_interval_years);
+    apply_isostasy(registry, data.sea_level_m, tick_interval_years);
 
     let base_rate = data.parameters.core.geology.base_erosion_rate_per_year;
     if base_rate <= 0.0 {
-        increment_shallow_tropical_fertility(data, &mut state.registry, tick_year);
+        increment_shallow_tropical_fertility(data, registry, projection, tick_year);
         return;
     }
 
     let noise = erosion_noise_factors(data, rng, tick_year);
     let eroded = apply_land_erosion(
         data,
-        &mut state.registry,
+        registry,
+        projection,
         tick_interval_years,
         base_rate,
         &noise,
@@ -318,12 +325,13 @@ pub fn apply_erosion_tick(
     );
     route_eroded_mass(
         data,
-        &mut state.cumulative_deposition_m,
-        &mut state.registry,
+        cumulative_deposition_m,
+        registry,
+        projection,
         &eroded,
         tick_year,
     );
-    increment_shallow_tropical_fertility(data, &mut state.registry, tick_year);
+    increment_shallow_tropical_fertility(data, registry, projection, tick_year);
 }
 
 /// Thermal subsidence rate for submerged oceanic crust (fraction of the
@@ -568,10 +576,16 @@ mod tests {
         registry: &mut PlateRegistry,
         interval: f64,
         rate: f64,
-        factors: &BTreeMap<HexId, f64>,
     ) -> BTreeMap<HexId, f64> {
-        let eroded =
-            apply_land_erosion(data, registry, interval, rate, factors, WorldYear(500_000));
+        let eroded = apply_land_erosion(
+            data,
+            registry,
+            &ProjectionCache::empty(),
+            interval,
+            rate,
+            &[],
+            WorldYear(500_000),
+        );
         rebuild_world_from_plate_surfaces(data, registry);
         eroded
     }
@@ -590,10 +604,7 @@ mod tests {
         data.elevation_relief[hex_land.0 as usize] = 200.0;
         seed_surfaces_from_world(data, &mut registry);
 
-        let mut factors = BTreeMap::new();
-        factors.insert(hex_land, 1.0);
-
-        let eroded = erode_and_rebuild(data, &mut registry, 500_000.0, 1e-7, &factors);
+        let eroded = erode_and_rebuild(data, &mut registry, 500_000.0, 1e-7);
         assert!(eroded.get(&hex_land).copied().unwrap_or(0.0) > 0.0);
         assert!(data.elevation_mean[hex_land.0 as usize] < 1000.0);
         assert_eq!(data.elevation_mean[hex_sea.0 as usize], -100.0);
@@ -611,7 +622,7 @@ mod tests {
         data.elevation_mean[hex.0 as usize] = 500.0;
         seed_surfaces_from_world(data, &mut registry);
 
-        let eroded = erode_and_rebuild(data, &mut registry, 500_000.0, 0.0, &BTreeMap::new());
+        let eroded = erode_and_rebuild(data, &mut registry, 500_000.0, 0.0);
         assert!(eroded.is_empty());
         assert_eq!(data.elevation_mean[hex.0 as usize], 500.0);
     }
@@ -632,9 +643,8 @@ mod tests {
         seed_surfaces_from_world(&world_a.data, &mut reg_a);
         seed_surfaces_from_world(&world_b.data, &mut reg_b);
 
-        let factors = BTreeMap::from([(hex, 1.0)]);
-        let a = erode_and_rebuild(&mut world_a.data, &mut reg_a, 500_000.0, 1e-7, &factors);
-        let b = erode_and_rebuild(&mut world_b.data, &mut reg_b, 500_000.0, 1e-7, &factors);
+        let a = erode_and_rebuild(&mut world_a.data, &mut reg_a, 500_000.0, 1e-7);
+        let b = erode_and_rebuild(&mut world_b.data, &mut reg_b, 500_000.0, 1e-7);
         assert_eq!(a, b);
         assert_eq!(
             world_a.data.elevation_mean[hex.0 as usize],
@@ -667,6 +677,7 @@ mod tests {
                 data,
                 &mut state.cumulative_deposition_m,
                 &mut state.registry,
+                &ProjectionCache::empty(),
                 &eroded,
                 WorldYear(500_000),
             );
@@ -681,6 +692,7 @@ mod tests {
             data,
             &mut state.cumulative_deposition_m,
             &mut state.registry,
+            &ProjectionCache::empty(),
             &BTreeMap::from([(high, 25.0)]),
             WorldYear(500_000),
         );
@@ -720,6 +732,7 @@ mod tests {
                 &data,
                 &mut state.cumulative_deposition_m,
                 &mut state.registry,
+                &ProjectionCache::empty(),
                 &BTreeMap::from([(high, 5.0)]),
                 WorldYear(500_000),
             );
@@ -758,6 +771,7 @@ mod tests {
                 data,
                 &mut state.cumulative_deposition_m,
                 &mut state.registry,
+                &ProjectionCache::empty(),
                 &BTreeMap::from([(high, 2.0)]),
                 WorldYear(500_000),
             );
@@ -787,7 +801,12 @@ mod tests {
             data.elevation_mean[idx] = -50.0;
             seed_surfaces_from_world(data, &mut registry);
             let before = data.fertility[idx];
-            increment_shallow_tropical_fertility(data, &mut registry, WorldYear(500_000));
+            increment_shallow_tropical_fertility(
+                data,
+                &mut registry,
+                &ProjectionCache::empty(),
+                WorldYear(500_000),
+            );
             rebuild_world_from_plate_surfaces(data, &registry);
             assert!(
                 data.fertility[idx] > before,
@@ -810,7 +829,12 @@ mod tests {
         data.elevation_mean[hex.0 as usize] = 100.0;
         seed_surfaces_from_world(data, &mut registry);
         let before = data.fertility[hex.0 as usize];
-        increment_shallow_tropical_fertility(data, &mut registry, WorldYear(500_000));
+        increment_shallow_tropical_fertility(
+            data,
+            &mut registry,
+            &ProjectionCache::empty(),
+            WorldYear(500_000),
+        );
         rebuild_world_from_plate_surfaces(data, &registry);
         assert_eq!(data.fertility[hex.0 as usize], before);
     }
@@ -831,12 +855,22 @@ mod tests {
             let idx = hex.0 as usize;
             data.elevation_mean[idx] = -50.0;
             seed_surfaces_from_world(data, &mut registry);
-            increment_shallow_tropical_fertility(data, &mut registry, WorldYear(500_000));
+            increment_shallow_tropical_fertility(
+                data,
+                &mut registry,
+                &ProjectionCache::empty(),
+                WorldYear(500_000),
+            );
             rebuild_world_from_plate_surfaces(data, &registry);
             let after_submerged = data.fertility[idx];
             data.elevation_mean[idx] = 500.0;
             seed_surfaces_from_world(data, &mut registry);
-            increment_shallow_tropical_fertility(data, &mut registry, WorldYear(500_000));
+            increment_shallow_tropical_fertility(
+                data,
+                &mut registry,
+                &ProjectionCache::empty(),
+                WorldYear(500_000),
+            );
             rebuild_world_from_plate_surfaces(data, &registry);
             assert_eq!(data.fertility[idx], after_submerged);
             return;
@@ -862,9 +896,8 @@ mod tests {
         seed_surfaces_from_world(&world.data, &mut reg_a);
         seed_surfaces_from_world(&world_sed.data, &mut reg_b);
 
-        let factors = BTreeMap::from([(hex, 1.0)]);
-        erode_and_rebuild(&mut world.data, &mut reg_a, 500_000.0, 1e-7, &factors);
-        erode_and_rebuild(&mut world_sed.data, &mut reg_b, 500_000.0, 1e-7, &factors);
+        erode_and_rebuild(&mut world.data, &mut reg_a, 500_000.0, 1e-7);
+        erode_and_rebuild(&mut world_sed.data, &mut reg_b, 500_000.0, 1e-7);
 
         let igneous_elev = world.data.elevation_mean[hex.0 as usize];
         let sedimentary_elev = world_sed.data.elevation_mean[hex.0 as usize];

@@ -6,7 +6,8 @@ use genesis_core::{HexId, PlateId};
 use serde::{Deserialize, Serialize};
 
 use crate::frames::current_world_to_birth_hex;
-use crate::plate::{PlateRegistry, PlateType};
+use crate::plate::{Plate, PlateRegistry, PlateType};
+use crate::projection::ProjectionCache;
 
 /// Matches [`crate::initial_terrain::CONTINENTAL_BASE_ELEVATION_M`].
 const CONTINENTAL_BASELINE_M: f32 = 800.0;
@@ -111,10 +112,25 @@ pub fn type_baseline(plate_type: PlateType) -> (f32, BedrockType) {
     }
 }
 
+/// Birth hex of the plate material at `world_hex`: projection-cache lookup
+/// when the cache covers this hex, otherwise the direct inverse rotation.
+fn birth_hex_at(
+    data: &WorldData,
+    plate: &Plate,
+    cache: &ProjectionCache,
+    world_hex: HexId,
+) -> HexId {
+    match cache.birth_hex_for(data, world_hex) {
+        Some(birth_hex) => birth_hex,
+        None => current_world_to_birth_hex(&data.grid, world_hex, plate),
+    }
+}
+
 /// Effective elevation at a world hex from plate surfaces (includes same-tick boundary writes).
 pub fn surface_elevation_at(
     data: &WorldData,
     registry: &PlateRegistry,
+    cache: &ProjectionCache,
     world_hex: HexId,
 ) -> Option<f32> {
     let idx = world_hex.0 as usize;
@@ -126,7 +142,7 @@ pub fn surface_elevation_at(
         return None;
     }
     let plate = registry.get(plate_id)?;
-    let birth_hex = current_world_to_birth_hex(&data.grid, world_hex, plate);
+    let birth_hex = birth_hex_at(data, plate, cache, world_hex);
     Some(match plate.surface.get(birth_hex) {
         Some(feature) => feature.elevation_m,
         None => type_baseline(plate.plate_type).0,
@@ -140,7 +156,12 @@ pub const CRUST_FALLBACK_DEPTH_M: f32 = -1500.0;
 /// feature. Hexes without a feature (projection holes) fall back to the
 /// displayed bedrock/elevation, which mirrors their neighbors — a continental
 /// plate's accreted oceanic apron must not read as continental there.
-pub fn continental_crust_at(data: &WorldData, registry: &PlateRegistry, world_hex: HexId) -> bool {
+pub fn continental_crust_at(
+    data: &WorldData,
+    registry: &PlateRegistry,
+    cache: &ProjectionCache,
+    world_hex: HexId,
+) -> bool {
     let idx = world_hex.0 as usize;
     if idx >= data.plate_id.len() {
         return false;
@@ -152,7 +173,7 @@ pub fn continental_crust_at(data: &WorldData, registry: &PlateRegistry, world_he
     let Some(plate) = registry.get(plate_id) else {
         return false;
     };
-    let birth_hex = current_world_to_birth_hex(&data.grid, world_hex, plate);
+    let birth_hex = birth_hex_at(data, plate, cache, world_hex);
     match plate.surface.get(birth_hex) {
         Some(feature) => feature.continental_crust,
         None => {
@@ -180,6 +201,7 @@ pub fn baseline_feature(plate_type: PlateType, age_year: i64) -> SurfaceFeature 
 pub fn modify_surface_at_world_hex<F>(
     registry: &mut PlateRegistry,
     data: &WorldData,
+    cache: &ProjectionCache,
     world_hex: HexId,
     tick_year: i64,
     modifier: F,
@@ -195,21 +217,17 @@ pub fn modify_surface_at_world_hex<F>(
         return;
     }
 
-    let (plate_type, birth_hex) = {
+    let birth_hex = {
         let Some(plate) = registry.get(plate_id) else {
             return;
         };
-        (
-            plate.plate_type,
-            current_world_to_birth_hex(&data.grid, world_hex, plate),
-        )
+        birth_hex_at(data, plate, cache, world_hex)
     };
 
     let Some(plate) = registry.plates_mut().get_mut(&plate_id) else {
         return;
     };
 
-    let _ = plate_type;
     // Modify-only: hexes without a stored feature (projection holes, aprons)
     // display neighbor-derived values, and writing those back would MINT crust
     // out of display data — erosion or volcanism touching a margin hole would

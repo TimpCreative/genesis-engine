@@ -18,6 +18,7 @@ pub mod motion;
 pub mod partition;
 pub mod plate;
 pub mod plate_surface;
+pub mod projection;
 pub mod reorganization;
 pub mod sea_level;
 pub mod validation;
@@ -58,11 +59,12 @@ pub use initial_terrain::{
 };
 pub use layer::{DEFAULT_GEOLOGICAL_TICK_YEARS, TectonicsLayer, geological_tick_interval};
 pub use motion::{advance_plate_motion, effective_position_direction, surface_velocity_m_per_year};
-pub use partition::repartition_hexes;
+pub use partition::{RepartitionOutcome, repartition_hexes};
 pub use plate::{
     HotSpot, HotSpotRegistry, Plate, PlateClass, PlateRegistry, PlateType, TectonicsState,
 };
 pub use plate_surface::{PlateSurface, SurfaceFeature, baseline_feature, type_baseline};
+pub use projection::ProjectionCache;
 pub use reorganization::{
     REORGANIZATION_ACTION_STREAM, REORGANIZATION_CHECK_STREAM, maybe_reorganize,
     purge_extinct_plates, update_last_nonempty_years,
