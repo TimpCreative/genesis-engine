@@ -1,12 +1,13 @@
 # Genesis Engine — Data Layer Specification
 
 **Document Type:** Tier 2 — System Specification
-**Status:** Draft v0.5
-**Last Updated:** May 2026
+**Status:** Draft v0.6
+**Last Updated:** July 2026
 **Owner:** Brax Johnson
 **Implementing Phase:** 0 (Foundation)
 
 **Changelog:**
+- v0.6 (July 2026): Production resolution set to subdivision 8 (§3.1). The game runs at 8 (app env fallback and new-world menu default); the `WorldParameters` library default stays 7 for iteration speed. Directive: module acceptance gates and final verification must pass at subdiv 8, and performance optimization targets 8 (also recorded in CONTRIBUTING-AI.md).
 - v0.5 (May 2026): Default subdivision level changed from 8 to 7 (§3.1, §14.4, GridParameters doc comment). Rationale: level 7 (21,872 hexes) balances simulation cost, save size, and rendering performance for a worldbuilding tool. Users can opt into 8 or 9 for finer detail. Also added note in §3.3.1 about the icosahedron vertex labeling fix uncovered during Phase 0 smoke test (geometric vertex array now permuted to match Kristensen topological indexing — see prompt 8.6).
 - v0.4 (May 2026): Clarified §5.1 that `parameters` field is added in step 4. Added sentinel constant documentation to §5.3 (`PlateId::NONE`, `BiomeId::NONE`). Corrected §16 file organization to reflect actual code layout (`Direction` lives in `grid::ids`, not `data::enums`).
 - v0.3 (May 2026): Rewrote §3.3.1 to describe Vince/Kristensen topological neighbor scheme (replacing geometric k-NN approach). Updated §3.4 to reference topological construction. Added algorithm source citations.
@@ -132,7 +133,9 @@ The grid is defined by a **subdivision level** (an integer). Higher subdivision 
 
 **Default subdivision level: 7** (21,872 cells, ~23,300 km² per hex on Earth-sized planets). This is the value used unless `WorldParameters.grid.subdivision_level` overrides it. Level 7 balances simulation cost, save file size, and rendering performance for a worldbuilding tool — fine enough to distinguish drainage basins and biome zones, coarse enough that worlds generate and simulate quickly.
 
-Users can opt into higher detail (level 8 or 9) for finer geographic resolution at the cost of slower simulation. Levels below 7 are valid but coarser than is typical for v1 worldbuilding.
+**Production resolution: 8** (65,612 cells, ~7,770 km² per hex). The game itself runs at subdivision 8 — the app env fallback (`GENESIS_SUBDIVISION_LEVEL`) and the new-world menu default are both 8. Levels 5–7 remain the fast-iteration band for unit tests and gates; module acceptance verification and performance optimization target 8 (see CONTRIBUTING-AI.md, "Production Resolution").
+
+Users can opt into higher detail (level 9) for finer geographic resolution at the cost of slower simulation. Levels below 7 are valid but coarser than is typical for v1 worldbuilding.
 
 **Note on level 0:** at subdivision level 0, all 12 cells are pentagons (the 12 icosahedron vertices). This is useful as a degenerate case for testing but not for actual worldbuilding. Levels 5–9 are the practical range for v1 worlds.
 

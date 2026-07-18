@@ -107,6 +107,16 @@ The most expensive bugs in this project will be determinism violations. They're 
 
 When in doubt, write a determinism test alongside the code.
 
+### Production Resolution: Subdivision 8
+
+The game runs at **subdivision level 8** (65,612 cells; ISEA3H cell count is `10 × 3^n + 2`, per Doc 04 §3.1). Brax's directive (July 2026): levels 5–7 are for fast iteration and general testing, but **module acceptance gates and final verification must pass at subdiv 8**, and performance optimization targets 8.
+
+Practical consequences:
+
+- Resolution-sensitive behavior (per-hex rates, area fractions, relief limits, component sizes) must be verified at 8 before a task is declared done — per-hex effects bite differently across levels (the Doc 06 v0.13 subduction-erosion lesson: an unscaled per-hex rate destroyed half the continental crust at subdiv 5).
+- Long verification runs at 8 are background-task material: a full 4 B-year history at subdiv 8 is minutes, not seconds.
+- The `WorldParameters.grid.subdivision_level` library default stays 7 for iteration speed; the game-facing defaults (app env fallback, new-world menu) are 8.
+
 ---
 
 ## Ending a Session

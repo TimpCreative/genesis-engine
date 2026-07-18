@@ -45,7 +45,8 @@ impl Default for WorldGenConfig {
         let defaults = WorldParameters::default();
         Self {
             seed: defaults.core.seed.value,
-            subdivision_level: 6,
+            // The game runs at subdivision 8 (production resolution, Doc 04 §3.1).
+            subdivision_level: 8,
             target_year: 1_000_000_000,
             major_plates: defaults.core.geology.initial_major_plate_count,
             minor_plates: defaults.core.geology.initial_minor_plate_count,

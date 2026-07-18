@@ -1,6 +1,7 @@
 // Environment variables read by the app:
 // - GENESIS_TARGET_YEAR (i64): simulated year to advance to. Default 1_000_000.
-// - GENESIS_SUBDIVISION_LEVEL (u8): ISEA3H subdivision level. Default 7 (valid 5–9).
+// - GENESIS_SUBDIVISION_LEVEL (u8): ISEA3H subdivision level. Default 8 (valid 5–9;
+//   8 is the game's production resolution per Doc 04 §3.1).
 // - GENESIS_SEED (u64): world seed. Default from WorldParameters::default().
 // - GENESIS_SCREENSHOT_DIR: if set, runs HEADLESS: generates the world up front,
 //   writes one PNG per render mode, then exits. Without it the app boots into
@@ -66,7 +67,8 @@ fn auto_screenshot_system(
     state.frames_until_next = 3;
 }
 
-const DEFAULT_SUBDIVISION_LEVEL: u8 = 7;
+// Production resolution is 8 (Doc 04 §3.1); levels 5–7 are for fast iteration.
+const DEFAULT_SUBDIVISION_LEVEL: u8 = 8;
 const MIN_SUBDIVISION_LEVEL: u8 = 5;
 const MAX_SUBDIVISION_LEVEL: u8 = 9;
 
@@ -175,7 +177,7 @@ fn run_interactive() {
 /// Env-driven generation + auto screenshots (CI and review loops).
 fn run_headless(screenshot_dir: String) {
     let mut parameters = WorldParameters::default();
-    // Default level 7 (~21.9k hexes) per Doc 06 §9.1; override via GENESIS_SUBDIVISION_LEVEL.
+    // Production resolution is 8 (Doc 04 §3.1); override via GENESIS_SUBDIVISION_LEVEL.
     let subdivision_level = subdivision_level_from_env();
     parameters.core.grid.subdivision_level = subdivision_level;
     eprintln!("GENESIS_SUBDIVISION_LEVEL={subdivision_level}");
