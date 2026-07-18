@@ -7,6 +7,7 @@ members = [
     "crates/genesis_climate",
     "crates/genesis_core",
     "crates/genesis_export",
+    "crates/genesis_hydrology",
     "crates/genesis_mods",
     "crates/genesis_render",
     "crates/genesis_tech",

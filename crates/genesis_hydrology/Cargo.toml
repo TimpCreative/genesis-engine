@@ -1,0 +1,10 @@
+[package]
+name = "genesis_hydrology"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+
+[dependencies]
+genesis_core = { path = "../genesis_core" }

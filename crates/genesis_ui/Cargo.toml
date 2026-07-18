@@ -10,5 +10,6 @@ publish.workspace = true
 bevy = { workspace = true }
 genesis_climate = { path = "../genesis_climate" }
 genesis_core = { path = "../genesis_core" }
+genesis_hydrology = { path = "../genesis_hydrology" }
 genesis_render = { path = "../genesis_render" }
 genesis_tectonics = { path = "../genesis_tectonics" }

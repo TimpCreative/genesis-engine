@@ -199,8 +199,6 @@ pub struct TectonicsState {
     pub elevation_at_tick_start: Vec<f32>,
     /// Prior tick directed edge classes for `BoundaryTransition` detection.
     pub previous_edge_class: BTreeMap<(genesis_core::HexId, genesis_core::HexId), BoundaryType>,
-    /// Baseline divergent boundary length for sea level (§4.7); set on first Geological tick.
-    pub baseline_divergent_length_km: Option<f64>,
     /// Events queued during ticks; flushed to root branch at end of history generation.
     pub pending_events: Vec<genesis_core::events::Event>,
     /// Monotonic counter for [`EventId`](genesis_core::events::EventId) allocation.

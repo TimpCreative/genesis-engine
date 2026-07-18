@@ -46,3 +46,17 @@ impl BasinId {
     /// Sentinel value for land hexes (not in any ocean basin).
     pub const NONE: BasinId = BasinId(u16::MAX);
 }
+
+/// Identifies a standing-water body (ocean, sea, lake) in the hydrology
+/// registry (Doc 08 §2.4). The id is the lowest [`HexId`](crate::HexId) of the
+/// body's basin, making it stable and deterministic. Dry hexes have
+/// [`WaterBodyId::NONE`].
+#[derive(
+    Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Default, Serialize, Deserialize,
+)]
+pub struct WaterBodyId(pub u32);
+
+impl WaterBodyId {
+    /// Sentinel value for dry hexes (not in any water body).
+    pub const NONE: WaterBodyId = WaterBodyId(u32::MAX);
+}

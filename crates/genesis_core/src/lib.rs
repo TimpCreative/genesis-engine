@@ -14,8 +14,8 @@ pub mod world;
 
 pub use branches::{Branch, BranchError, BranchId, BranchTree};
 pub use data::{
-    BasinId, BedrockType, BiomeId, HotSpotId, NationId, PlateId, SettlementId, SpeciesId,
-    WorldData, WorldYear,
+    BasinId, BedrockType, BiomeId, HotSpotId, HydroFlags, NationId, PlateId, SettlementId,
+    SoilClass, SpeciesId, WATER_NONE, WaterBody, WaterBodyId, WaterBodyKind, WorldData, WorldYear,
 };
 pub use events::{
     BoundaryType, Event, EventId, EventKind, EventLocation, EventLog, PlateReorgAction,
@@ -32,9 +32,9 @@ pub use lifecycle::{
 };
 pub use parameters::{
     BiologyParameters, CivilizationParameters, ClimateInitialParameters, CoreParameters,
-    GeologyParameters, GridParameters, ModEntry, ModManifest, ParameterExtensions,
-    ParameterValidationError, ParameterValue, ParameterValueData, PlanetParameters, TimeParameters,
-    WorldParameters, WorldSeed,
+    GeologyParameters, GridParameters, HydrologyParameters, ModEntry, ModManifest,
+    ParameterExtensions, ParameterValidationError, ParameterValue, ParameterValueData,
+    PlanetParameters, TimeParameters, WorldParameters, WorldSeed,
 };
 pub use persistence::{LoadedWorld, PersistenceError, SaveMeta, load_world, save_world};
 pub use rng::{WorldRng, compute_effective_seed};

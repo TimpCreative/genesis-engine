@@ -76,13 +76,12 @@ pub enum EventKind {
         from: BoundaryType,
         to: BoundaryType,
     },
-    /// Global sea level adjustment (Doc 06 §4.7).
-    SeaLevelChange { delta_m: f32, new_sea_level_m: f32 },
     /// Surface temperature crossed a cooling threshold during Formation (Doc 07 §15).
     PlanetaryCoolingMilestone { surface_temp_c: f32 },
-    /// Condensation sub-phase began; oceans start forming (Doc 07 §15).
+    /// Condensation produced the first standing water; oceans start forming
+    /// (Doc 08 §13; emitted by hydrology since Doc 08 superseded Doc 07 §3.5).
     OceansBeginForming { sea_level_m: f32 },
-    /// Condensation ended; stabilization sub-phase began (Doc 07 §15).
+    /// Condensation ended; the inventory is fully surface-water (Doc 08 §13).
     OceansStabilized { sea_level_m: f32 },
     /// Formation sequence complete (Doc 07 §15).
     FormationComplete {

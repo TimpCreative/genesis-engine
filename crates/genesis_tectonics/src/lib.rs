@@ -25,7 +25,6 @@ pub mod plate;
 pub mod plate_surface;
 pub mod projection;
 pub mod reorganization;
-pub mod sea_level;
 pub mod validation;
 pub mod volcanism;
 pub mod world_rebuild;
@@ -75,7 +74,6 @@ pub use reorganization::{
     REORGANIZATION_ACTION_STREAM, REORGANIZATION_CHECK_STREAM, maybe_reorganize,
     purge_extinct_plates, update_last_nonempty_years,
 };
-pub use sea_level::{total_divergent_boundary_length_km, update_sea_level};
 pub use validation::{
     CONTINENTAL_FRACTION_MAX, CONTINENTAL_FRACTION_MIN, CONTINENTAL_PERSISTENCE_MIN_FRAC,
     ELEVATION_MAX_BOUND_M, ELEVATION_MIN_BOUND_M, EVENT_COUNT_NOTABLE_MAX_AT_FULL_YEAR,
@@ -546,39 +544,6 @@ mod integration_tests {
                 .iter()
                 .any(|e| matches!(e.kind, EventKind::WorldFormation)),
             "expected WorldFormation in root log after formation"
-        );
-    }
-
-    #[test]
-    fn sea_level_bounded_after_formation() {
-        // Tectonic sea-level drift is suppressed during 0–500M (climate owns it).
-        let mut world = test_world();
-        world.data.parameters.core.geology.event_granularity = Significance::Trace;
-        let mut state = TectonicsState::new();
-        generate_full_history_with_tectonics(
-            &mut world,
-            &mut state,
-            WorldYear(600_000_000),
-            |_| {},
-        )
-        .expect("history");
-
-        assert!(
-            world.data.sea_level_m.abs() <= 200.0,
-            "post-formation tectonic sea level should stay within ±200 m (got {})",
-            world.data.sea_level_m
-        );
-
-        let sea_level_events = world
-            .branch_tree
-            .root()
-            .event_log
-            .iter()
-            .filter(|e| matches!(e.kind, EventKind::SeaLevelChange { .. }))
-            .count();
-        assert!(
-            sea_level_events > 0,
-            "expected SeaLevelChange events at Trace granularity (got {sea_level_events})"
         );
     }
 

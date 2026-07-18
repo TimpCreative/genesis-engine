@@ -10,7 +10,7 @@ use genesis_core::rng::WorldRng;
 use genesis_core::time::{Era, SimulationLayer, WorldYear};
 
 use crate::events::{emit_phase_transition_event, maybe_emit_cooling_milestone};
-use crate::formation::{composition_at_year, cooling_temperature_c, sea_level_at_year};
+use crate::formation::{composition_at_year, cooling_temperature_c};
 use crate::state::{ClimateState, FormationSubPhase, formation_period_active};
 
 /// Default Geological-era climate tick interval (Doc 07 §2.2).
@@ -86,8 +86,9 @@ impl SimulationLayer for ClimateLayer {
                 let new_phase = FormationSubPhase::for_year(current_year_value);
                 let prev_phase = state.formation_sub_phase;
 
+                // Sea level is hydrology's derived output (Doc 08 §3.4–3.5);
+                // climate no longer writes it during Formation (Doc 08 §17.2).
                 world.global_temperature_c = cooling_temperature_c(current_year_value);
-                world.sea_level_m = sea_level_at_year(current_year_value);
                 state.atmospheric_composition = composition_at_year(current_year_value);
 
                 if new_phase != prev_phase {

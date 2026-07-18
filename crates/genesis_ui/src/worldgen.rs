@@ -1,10 +1,9 @@
 //! World generation entry point and history buffering for the interactive app.
 //!
-//! Owns the layer registration order (tectonics → climate, Doc 07 §13) and
-//! captures lightweight [`HistoryFrame`]s during generation so the viewer can
-//! scrub the timeline without re-simulating. Frames hold only the renderable
-//! per-hex fields (~0.5 MB at subdivision 7), not the grid. Surface water
-//! (hydrology) is out of the game until Doc 08.
+//! Owns the layer registration order (tectonics → climate → hydrology, Doc 08
+//! §2.1) and captures lightweight [`HistoryFrame`]s during generation so the
+//! viewer can scrub the timeline without re-simulating. Frames hold only the
+//! renderable per-hex fields (~0.5 MB at subdivision 7), not the grid.
 
 use genesis_climate::{ClimateLayer, ClimateState, flush_events_to_branch as flush_climate_events};
 use genesis_core::World;
@@ -12,6 +11,9 @@ use genesis_core::data::{ClimateRegimePlaceholder, WorldData};
 use genesis_core::lifecycle::{GenerationError, advance_with_coordinator_observed};
 use genesis_core::parameters::{WorldParameters, WorldSeed};
 use genesis_core::time::{TickCoordinator, WorldYear};
+use genesis_hydrology::{
+    HydrologyLayer, HydrologyState, flush_events_to_branch as flush_hydrology_events,
+};
 use genesis_tectonics::{
     TectonicsLayer, TectonicsState, flush_events_to_branch as flush_tectonic_events,
 };
@@ -109,16 +111,19 @@ pub fn history_stride_years(target_year: i64, cell_count: u32) -> i64 {
     (target_year / max_history_frames(cell_count) as i64).max(500_000)
 }
 
-/// Advances simulation to `target_year` with tectonics and climate registered
-/// on the coordinator. `progress` fires after every tick with the current world
-/// state. (Hydrology is removed until Doc 08.)
+/// Advances simulation to `target_year` with tectonics, climate, and hydrology
+/// registered on the coordinator. `progress` fires after every tick with the
+/// current world state.
 ///
-/// Tectonics registers first; climate second (Doc 07 §13) so climate sees
-/// updated terrain each tick.
+/// Tectonics registers first, climate second (Doc 07 §13), hydrology third
+/// (Doc 08 §2.1): climate sees updated terrain each tick, and hydrology sees
+/// this tick's climate fields while tectonics reads the derived sea level one
+/// tick lagged (Doc 08 §17.1).
 pub fn generate_full_history(
     world: &mut World,
     tectonics: &mut TectonicsState,
     climate: &mut ClimateState,
+    hydrology: &mut HydrologyState,
     target_year: WorldYear,
     mut progress: impl FnMut(&WorldData),
 ) -> Result<(), GenerationError> {
@@ -135,9 +140,11 @@ pub fn generate_full_history(
 
     let (tectonics_layer, tectonics_shared) = TectonicsLayer::attach(tectonics);
     let (climate_layer, climate_shared) = ClimateLayer::attach(climate);
+    let (hydrology_layer, hydrology_shared) = HydrologyLayer::attach(hydrology);
     let mut coordinator = TickCoordinator::new();
     coordinator.add_layer(Box::new(tectonics_layer));
     coordinator.add_layer(Box::new(climate_layer));
+    coordinator.add_layer(Box::new(hydrology_layer));
 
     advance_with_coordinator_observed(world, &mut coordinator, target_year, |data| {
         progress(data);
@@ -146,8 +153,10 @@ pub fn generate_full_history(
 
     *tectonics = TectonicsLayer::detach_state(tectonics_shared);
     *climate = ClimateLayer::detach_state(climate_shared);
+    *hydrology = HydrologyLayer::detach_state(hydrology_shared);
     flush_tectonic_events(world, tectonics);
     flush_climate_events(world, climate);
+    flush_hydrology_events(world, hydrology);
 
     Ok(())
 }
@@ -189,6 +198,7 @@ pub fn generate_world_streaming(config: &WorldGenConfig, mut emit: impl FnMut(Ge
 
     let mut tectonics = TectonicsState::new();
     let mut climate = ClimateState::new();
+    let mut hydrology = HydrologyState::new();
 
     let target = config.target_year.max(1);
     let stride = history_stride_years(target, world.data.cell_count());
@@ -201,6 +211,7 @@ pub fn generate_world_streaming(config: &WorldGenConfig, mut emit: impl FnMut(Ge
         &mut world,
         &mut tectonics,
         &mut climate,
+        &mut hydrology,
         WorldYear(target),
         |data| {
             let year = data.current_year.value();

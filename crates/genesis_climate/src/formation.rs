@@ -9,19 +9,6 @@ use crate::state::{
     T_INITIAL_MOLTEN_C,
 };
 
-/// Sea level at the start of Formation (Doc 07 §3.5).
-/// All water is in atmosphere as vapor; only ocean basin bottoms are below baseline.
-pub const FORMATION_INITIAL_SEA_LEVEL_M: f32 = -3000.0;
-
-/// Sea level at start of Cooling (water vapor still in atmosphere).
-pub const COOLING_END_SEA_LEVEL_M: f32 = -1500.0;
-
-/// Sea level at start of Condensation (rain begins).
-pub const CONDENSATION_END_SEA_LEVEL_M: f32 = -300.0;
-
-/// Sea level at end of Stabilization (modern Earth analog).
-pub const STABILIZATION_END_SEA_LEVEL_M: f32 = 0.0;
-
 /// Asymptotic cooling curve (Doc 07 §3.3):
 ///
 /// `T(t) = T_inf + (T_initial - T_inf) * exp(-t / tau)`
@@ -132,47 +119,6 @@ pub fn composition_at_year(year_value: i64) -> AtmosphericComposition {
     }
 }
 
-/// Computes sea level at a specific year within Formation, by linear
-/// interpolation between sub-phase boundaries.
-pub fn sea_level_at_year(year_value: i64) -> f32 {
-    let phase = FormationSubPhase::for_year(year_value);
-    let (start_year, end_year, start_level, end_level) = match phase {
-        FormationSubPhase::Molten => (
-            0,
-            MOLTEN_END_YEAR,
-            FORMATION_INITIAL_SEA_LEVEL_M,
-            FORMATION_INITIAL_SEA_LEVEL_M,
-        ),
-        FormationSubPhase::Cooling => (
-            MOLTEN_END_YEAR,
-            COOLING_END_YEAR,
-            FORMATION_INITIAL_SEA_LEVEL_M,
-            COOLING_END_SEA_LEVEL_M,
-        ),
-        FormationSubPhase::Condensation => (
-            COOLING_END_YEAR,
-            CONDENSATION_END_YEAR,
-            COOLING_END_SEA_LEVEL_M,
-            CONDENSATION_END_SEA_LEVEL_M,
-        ),
-        FormationSubPhase::Stabilization => (
-            CONDENSATION_END_YEAR,
-            STABILIZATION_END_YEAR,
-            CONDENSATION_END_SEA_LEVEL_M,
-            STABILIZATION_END_SEA_LEVEL_M,
-        ),
-        FormationSubPhase::Complete => return STABILIZATION_END_SEA_LEVEL_M,
-    };
-
-    if end_year <= start_year {
-        return start_level;
-    }
-
-    let progress = ((year_value - start_year).clamp(0, end_year - start_year) as f64
-        / (end_year - start_year) as f64) as f32;
-    lerp(start_level, end_level, progress)
-}
-
 fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t.clamp(0.0, 1.0)
 }
@@ -217,43 +163,6 @@ mod tests {
         assert!(
             (t - T_EQUILIBRIUM_C).abs() < 10.0,
             "by Formation end, should be near equilibrium; got {t}"
-        );
-    }
-
-    #[test]
-    fn sea_level_monotonically_rising() {
-        let years = [
-            0,
-            25_000_000,
-            50_000_000,
-            100_000_000,
-            200_000_000,
-            250_000_000,
-            350_000_000,
-            450_000_000,
-            500_000_000,
-        ];
-        let mut prev = f32::MIN;
-        for y in years {
-            let level = sea_level_at_year(y);
-            assert!(
-                level >= prev,
-                "sea level should monotonically rise; year {y} got {level} after {prev}"
-            );
-            prev = level;
-        }
-    }
-
-    #[test]
-    fn sea_level_endpoints() {
-        assert_eq!(sea_level_at_year(0), FORMATION_INITIAL_SEA_LEVEL_M);
-        assert_eq!(
-            sea_level_at_year(STABILIZATION_END_YEAR),
-            STABILIZATION_END_SEA_LEVEL_M
-        );
-        assert_eq!(
-            sea_level_at_year(1_000_000_000),
-            STABILIZATION_END_SEA_LEVEL_M
         );
     }
 

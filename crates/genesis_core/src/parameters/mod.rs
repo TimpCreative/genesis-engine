@@ -7,8 +7,8 @@ mod validation;
 
 pub use core::{
     BiologyParameters, CivilizationParameters, ClimateInitialParameters, ClimateParameters,
-    CoreParameters, GeologyParameters, GridParameters, ModEntry, ModManifest, PlanetParameters,
-    TimeParameters, WorldSeed,
+    CoreParameters, GeologyParameters, GridParameters, HydrologyParameters, ModEntry, ModManifest,
+    PlanetParameters, TimeParameters, WorldSeed,
 };
 pub use extensions::{ParameterExtensions, ParameterValue, ParameterValueData};
 pub use validation::ParameterValidationError;
@@ -81,6 +81,7 @@ impl Default for WorldParameters {
                     greenhouse_intensity: 1.0,
                 },
                 climate: ClimateParameters::default(),
+                hydrology: HydrologyParameters::default(),
                 biology: BiologyParameters {
                     life_emergence_year: WorldYear(500_000_000),
                     mutation_rate_scale: 1.0,
@@ -256,6 +257,28 @@ mod tests {
             p.validate(),
             Err(ParameterValidationError::InvalidField { field, .. })
             if field == "geology.base_erosion_rate_per_year"
+        ));
+    }
+
+    #[test]
+    fn rejects_water_inventory_out_of_band() {
+        let mut p = WorldParameters::default();
+        p.core.hydrology.water_inventory_gel_m = 50.0;
+        assert!(matches!(
+            p.validate(),
+            Err(ParameterValidationError::InvalidField { field, .. })
+            if field == "hydrology.water_inventory_gel_m"
+        ));
+    }
+
+    #[test]
+    fn rejects_non_positive_hydrology_factors() {
+        let mut p = WorldParameters::default();
+        p.core.hydrology.runoff_coefficient_base = 0.0;
+        assert!(matches!(
+            p.validate(),
+            Err(ParameterValidationError::InvalidField { field, .. })
+            if field == "hydrology.runoff_coefficient_base"
         ));
     }
 

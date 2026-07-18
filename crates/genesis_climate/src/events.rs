@@ -23,6 +23,10 @@ pub fn maybe_emit(state: &mut ClimateState, event: Event, threshold: Significanc
 }
 
 /// Emit an event when crossing a Formation sub-phase boundary.
+///
+/// The ocean events (`OceansBeginForming` / `OceansStabilized`) moved to
+/// hydrology with condensation ownership (Doc 08 §17.2); climate keeps the
+/// cooling and formation-complete narrative.
 pub fn emit_phase_transition_event(
     state: &mut ClimateState,
     world: &WorldData,
@@ -35,12 +39,6 @@ pub fn emit_phase_transition_event(
     let kind = match (from, to) {
         (_, FormationSubPhase::Cooling) => Some(EventKind::PlanetaryCoolingMilestone {
             surface_temp_c: world.global_temperature_c,
-        }),
-        (_, FormationSubPhase::Condensation) => Some(EventKind::OceansBeginForming {
-            sea_level_m: world.sea_level_m,
-        }),
-        (_, FormationSubPhase::Stabilization) => Some(EventKind::OceansStabilized {
-            sea_level_m: world.sea_level_m,
         }),
         (_, FormationSubPhase::Complete) => Some(EventKind::FormationComplete {
             final_temperature_c: world.global_temperature_c,
@@ -71,8 +69,6 @@ pub fn emit_phase_transition_event(
         }
 
         let significance = match &kind {
-            EventKind::OceansBeginForming { .. } => Significance::Major,
-            EventKind::OceansStabilized { .. } => Significance::Major,
             EventKind::FormationComplete { .. } => Significance::Pivotal,
             _ => Significance::Notable,
         };

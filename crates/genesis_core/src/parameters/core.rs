@@ -187,6 +187,33 @@ impl Default for ClimateParameters {
     }
 }
 
+/// Hydrology simulation parameters (Doc 08 §3.1).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct HydrologyParameters {
+    /// Total surface-water inventory as a global equivalent layer (GEL), meters
+    /// over the whole sphere. Earth ≈ 2700. Band: 100 (near-dry) … 8000+.
+    /// Immutable. MENU KNOB.
+    pub water_inventory_gel_m: f32,
+    /// Fraction of annual precipitation that becomes surface runoff before
+    /// climate modifiers. Default 0.4.
+    pub runoff_coefficient_base: f32,
+    /// Evaporation multiplier for open water relative to land. Default 1.2.
+    pub open_water_evap_factor: f32,
+    /// GEL-equivalent aquifer capacity in meters. Default 30.0.
+    pub groundwater_capacity_m: f32,
+}
+
+impl Default for HydrologyParameters {
+    fn default() -> Self {
+        Self {
+            water_inventory_gel_m: 2700.0,
+            runoff_coefficient_base: 0.4,
+            open_water_evap_factor: 1.2,
+            groundwater_capacity_m: 30.0,
+        }
+    }
+}
+
 /// Initial climate boundary conditions.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ClimateInitialParameters {
@@ -235,6 +262,7 @@ pub struct CoreParameters {
     pub geology: GeologyParameters,
     pub climate_initial: ClimateInitialParameters,
     pub climate: ClimateParameters,
+    pub hydrology: HydrologyParameters,
     pub biology: BiologyParameters,
     pub civilization: CivilizationParameters,
 }

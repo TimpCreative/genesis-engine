@@ -23,7 +23,6 @@ use crate::motion::advance_plate_motion;
 use crate::partition::repartition_hexes;
 use crate::plate::TectonicsState;
 use crate::reorganization::maybe_reorganize;
-use crate::sea_level::update_sea_level;
 use crate::volcanism::apply_boundary_volcanism;
 use crate::world_rebuild::rebuild_world_from_plate_surfaces_cached;
 
@@ -301,19 +300,6 @@ impl SimulationLayer for TectonicsLayer {
             }
 
             let boundaries = state.boundaries.clone();
-            timed_tick_step("sea_level", tick_year, || {
-                update_sea_level(
-                    world,
-                    &boundaries,
-                    &mut state,
-                    rng,
-                    tick_year,
-                    reorg_fired,
-                    event_granularity,
-                    BranchId::ROOT,
-                );
-            });
-
             timed_tick_step("boundary_events", tick_year, || {
                 emit_boundary_events(
                     world,

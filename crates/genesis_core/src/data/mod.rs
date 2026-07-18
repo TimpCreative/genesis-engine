@@ -7,12 +7,18 @@
 pub mod climate_placeholder;
 
 mod enums;
+mod hydrology;
 mod ids;
 
 pub use crate::grid::Direction;
 pub use climate_placeholder::ClimateRegimePlaceholder;
 pub use enums::BedrockType;
-pub use ids::{BasinId, BiomeId, HotSpotId, NationId, PlateId, SettlementId, SpeciesId};
+pub use hydrology::{HydroFlags, SoilClass, WATER_NONE, WaterBody, WaterBodyKind};
+pub use ids::{
+    BasinId, BiomeId, HotSpotId, NationId, PlateId, SettlementId, SpeciesId, WaterBodyId,
+};
+
+use std::collections::BTreeMap;
 
 use crate::HexGrid;
 use crate::parameters::WorldParameters;
@@ -63,6 +69,36 @@ pub struct WorldData {
     /// Per-hex climate regime label (Köppen-like). Unset until P2-12.
     pub climate_regime: Vec<ClimateRegimePlaceholder>,
 
+    // ---- Hydrology Layer (populated by genesis_hydrology; Doc 08) ----
+    /// Water surface elevation over this hex (ocean level, lake level), or
+    /// [`WATER_NONE`] when dry. Depth = `water_level_m - elevation_mean`.
+    pub water_level_m: Vec<f32>,
+    /// Standing-water body membership. [`WaterBodyId::NONE`] when dry.
+    pub water_body_id: Vec<WaterBodyId>,
+    /// Steepest-descent drainage direction on the routed surface. `None` for
+    /// ocean/lake-interior/retained-sink hexes.
+    pub flow_direction: Vec<Option<Direction>>,
+    /// Annual river discharge, m³/year (surface runoff + baseflow).
+    pub river_discharge_m3_yr: Vec<f32>,
+    /// Peak-season/annual-mean discharge ratio (≥ 1.0). 1.0 = perfectly stable.
+    pub discharge_seasonality: Vec<f32>,
+    /// Depth to the saturated zone, meters. 0 = water table at surface.
+    pub water_table_depth_m: Vec<f32>,
+    /// Accumulated salt (monotonic, arbitrary units). Nonzero + dry = salt flat.
+    pub salt_accumulated: Vec<f32>,
+    /// Land-ice mask (sheets + alpine glaciers thick enough to budget).
+    pub ice_mask: Vec<bool>,
+    /// Packed per-hex hydrology feature flags (§2.4).
+    pub hydro_flags: Vec<HydroFlags>,
+    /// Soil depth in meters (§10).
+    pub soil_depth_m: Vec<f32>,
+    /// Soil fertility 0..=1 (§10.3).
+    pub soil_fertility: Vec<f32>,
+    /// Soil class (§10.1).
+    pub soil_class: Vec<SoilClass>,
+    /// Standing-water body registry, rebuilt each hydrology tick (§2.4).
+    pub water_bodies: BTreeMap<WaterBodyId, WaterBody>,
+
     // ---- Global Physical State ----
     /// Global sea level in meters relative to baseline.
     pub sea_level_m: f32,
@@ -112,6 +148,19 @@ impl WorldData {
             distance_to_ocean_km: vec![f32::INFINITY; n],
             basin_id: vec![BasinId::NONE; n],
             climate_regime: vec![ClimateRegimePlaceholder::Unset; n],
+            water_level_m: vec![WATER_NONE; n],
+            water_body_id: vec![WaterBodyId::NONE; n],
+            flow_direction: vec![None; n],
+            river_discharge_m3_yr: vec![0.0; n],
+            discharge_seasonality: vec![1.0; n],
+            water_table_depth_m: vec![0.0; n],
+            salt_accumulated: vec![0.0; n],
+            ice_mask: vec![false; n],
+            hydro_flags: vec![HydroFlags::NONE; n],
+            soil_depth_m: vec![0.0; n],
+            soil_fertility: vec![0.0; n],
+            soil_class: vec![SoilClass::None; n],
+            water_bodies: BTreeMap::new(),
             sea_level_m: 0.0,
             global_temperature_c: 15.0,
             biome: vec![BiomeId::NONE; n],
@@ -189,6 +238,18 @@ mod tests {
         assert_eq!(world.distance_to_ocean_km.len(), n);
         assert_eq!(world.basin_id.len(), n);
         assert_eq!(world.climate_regime.len(), n);
+        assert_eq!(world.water_level_m.len(), n);
+        assert_eq!(world.water_body_id.len(), n);
+        assert_eq!(world.flow_direction.len(), n);
+        assert_eq!(world.river_discharge_m3_yr.len(), n);
+        assert_eq!(world.discharge_seasonality.len(), n);
+        assert_eq!(world.water_table_depth_m.len(), n);
+        assert_eq!(world.salt_accumulated.len(), n);
+        assert_eq!(world.ice_mask.len(), n);
+        assert_eq!(world.hydro_flags.len(), n);
+        assert_eq!(world.soil_depth_m.len(), n);
+        assert_eq!(world.soil_fertility.len(), n);
+        assert_eq!(world.soil_class.len(), n);
         assert_eq!(world.biome.len(), n);
         assert_eq!(world.biomass.len(), n);
         assert_eq!(world.fertility.len(), n);
@@ -231,6 +292,19 @@ mod tests {
                 .iter()
                 .all(|&r| r == ClimateRegimePlaceholder::Unset)
         );
+        assert!(world.water_level_m.iter().all(|&w| w == WATER_NONE));
+        assert!(world.water_body_id.iter().all(|&b| b == WaterBodyId::NONE));
+        assert!(world.flow_direction.iter().all(|f| f.is_none()));
+        assert!(world.river_discharge_m3_yr.iter().all(|&d| d == 0.0));
+        assert!(world.discharge_seasonality.iter().all(|&s| s == 1.0));
+        assert!(world.water_table_depth_m.iter().all(|&d| d == 0.0));
+        assert!(world.salt_accumulated.iter().all(|&s| s == 0.0));
+        assert!(world.ice_mask.iter().all(|&i| !i));
+        assert!(world.hydro_flags.iter().all(|&f| f == HydroFlags::NONE));
+        assert!(world.soil_depth_m.iter().all(|&d| d == 0.0));
+        assert!(world.soil_fertility.iter().all(|&f| f == 0.0));
+        assert!(world.soil_class.iter().all(|&c| c == SoilClass::None));
+        assert!(world.water_bodies.is_empty());
     }
 
     #[test]
@@ -249,6 +323,7 @@ mod tests {
         assert_eq!(PlateId::NONE.0, u16::MAX);
         assert_eq!(BiomeId::NONE.0, u16::MAX);
         assert_eq!(BasinId::NONE.0, u16::MAX);
+        assert_eq!(WaterBodyId::NONE.0, u32::MAX);
     }
 
     #[test]

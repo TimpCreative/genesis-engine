@@ -33,10 +33,7 @@ pub use temperature::compute_temperature_field;
 pub use wind::compute_wind_field;
 
 pub use events::flush_events_to_branch;
-pub use formation::{
-    CONDENSATION_END_SEA_LEVEL_M, COOLING_END_SEA_LEVEL_M, FORMATION_INITIAL_SEA_LEVEL_M,
-    STABILIZATION_END_SEA_LEVEL_M, composition_at_year, cooling_temperature_c, sea_level_at_year,
-};
+pub use formation::{composition_at_year, cooling_temperature_c};
 pub use layer::{
     ClimateLayer, DEFAULT_ANCIENT_CLIMATE_TICK_YEARS, DEFAULT_FORMATION_CLIMATE_TICK_YEARS,
     DEFAULT_GEOLOGICAL_CLIMATE_TICK_YEARS, DEFAULT_PREHISTORIC_CLIMATE_TICK_YEARS,

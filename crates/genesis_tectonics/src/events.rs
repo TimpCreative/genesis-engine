@@ -73,9 +73,10 @@ mod tests {
             branch_id: BranchId::ROOT,
             location: EventLocation::Global,
             significance: Significance::Trace,
-            kind: EventKind::SeaLevelChange {
-                delta_m: 1.0,
-                new_sea_level_m: 1.0,
+            kind: EventKind::BoundaryTransition {
+                hex: HexId(10),
+                from: genesis_core::events::BoundaryType::Divergent,
+                to: genesis_core::events::BoundaryType::Transform,
             },
         };
         maybe_emit(&mut state, event, Significance::Pivotal);

@@ -16,6 +16,7 @@ use bevy::prelude::*;
 use bevy::render::view::screenshot::{Screenshot, save_to_disk};
 use genesis_climate::ClimateState;
 use genesis_core::{WorldParameters, WorldYear, create_world};
+use genesis_hydrology::HydrologyState;
 use genesis_render::{GenesisRenderPlugin, RenderMode, WorldResource};
 use genesis_tectonics::TectonicsState;
 
@@ -194,6 +195,7 @@ fn run_headless(screenshot_dir: String) {
     let mut world = create_world(parameters).expect("default world creates successfully");
     let mut tectonics = TectonicsState::new();
     let mut climate = ClimateState::new();
+    let mut hydrology = HydrologyState::new();
 
     let requested_year = target_year_from_env();
     // If the user requests year 0, still run Formation once to populate plate/climate fields.
@@ -209,6 +211,7 @@ fn run_headless(screenshot_dir: String) {
         &mut world,
         &mut tectonics,
         &mut climate,
+        &mut hydrology,
         simulate_year,
         |data| {
             const REPORT_EVERY_YEARS: i64 = 100_000_000;
@@ -260,6 +263,7 @@ mod tests {
     use genesis_climate::ClimateState;
     use genesis_core::parameters::{WorldParameters, WorldSeed};
     use genesis_core::{WorldYear, create_world};
+    use genesis_hydrology::HydrologyState;
     use genesis_render::GenesisRenderPlugin;
     use genesis_tectonics::{TectonicsState, generate_full_history_with_tectonics};
 
@@ -296,10 +300,12 @@ mod tests {
             let mut world = create_world(params.clone()).expect("world");
             let mut tectonics = TectonicsState::new();
             let mut climate = ClimateState::new();
+            let mut hydrology = HydrologyState::new();
             generate_full_history(
                 &mut world,
                 &mut tectonics,
                 &mut climate,
+                &mut hydrology,
                 WorldYear(year),
                 |_| {},
             )
@@ -369,10 +375,12 @@ mod tests {
         let mut world = create_world(params).expect("world");
         let mut tectonics = TectonicsState::new();
         let mut climate = ClimateState::new();
+        let mut hydrology = HydrologyState::new();
         generate_full_history(
             &mut world,
             &mut tectonics,
             &mut climate,
+            &mut hydrology,
             WorldYear(1_000_000_000),
             |_| {},
         )
@@ -428,10 +436,12 @@ mod tests {
         let mut world = create_world(params).expect("world");
         let mut tectonics = TectonicsState::new();
         let mut climate = ClimateState::new();
+        let mut hydrology = HydrologyState::new();
         generate_full_history(
             &mut world,
             &mut tectonics,
             &mut climate,
+            &mut hydrology,
             WorldYear(1_000_000_000),
             |_| {},
         )
@@ -508,10 +518,12 @@ mod tests {
         let mut world = create_world(params).expect("world");
         let mut tectonics = TectonicsState::new();
         let mut climate = ClimateState::new();
+        let mut hydrology = HydrologyState::new();
         generate_full_history(
             &mut world,
             &mut tectonics,
             &mut climate,
+            &mut hydrology,
             WorldYear(1_000_000_000),
             |_| {},
         )
@@ -647,10 +659,12 @@ mod tests {
         let mut world = create_world(params).expect("world");
         let mut tectonics = TectonicsState::new();
         let mut climate = ClimateState::new();
+        let mut hydrology = HydrologyState::new();
         generate_full_history(
             &mut world,
             &mut tectonics,
             &mut climate,
+            &mut hydrology,
             WorldYear(1_000_000_000),
             |_| {},
         )
@@ -776,10 +790,12 @@ mod tests {
         let mut world = create_world(params).expect("world");
         let mut tectonics = TectonicsState::new();
         let mut climate = ClimateState::new();
+        let mut hydrology = HydrologyState::new();
         generate_full_history(
             &mut world,
             &mut tectonics,
             &mut climate,
+            &mut hydrology,
             WorldYear(1_000_000_000),
             |_| {},
         )
@@ -942,10 +958,12 @@ mod tests {
         let mut world = create_world(params).expect("world");
         let mut tectonics = TectonicsState::new();
         let mut climate = ClimateState::new();
+        let mut hydrology = HydrologyState::new();
         generate_full_history(
             &mut world,
             &mut tectonics,
             &mut climate,
+            &mut hydrology,
             WorldYear(1_000_000_000),
             |_| {},
         )
@@ -1080,6 +1098,7 @@ mod tests {
         let mut tectonics_only = TectonicsState::new();
         let mut tectonics_combined = TectonicsState::new();
         let mut climate = ClimateState::new();
+        let mut hydrology = HydrologyState::new();
 
         generate_full_history_with_tectonics(
             &mut world_tectonics_only,
@@ -1092,13 +1111,14 @@ mod tests {
             &mut world_combined,
             &mut tectonics_combined,
             &mut climate,
+            &mut hydrology,
             WorldYear(1_000_000),
             |_| {},
         )
         .expect("combined");
 
-        // plate assignment is independent of climate; elevation/sea level differ
-        // because formation sea level affects erosion (P2-2).
+        // plate assignment is independent of climate/hydrology; elevation/sea
+        // level differ because the derived sea level affects erosion (P2-2).
         assert_eq!(
             world_tectonics_only.data.plate_id,
             world_combined.data.plate_id

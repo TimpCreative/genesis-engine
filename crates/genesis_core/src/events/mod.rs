@@ -317,17 +317,6 @@ mod tests {
     }
 
     #[test]
-    fn sea_level_change_kind_round_trip() {
-        let kind = EventKind::SeaLevelChange {
-            delta_m: 12.5,
-            new_sea_level_m: 12.5,
-        };
-        let json = serde_json::to_string(&kind).unwrap();
-        let back: EventKind = serde_json::from_str(&json).unwrap();
-        assert_eq!(kind, back);
-    }
-
-    #[test]
     fn jsonl_each_line_is_valid_json() {
         let mut log = EventLog::new(None, WorldYear::FORMATION);
         log.push(sample_event(1, 100, Significance::Minor));

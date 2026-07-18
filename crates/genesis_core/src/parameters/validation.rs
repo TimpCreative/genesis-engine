@@ -200,6 +200,25 @@ impl WorldParameters {
             500.0,
         )?;
 
+        validate_non_negative_finite(
+            self.core.hydrology.water_inventory_gel_m,
+            "hydrology.water_inventory_gel_m",
+            100.0,
+            8000.0,
+        )?;
+        validate_positive_finite(
+            self.core.hydrology.runoff_coefficient_base,
+            "hydrology.runoff_coefficient_base",
+        )?;
+        validate_positive_finite(
+            self.core.hydrology.open_water_evap_factor,
+            "hydrology.open_water_evap_factor",
+        )?;
+        validate_positive_finite(
+            self.core.hydrology.groundwater_capacity_m,
+            "hydrology.groundwater_capacity_m",
+        )?;
+
         Ok(())
     }
 }
@@ -214,6 +233,16 @@ fn validate_non_negative_finite(
         return Err(ParameterValidationError::InvalidField {
             field: field.to_string(),
             message: format!("must be finite and in {min}..={max}"),
+        });
+    }
+    Ok(())
+}
+
+fn validate_positive_finite(value: f32, field: &str) -> Result<(), ParameterValidationError> {
+    if !value.is_finite() || value <= 0.0 {
+        return Err(ParameterValidationError::InvalidField {
+            field: field.to_string(),
+            message: "must be positive and finite".into(),
         });
     }
     Ok(())
