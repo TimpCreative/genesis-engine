@@ -13,7 +13,7 @@ use genesis_core::time::{Era, SimulationLayer, WorldYear};
 use crate::boundary::detect_and_classify_boundaries;
 use crate::boundary_events::emit_boundary_events;
 use crate::coast_cleanup::cleanup_coast_artifacts;
-use crate::elevation::{apply_boundary_elevation, clamp_terrain};
+use crate::elevation::clamp_terrain;
 use crate::erosion::{apply_erosion_tick, ensure_deposition_buffer};
 use crate::events::{alloc_event_id, maybe_emit};
 use crate::hotspots::{apply_hotspot_tick, generate_initial_hotspots};
@@ -112,6 +112,31 @@ impl SimulationLayer for TectonicsLayer {
             let event_granularity = world.parameters.core.geology.event_granularity;
 
             timed_tick_step("motion", tick_year, || {
+                // Slab pull: relax rates toward boundary-force targets using
+                // last tick's tallies (a 1-tick lag is geologically nothing),
+                // then lock colliding continental pairs into a shared drift
+                // (§4.6), then advance rotation with the relaxed rates.
+                let geology = world.parameters.core.geology.clone();
+                let planet = world.parameters.core.planet.clone();
+                let TectonicsState {
+                    registry,
+                    boundary_tallies,
+                    colliding_pairs,
+                    ..
+                } = &mut *state;
+                crate::motion::relax_motion_rates_toward_targets(
+                    registry,
+                    boundary_tallies,
+                    &geology,
+                    &planet,
+                    interval_years,
+                );
+                crate::collision_jam::apply_collision_jam(
+                    world,
+                    registry,
+                    colliding_pairs,
+                    interval_years,
+                );
                 let plate_ids = state.registry.plate_ids();
                 for id in plate_ids {
                     if let Some(plate) = state.registry.plates_mut().get_mut(&id) {
@@ -124,17 +149,7 @@ impl SimulationLayer for TectonicsLayer {
                 repartition_hexes(world, &mut state.registry)
             });
             state.projection = outcome.projection;
-            let colliding = outcome.colliding;
-            // Wilson cycle: plates recover toward their base rate once out of
-            // active continental collision, so continents never stall forever.
-            {
-                let TectonicsState {
-                    registry,
-                    base_motion_rates,
-                    ..
-                } = &mut *state;
-                crate::partition::recover_motion_rates(registry, base_motion_rates, &colliding);
-            }
+            state.colliding_pairs = outcome.colliding_pairs;
 
             timed_tick_step("rebuild_world", tick_year, || {
                 rebuild_world_from_plate_surfaces_cached(world, &state.registry, &state.projection);
@@ -143,18 +158,35 @@ impl SimulationLayer for TectonicsLayer {
             timed_tick_step("boundaries", tick_year, || {
                 state.boundaries =
                     detect_and_classify_boundaries(world, &state.registry, &state.projection);
+                state.boundary_tallies = crate::boundary::plate_boundary_tallies(
+                    world,
+                    &state.registry,
+                    &state.projection,
+                    &state.boundaries,
+                );
             });
 
             state.elevation_at_tick_start = world.elevation_mean.clone();
 
-            let boundaries_for_elevation = state.boundaries.clone();
+            // One water-realm labeling per tick, shared by the elevation pass
+            // (trench enclosure) and the accretion pass (trapped basins):
+            // data.elevation_mean only changes at world rebuilds, so the
+            // labeling is exact for every step between rebuilds.
+            let water = crate::accretion::label_water_components(world);
+            let open_ocean = water.open_ocean_mask();
             timed_tick_step("elevation", tick_year, || {
-                let s = &mut *state;
-                apply_boundary_elevation(
+                let TectonicsState {
+                    registry,
+                    projection,
+                    boundaries,
+                    ..
+                } = &mut *state;
+                crate::elevation::apply_boundary_elevation_with_mask(
                     world,
-                    &mut s.registry,
-                    &s.projection,
-                    &boundaries_for_elevation,
+                    registry,
+                    projection,
+                    boundaries,
+                    &open_ocean,
                     interval_years,
                     tick_year,
                 );
@@ -183,8 +215,62 @@ impl SimulationLayer for TectonicsLayer {
                 );
             });
 
+            // Suture accretion: oceanic crust trapped inside continents by
+            // closing basins is consumed before erosion/isostasy, so rebound
+            // starts lifting it this same tick.
+            timed_tick_step("accretion", tick_year, || {
+                let TectonicsState {
+                    registry,
+                    projection,
+                    boundaries,
+                    ..
+                } = &mut *state;
+                crate::accretion::accrete_trapped_oceanic_crust(
+                    world,
+                    registry,
+                    projection,
+                    &water,
+                    boundaries,
+                    rng,
+                    tick_year.value(),
+                    interval_years,
+                );
+            });
+
+            // Crust balance counter-flow: erosive margins consume forearc
+            // rims, bounding the continental fraction over deep time.
+            timed_tick_step("subduction_erosion", tick_year, || {
+                let s = &mut *state;
+                crate::accretion::apply_subduction_erosion(
+                    world,
+                    &mut s.registry,
+                    &s.projection,
+                    &s.boundaries,
+                    rng,
+                    tick_year.value(),
+                    interval_years,
+                );
+            });
+
             timed_tick_step("erosion", tick_year, || {
                 apply_erosion_tick(world, &mut state, rng, tick_year, interval_years);
+            });
+
+            // Gravitational collapse (§8.5): relief beyond rock strength
+            // spreads under its own weight — no water required.
+            timed_tick_step("collapse", tick_year, || {
+                let TectonicsState {
+                    registry,
+                    projection,
+                    ..
+                } = &mut *state;
+                crate::collapse::apply_gravitational_collapse(
+                    world,
+                    registry,
+                    projection,
+                    interval_years,
+                    tick_year,
+                );
             });
 
             let reorg_fired = timed_tick_step_value("reorg", tick_year, || {
@@ -205,6 +291,12 @@ impl SimulationLayer for TectonicsLayer {
                     s.projection = repartition_hexes(world, &mut s.registry).projection;
                     s.boundaries =
                         detect_and_classify_boundaries(world, &s.registry, &s.projection);
+                    s.boundary_tallies = crate::boundary::plate_boundary_tallies(
+                        world,
+                        &s.registry,
+                        &s.projection,
+                        &s.boundaries,
+                    );
                 });
             }
 
@@ -282,6 +374,19 @@ fn elevation_min_max(world: &WorldData) -> (f32, f32) {
 
 const SLOW_TICK_STEP_MS: u128 = 100;
 
+/// Slow-step log threshold in ms; `GENESIS_SLOW_TICK_STEP_MS` overrides it
+/// for profiling runs (e.g. `GENESIS_SLOW_TICK_STEP_MS=10` to see the per-step
+/// cost profile at subdivision level 7).
+fn slow_tick_step_threshold_ms() -> u128 {
+    static THRESHOLD: std::sync::OnceLock<u128> = std::sync::OnceLock::new();
+    *THRESHOLD.get_or_init(|| {
+        std::env::var("GENESIS_SLOW_TICK_STEP_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(SLOW_TICK_STEP_MS)
+    })
+}
+
 fn timed_tick_step(step: &'static str, tick_year: WorldYear, f: impl FnOnce()) {
     let step_start = std::time::Instant::now();
     f();
@@ -296,7 +401,7 @@ fn timed_tick_step_value<T>(step: &'static str, tick_year: WorldYear, f: impl Fn
 }
 
 fn log_slow_tick_step(step: &'static str, tick_year: WorldYear, elapsed: std::time::Duration) {
-    if elapsed.as_millis() > SLOW_TICK_STEP_MS {
+    if elapsed.as_millis() > slow_tick_step_threshold_ms() {
         eprintln!(
             "[tectonics] {} tick at year {} took {}ms",
             step,

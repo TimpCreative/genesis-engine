@@ -1,9 +1,10 @@
 //! World generation entry point and history buffering for the interactive app.
 //!
-//! Owns the layer registration order (tectonics → climate → hydrology, Doc 07
-//! §13) and captures lightweight [`HistoryFrame`]s during generation so the
-//! viewer can scrub the timeline without re-simulating. Frames hold only the
-//! renderable per-hex fields (~0.5 MB at subdivision 7), not the grid.
+//! Owns the layer registration order (tectonics → climate, Doc 07 §13) and
+//! captures lightweight [`HistoryFrame`]s during generation so the viewer can
+//! scrub the timeline without re-simulating. Frames hold only the renderable
+//! per-hex fields (~0.5 MB at subdivision 7), not the grid. Surface water
+//! (hydrology) is out of the game until Doc 08.
 
 use genesis_climate::{ClimateLayer, ClimateState, flush_events_to_branch as flush_climate_events};
 use genesis_core::World;
@@ -11,7 +12,6 @@ use genesis_core::data::{ClimateRegimePlaceholder, WorldData};
 use genesis_core::lifecycle::{GenerationError, advance_with_coordinator_observed};
 use genesis_core::parameters::{WorldParameters, WorldSeed};
 use genesis_core::time::{TickCoordinator, WorldYear};
-use genesis_hydrology::HydrologyLayer;
 use genesis_tectonics::{
     TectonicsLayer, TectonicsState, flush_events_to_branch as flush_tectonic_events,
 };
@@ -19,8 +19,8 @@ use genesis_tectonics::{
 /// Memory budget for buffered history frames (Doc 05 §A).
 pub const FRAME_MEMORY_BUDGET_BYTES: usize = 256 << 20;
 
-/// Approximate bytes per cell in a [`HistoryFrame`]: 4 × f32 fields + regime.
-const FRAME_BYTES_PER_CELL: usize = 17;
+/// Approximate bytes per cell in a [`HistoryFrame`]: 3 × f32 fields + regime.
+const FRAME_BYTES_PER_CELL: usize = 13;
 
 /// Frame cap for a grid size, from the memory budget.
 pub fn max_history_frames(cell_count: u32) -> usize {
@@ -35,6 +35,9 @@ pub struct WorldGenConfig {
     pub target_year: i64,
     pub major_plates: u8,
     pub minor_plates: u8,
+    /// Target continental crust coverage at formation (fraction of the
+    /// sphere's area; ~0.29 is present-day Earth, 0.22 a Hadean world).
+    pub continental_fraction: f32,
 }
 
 impl Default for WorldGenConfig {
@@ -46,6 +49,7 @@ impl Default for WorldGenConfig {
             target_year: 1_000_000_000,
             major_plates: defaults.core.geology.initial_major_plate_count,
             minor_plates: defaults.core.geology.initial_minor_plate_count,
+            continental_fraction: defaults.core.geology.initial_continental_fraction,
         }
     }
 }
@@ -58,6 +62,7 @@ impl WorldGenConfig {
         params.core.grid.subdivision_level = self.subdivision_level;
         params.core.geology.initial_major_plate_count = self.major_plates;
         params.core.geology.initial_minor_plate_count = self.minor_plates;
+        params.core.geology.initial_continental_fraction = self.continental_fraction;
         params
     }
 }
@@ -71,7 +76,6 @@ pub struct HistoryFrame {
     pub temperature_mean: Vec<f32>,
     pub precipitation: Vec<f32>,
     pub climate_regime: Vec<ClimateRegimePlaceholder>,
-    pub flow_volume: Vec<f32>,
 }
 
 impl HistoryFrame {
@@ -83,7 +87,6 @@ impl HistoryFrame {
             temperature_mean: data.temperature_mean.clone(),
             precipitation: data.precipitation.clone(),
             climate_regime: data.climate_regime.clone(),
-            flow_volume: data.flow_volume.clone(),
         }
     }
 
@@ -97,7 +100,6 @@ impl HistoryFrame {
             .copy_from_slice(&self.temperature_mean);
         data.precipitation.copy_from_slice(&self.precipitation);
         data.climate_regime.copy_from_slice(&self.climate_regime);
-        data.flow_volume.copy_from_slice(&self.flow_volume);
     }
 }
 
@@ -106,12 +108,12 @@ pub fn history_stride_years(target_year: i64, cell_count: u32) -> i64 {
     (target_year / max_history_frames(cell_count) as i64).max(500_000)
 }
 
-/// Advances simulation to `target_year` with tectonics, climate, and hydrology
-/// registered on the coordinator. `progress` fires after every tick with the
-/// current world state.
+/// Advances simulation to `target_year` with tectonics and climate registered
+/// on the coordinator. `progress` fires after every tick with the current world
+/// state. (Hydrology is removed until Doc 08.)
 ///
 /// Tectonics registers first; climate second (Doc 07 §13) so climate sees
-/// updated terrain each tick; hydrology third so flow reflects both.
+/// updated terrain each tick.
 pub fn generate_full_history(
     world: &mut World,
     tectonics: &mut TectonicsState,
@@ -135,7 +137,6 @@ pub fn generate_full_history(
     let mut coordinator = TickCoordinator::new();
     coordinator.add_layer(Box::new(tectonics_layer));
     coordinator.add_layer(Box::new(climate_layer));
-    coordinator.add_layer(Box::new(HydrologyLayer));
 
     advance_with_coordinator_observed(world, &mut coordinator, target_year, |data| {
         progress(data);

@@ -122,7 +122,10 @@ pub struct TimeParameters {
 /// Initial geology settings.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct GeologyParameters {
-    /// Fraction of plates that are continental at world formation. Default 0.29 (Earth).
+    /// Continental crust coverage at world formation, as a fraction of the
+    /// sphere's AREA (filled with whole plates grown as a connected cluster,
+    /// so the realized value overshoots by at most one plate). Default 0.22
+    /// (Hadean-ish); ~0.29 is present-day Earth.
     pub initial_continental_fraction: f32,
     /// Plate motion scale factor relative to Earth-like values. Default 1.0.
     pub plate_velocity_scale: f32,
@@ -142,7 +145,8 @@ pub struct GeologyParameters {
     /// defaults from Doc 06 §4.1.
     pub tick_interval_overrides_years: Option<BTreeMap<Era, i64>>,
     /// Base erosion rate per year per meter of elevation above sea level.
-    /// Default 1e-7. Climate modifies via climate_modifier (Phase 2).
+    /// Default 5e-8 (collision belts persist a few hundred My). Climate
+    /// modifies via climate_modifier (Phase 2).
     pub base_erosion_rate_per_year: f64,
     /// Max land hexes in a removable ephemeral island (Doc 06 coast cleanup).
     pub max_ephemeral_island_hexes: u32,

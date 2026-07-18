@@ -50,6 +50,7 @@ pub enum Param {
     TargetYear,
     MajorPlates,
     MinorPlates,
+    ContinentalFraction,
 }
 
 /// Marks the text node displaying a parameter's current value.
@@ -268,12 +269,13 @@ fn spawn_main_menu(mut commands: Commands) {
 // Setup screen
 // ---------------------------------------------------------------------------
 
-const SETUP_PARAMS: [(Param, &str); 5] = [
+const SETUP_PARAMS: [(Param, &str); 6] = [
     (Param::Seed, "Seed"),
     (Param::SubdivisionLevel, "Detail (subdivision level)"),
     (Param::TargetYear, "Simulate to year"),
     (Param::MajorPlates, "Major plates"),
     (Param::MinorPlates, "Minor plates"),
+    (Param::ContinentalFraction, "Continental crust %"),
 ];
 
 fn spawn_setup_screen(mut commands: Commands) {
@@ -346,6 +348,7 @@ fn format_param(config: &WorldGenConfig, param: Param) -> String {
         Param::TargetYear => format_year(config.target_year),
         Param::MajorPlates => config.major_plates.to_string(),
         Param::MinorPlates => config.minor_plates.to_string(),
+        Param::ContinentalFraction => format!("{:.0}%", config.continental_fraction * 100.0),
     }
 }
 
@@ -389,6 +392,12 @@ fn adjust_param(config: &mut WorldGenConfig, param: Param, direction: i8) {
         Param::MinorPlates => {
             let v = config.minor_plates as i16 + direction as i16;
             config.minor_plates = v.clamp(6, 10) as u8;
+        }
+        Param::ContinentalFraction => {
+            // Steps of 2 percentage points; 22% is the Hadean-ish default,
+            // ~29% present-day Earth.
+            let steps = (config.continental_fraction * 50.0).round() + f32::from(direction);
+            config.continental_fraction = (steps / 50.0).clamp(0.05, 0.60);
         }
     }
 }

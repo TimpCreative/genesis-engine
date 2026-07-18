@@ -30,6 +30,19 @@ pub const MOUNTAIN_EQUILIBRIUM_M: f32 = 7000.0;
 /// Equilibrium depth for subduction trenches (m).
 pub const TRENCH_EQUILIBRIUM_M: f32 = -8500.0;
 
+/// Equilibrium depth for trench segments sealed off from the open ocean (m).
+/// A trench only stays abyssal while it connects to the abyss; a cut-off
+/// segment fills with sediment from the surrounding continents and shallows
+/// toward marginal-sea depth (Japan Sea ≈ −3700 m, Mediterranean ≈ −5100 m).
+/// Placeholder for Doc 8 sediment transport.
+pub const MARGINAL_SEA_EQUILIBRIUM_M: f32 = -4500.0;
+
+/// Infill rate for sealed trench segments (m per (cm/year × year), §5.9).
+/// 10× [`SUBDUCTION_RATE`]: continental drainage fills an enclosed basin far
+/// faster than the slab pulls it down, so a detached −8500 m segment rises
+/// above −6000 m within ~1–2 ticks instead of persisting as a fossil pit.
+const DETACHED_INFILL_RATE: f64 = 1e-3;
+
 /// Divergent subsidence: m per (cm/year × year) (§5.1).
 /// Calibrated: 5 cm/yr × 500K years × 2e-5 = 50 m per tick.
 /// Produces ~3 km of seafloor deepening over 100M years of sustained divergence.
@@ -49,12 +62,15 @@ pub const SUBDUCTION_RATE: f64 = 1e-4;
 pub const CONTINENTAL_RIFT_SUBSIDENCE_FACTOR: f64 = 0.3;
 
 /// Inland orogeny spread depth for continental–continental (§5.2).
-/// Two rings: persistent material-footprint boundaries uplift the same hexes
-/// every tick, so wider spreads turn whole plate margins into plateaus.
-pub const CC_INLAND_HEXES: u32 = 2;
+/// Four rings: continent–continent collisions build WIDE Himalayan-style
+/// belts with land on both sides, not thin coastal lines. Kept narrower than
+/// a plate margin so persistent boundaries don't plateau whole margins.
+pub const CC_INLAND_HEXES: u32 = 4;
 
 /// Inland uplift spread for oceanic–continental (§5.3).
-pub const OC_INLAND_HEXES: u32 = 2;
+/// Four rings so the magmatic arc peaks ~150–450 km inland (Andes anatomy),
+/// not on the coastline hex.
+pub const OC_INLAND_HEXES: u32 = 4;
 
 /// Coastal shelf spread depth on the oceanic side of oceanic–continental boundaries (§5.3).
 pub const COASTAL_SHELF_HEXES: u32 = 2;
@@ -62,10 +78,19 @@ pub const COASTAL_SHELF_HEXES: u32 = 2;
 /// Falloff for coastal shelf depth (fraction of trench delta per hex ring).
 const COASTAL_SHELF_FALLOFF: [f64; 2] = [0.4, 0.15];
 
-/// Coastal uplift fraction of orogeny delta on continental boundary hex.
-/// Calibrated for persistent boundaries: equilibrium against erosion sits at
-/// coastal-range height, not plateau height.
-const OC_COASTAL_UPLIFT_FACTOR: f64 = 0.25;
+/// Coastal uplift fraction of orogeny delta at the arc peak (§5.3).
+/// Calibrated so only margins with sustained subduction (100+ My) build
+/// Andes-scale coastal ranges; transient convergent coasts stay quiet.
+const OC_COASTAL_UPLIFT_FACTOR: f64 = 0.10;
+
+/// Fraction of the arc uplift applied on the continental boundary hex itself
+/// (§5.3): the forearc strip rises gently and stays emergent — Chile exists
+/// between the trench and the high Andes.
+const FOREARC_UPLIFT_FRACTION: f64 = 0.3;
+
+/// Arc uplift per ring inland of the boundary hex (§5.3): peaks at ring 2 —
+/// the magmatic arc sits inland of the forearc, with land on both sides.
+const OC_INLAND_FALLOFF: [f64; 4] = [0.4, 1.0, 0.6, 0.25];
 
 /// Island-arc uplift fraction of subduction delta on overriding oceanic hex.
 /// Calibrated against Igneous erosion (bedrock multiplier 0.10): equilibrium
@@ -73,7 +98,7 @@ const OC_COASTAL_UPLIFT_FACTOR: f64 = 0.25;
 /// near sea level, not continuous 6000 m volcanic walls along every trench.
 const OO_ARC_UPLIFT_FACTOR: f64 = 0.02;
 
-const INLAND_FALLOFF: [f64; 3] = [1.0, 0.67, 0.33];
+const INLAND_FALLOFF: [f64; 4] = [1.0, 0.6, 0.3, 0.15];
 
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
 struct SurfaceKey {
@@ -97,6 +122,32 @@ pub fn apply_boundary_elevation(
     registry: &mut PlateRegistry,
     cache: &ProjectionCache,
     boundaries: &BoundaryInfo,
+    tick_interval_years: f64,
+    tick_year: WorldYear,
+) {
+    let open_ocean = crate::accretion::open_ocean_mask(data);
+    apply_boundary_elevation_with_mask(
+        data,
+        registry,
+        cache,
+        boundaries,
+        &open_ocean,
+        tick_interval_years,
+        tick_year,
+    );
+}
+
+/// Workhorse for [`apply_boundary_elevation`] with an explicit open-ocean
+/// mask (`true` = hex's water body connects to the world ocean). Only
+/// open-ocean crust can deepen toward the abyssal trench equilibrium;
+/// sealed-off segments infill toward [`MARGINAL_SEA_EQUILIBRIUM_M`] (§5.9).
+#[allow(clippy::too_many_arguments)]
+pub fn apply_boundary_elevation_with_mask(
+    data: &WorldData,
+    registry: &mut PlateRegistry,
+    cache: &ProjectionCache,
+    boundaries: &BoundaryInfo,
+    open_ocean: &[bool],
     tick_interval_years: f64,
     tick_year: WorldYear,
 ) {
@@ -126,6 +177,7 @@ pub fn apply_boundary_elevation(
                 owner_plate_id,
                 owner_plate,
                 other_plate,
+                open_ocean,
                 tick_interval_years,
                 tick_year,
             );
@@ -256,6 +308,29 @@ fn asymptotic_fraction(distance_m: f32, scale_height_m: f32) -> f64 {
     ((distance_m / scale_height_m).min(1.0)) as f64
 }
 
+/// Signed trench delta (m) for a subducting oceanic-crust hex (§5.3–§5.4).
+/// Open-ocean segments deepen toward [`TRENCH_EQUILIBRIUM_M`] and never
+/// shallower. A segment sealed off from the world ocean equilibrates at
+/// [`MARGINAL_SEA_EQUILIBRIUM_M`] instead: above it the slab still pulls
+/// down, below it sediment infill from the enclosing continents wins at 10×
+/// the subduction rate, so fossil −8500 m pits clear within ~1–2 ticks
+/// (§5.9; placeholder for Doc 8 sediment transport).
+fn trench_delta_m(current_elev: f32, open_ocean: bool, max_trench: f64) -> f64 {
+    let scale_height_m = 4500.0;
+    if open_ocean {
+        let distance = current_elev - TRENCH_EQUILIBRIUM_M;
+        return -max_trench * asymptotic_fraction(distance, scale_height_m);
+    }
+    let gap = MARGINAL_SEA_EQUILIBRIUM_M - current_elev;
+    if gap < 0.0 {
+        -max_trench * asymptotic_fraction(-gap, scale_height_m)
+    } else {
+        max_trench
+            * (DETACHED_INFILL_RATE / SUBDUCTION_RATE)
+            * asymptotic_fraction(gap, scale_height_m)
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn apply_edge(
     data: &WorldData,
@@ -267,6 +342,7 @@ fn apply_edge(
     owner_plate_id: PlateId,
     owner_plate: &Plate,
     other_plate: &Plate,
+    open_ocean: &[bool],
     tick_interval_years: f64,
     tick_year: WorldYear,
 ) {
@@ -321,6 +397,7 @@ fn apply_edge(
                 edge.other_plate,
                 current_elev,
                 v_cm,
+                open_ocean,
                 tick_interval_years,
                 tick_year,
             );
@@ -338,6 +415,7 @@ fn apply_edge(
                 other_plate,
                 current_elev,
                 v_cm,
+                open_ocean,
                 tick_interval_years,
                 tick_year,
             );
@@ -435,6 +513,7 @@ fn apply_continental_continental(
         owner_hex,
         owner_plate_id,
         CC_INLAND_HEXES,
+        &INLAND_FALLOFF,
         tick_year,
         |d, falloff| {
             d.elev += orogeny * falloff;
@@ -455,6 +534,7 @@ fn apply_continental_oceanic(
     other_plate_id: PlateId,
     current_elev: f32,
     velocity_cm_per_year: f64,
+    open_ocean: &[bool],
     tick_interval_years: f64,
     tick_year: WorldYear,
 ) {
@@ -467,16 +547,12 @@ fn apply_continental_oceanic(
             entry.bedrock = Some(BedrockType::OceanicCrust);
             tag_boundary_age(entry, tick_year);
 
-            let distance_above_equilibrium = current_elev - TRENCH_EQUILIBRIUM_M;
-            if distance_above_equilibrium <= 0.0 {
-                return;
-            }
-
-            let scale_height_m = 4500.0;
-            let driving_fraction = asymptotic_fraction(distance_above_equilibrium, scale_height_m);
             let max_trench = velocity_cm_per_year * tick_interval_years * SUBDUCTION_RATE;
-            let trench = max_trench * driving_fraction;
-            entry.elev -= trench;
+            let open = open_ocean
+                .get(owner_hex.0 as usize)
+                .copied()
+                .unwrap_or(true);
+            entry.elev += trench_delta_m(current_elev, open, max_trench);
         }
         false => {
             let entry = delta_entry(data, registry, cache, deltas, owner_hex, owner_plate_id);
@@ -494,7 +570,10 @@ fn apply_continental_oceanic(
                     * OROGENY_RATE
                     * OC_COASTAL_UPLIFT_FACTOR;
                 let uplift = max_uplift * driving_fraction;
-                entry.elev += uplift;
+                // Forearc: the boundary hex (ring 0) rises gently and stays
+                // emergent; the magmatic arc peaks inland (spread below), so
+                // there is land between the trench and the high peaks.
+                entry.elev += uplift * FOREARC_UPLIFT_FRACTION;
 
                 spread_inland(
                     data,
@@ -504,6 +583,7 @@ fn apply_continental_oceanic(
                     owner_hex,
                     owner_plate_id,
                     OC_INLAND_HEXES,
+                    &OC_INLAND_FALLOFF,
                     tick_year,
                     |d, falloff| {
                         d.elev += uplift * falloff;
@@ -539,6 +619,7 @@ fn apply_oceanic_oceanic(
     other_plate: &Plate,
     current_elev: f32,
     velocity_cm_per_year: f64,
+    open_ocean: &[bool],
     tick_interval_years: f64,
     tick_year: WorldYear,
 ) {
@@ -546,19 +627,23 @@ fn apply_oceanic_oceanic(
     let max_trench = velocity_cm_per_year * tick_interval_years * SUBDUCTION_RATE;
 
     if owner_plate_id == subducting {
+        // Subduction chokes on buoyant crust: if the hex on the downgoing side
+        // carries continental crust, it jams the zone instead of sinking — no
+        // trench delta. Without this guard, debris on the subducting plate was
+        // dragged to −8500 m and pinned below the isostatic rebound floor
+        // (erosion.rs `EPEIROGENIC_REBOUND_FLOOR_M`) forever.
+        if !crate::boundary::hex_crust_is_oceanic(data, registry, cache, owner_hex) {
+            return;
+        }
         let entry = delta_entry(data, registry, cache, deltas, owner_hex, owner_plate_id);
         entry.bedrock = Some(BedrockType::OceanicCrust);
         tag_boundary_age(entry, tick_year);
 
-        let distance_above_equilibrium = current_elev - TRENCH_EQUILIBRIUM_M;
-        if distance_above_equilibrium <= 0.0 {
-            return;
-        }
-
-        let scale_height_m = 4500.0;
-        let driving_fraction = asymptotic_fraction(distance_above_equilibrium, scale_height_m);
-        let trench = max_trench * driving_fraction;
-        entry.elev -= trench;
+        let open = open_ocean
+            .get(owner_hex.0 as usize)
+            .copied()
+            .unwrap_or(true);
+        entry.elev += trench_delta_m(current_elev, open, max_trench);
     } else {
         let entry = delta_entry(data, registry, cache, deltas, owner_hex, owner_plate_id);
         entry.bedrock = Some(BedrockType::Igneous);
@@ -657,6 +742,7 @@ fn spread_inland(
     start: HexId,
     plate_id: PlateId,
     max_depth: u32,
+    falloff: &[f64],
     tick_year: WorldYear,
     mut apply: impl FnMut(&mut HexDeltas, f64),
 ) {
@@ -692,10 +778,7 @@ fn spread_inland(
             visited.insert(neighbor, next_depth);
             queue.push_back(neighbor);
 
-            let falloff = INLAND_FALLOFF
-                .get(next_depth as usize - 1)
-                .copied()
-                .unwrap_or(0.0);
+            let falloff = falloff.get(next_depth as usize - 1).copied().unwrap_or(0.0);
             if falloff > 0.0 {
                 let entry = delta_entry(data, registry, cache, deltas, neighbor, plate_id);
                 apply(entry, falloff);
@@ -1046,6 +1129,210 @@ mod tests {
             WorldYear(500_000),
         );
         assert!(data.elevation_mean[hex.0 as usize] < 0.0);
+    }
+
+    #[test]
+    fn subduction_chokes_on_continental_crust() {
+        let (mut data, mut registry) = world_with_plates(4);
+        // Plates 0 (rate 1e-8, subducts) and 1 (rate 5e-9) from world_with_plates.
+        let hex = HexId(50);
+        let neighbor = data.grid.neighbors(hex)[0];
+        data.plate_id[hex.0 as usize] = PlateId(0);
+        data.plate_id[neighbor.0 as usize] = PlateId(1);
+        data.elevation_mean[hex.0 as usize] = -4000.0;
+
+        // The subducting side carries buoyant continental crust (debris jamming
+        // the zone). Pre-seeded features survive populate_surfaces.
+        {
+            let plate = registry.plates_mut().get_mut(&PlateId(0)).unwrap();
+            plate.surface.set(
+                hex,
+                SurfaceFeature {
+                    elevation_m: -4000.0,
+                    relief_m: 0.0,
+                    bedrock: BedrockType::Igneous,
+                    fertility: 0.0,
+                    age_year: 0,
+                    continental_crust: true,
+                },
+            );
+        }
+
+        let mut boundaries = BoundaryInfo::default();
+        boundaries.boundary_hexes.push(hex);
+        boundaries.edges.insert(
+            hex,
+            vec![ClassifiedEdge {
+                neighbor_hex: neighbor,
+                other_plate: PlateId(1),
+                class: BoundaryClass::Convergent(ConvergentSubtype::OceanicOceanic),
+                normal_velocity_m_per_year: 0.05,
+                tangential_velocity_m_per_year: 0.0,
+            }],
+        );
+
+        apply_and_rebuild(
+            &mut data,
+            &mut registry,
+            &boundaries,
+            500_000.0,
+            WorldYear(500_000),
+        );
+        assert_eq!(
+            data.elevation_mean[hex.0 as usize], -4000.0,
+            "continental crust must not be driven into a trench (choking)"
+        );
+    }
+
+    #[test]
+    fn sealed_trench_segment_infills_toward_marginal_sea() {
+        let (mut data, mut registry) = world_with_plates(4);
+        let hex = HexId(50);
+        let neighbor = data.grid.neighbors(hex)[0];
+        data.plate_id[hex.0 as usize] = PlateId(0); // faster plate: subducts
+        data.plate_id[neighbor.0 as usize] = PlateId(1);
+        data.sea_level_m = 0.0;
+        // A lone abyssal pit ringed by land at sea level: sealed off from any
+        // ocean, so sediment infill must win over slab pull (§5.9).
+        data.elevation_mean[hex.0 as usize] = -8500.0;
+
+        let mut boundaries = BoundaryInfo::default();
+        boundaries.boundary_hexes.push(hex);
+        boundaries.edges.insert(
+            hex,
+            vec![ClassifiedEdge {
+                neighbor_hex: neighbor,
+                other_plate: PlateId(1),
+                class: BoundaryClass::Convergent(ConvergentSubtype::OceanicOceanic),
+                normal_velocity_m_per_year: 0.05,
+                tangential_velocity_m_per_year: 0.0,
+            }],
+        );
+
+        apply_and_rebuild(
+            &mut data,
+            &mut registry,
+            &boundaries,
+            500_000.0,
+            WorldYear(500_000),
+        );
+        let after = data.elevation_mean[hex.0 as usize];
+        assert!(
+            after > -7000.0,
+            "sealed trench segment should infill toward marginal-sea depth, got {after}"
+        );
+        assert!(
+            after < -5000.0,
+            "one tick of infill must not overshoot the marginal-sea floor, got {after}"
+        );
+    }
+
+    #[test]
+    fn open_ocean_trench_still_deepens_toward_abyssal_equilibrium() {
+        let (mut data, mut registry) = world_with_plates(4);
+        let hex = HexId(50);
+        let neighbor = data.grid.neighbors(hex)[0];
+        data.plate_id[hex.0 as usize] = PlateId(0); // faster plate: subducts
+        data.plate_id[neighbor.0 as usize] = PlateId(1);
+        data.sea_level_m = 0.0;
+        // Whole grid below sea: the trench hex belongs to the world ocean and
+        // keeps the abyssal equilibrium.
+        for e in data.elevation_mean.iter_mut() {
+            *e = -4000.0;
+        }
+
+        let mut boundaries = BoundaryInfo::default();
+        boundaries.boundary_hexes.push(hex);
+        boundaries.edges.insert(
+            hex,
+            vec![ClassifiedEdge {
+                neighbor_hex: neighbor,
+                other_plate: PlateId(1),
+                class: BoundaryClass::Convergent(ConvergentSubtype::OceanicOceanic),
+                normal_velocity_m_per_year: 0.05,
+                tangential_velocity_m_per_year: 0.0,
+            }],
+        );
+
+        apply_and_rebuild(
+            &mut data,
+            &mut registry,
+            &boundaries,
+            500_000.0,
+            WorldYear(500_000),
+        );
+        let after = data.elevation_mean[hex.0 as usize];
+        assert!(
+            after < -4000.0,
+            "open-ocean trench should keep deepening toward the abyssal equilibrium, got {after}"
+        );
+    }
+
+    #[test]
+    fn coastal_arc_peaks_inland_with_emergent_forearc() {
+        let (mut data, mut registry) = world_with_plates(4);
+        let cell_count = data.plate_id.len();
+        registry.insert(plate_at(2, PlateType::Oceanic, 100, 1e-8, cell_count));
+        registry.insert(plate_at(3, PlateType::Continental, 900, 1e-8, cell_count));
+
+        // Continental plate everywhere; one oceanic neighbor across the edge.
+        let hex = HexId(50);
+        let neighbor = data.grid.neighbors(hex)[0];
+        for pid in data.plate_id.iter_mut() {
+            *pid = PlateId(3);
+        }
+        data.plate_id[neighbor.0 as usize] = PlateId(2);
+        for e in data.elevation_mean.iter_mut() {
+            *e = 0.0;
+        }
+
+        // Ring-1 and ring-2 hexes inland of the boundary hex.
+        let ring1 = data
+            .grid
+            .neighbors(hex)
+            .iter()
+            .copied()
+            .find(|&h| h != neighbor)
+            .expect("ring1");
+        let ring2 = data
+            .grid
+            .neighbors(ring1)
+            .iter()
+            .copied()
+            .find(|&h| h != hex && h != neighbor)
+            .expect("ring2");
+
+        let mut boundaries = BoundaryInfo::default();
+        boundaries.boundary_hexes.push(hex);
+        boundaries.edges.insert(
+            hex,
+            vec![ClassifiedEdge {
+                neighbor_hex: neighbor,
+                other_plate: PlateId(2),
+                class: BoundaryClass::Convergent(ConvergentSubtype::ContinentalOceanic),
+                normal_velocity_m_per_year: 0.05,
+                tangential_velocity_m_per_year: 0.0,
+            }],
+        );
+
+        apply_and_rebuild(
+            &mut data,
+            &mut registry,
+            &boundaries,
+            500_000.0,
+            WorldYear(500_000),
+        );
+
+        let u0 = data.elevation_mean[hex.0 as usize];
+        let u2 = data.elevation_mean[ring2.0 as usize];
+        assert!(
+            u0 > 0.0,
+            "forearc strip must keep emerging above sea, got {u0}"
+        );
+        assert!(
+            u2 > u0,
+            "arc peak belongs inland (ring 2), got ring0={u0} ring2={u2}"
+        );
     }
 
     #[test]

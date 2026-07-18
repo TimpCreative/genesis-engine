@@ -1,12 +1,16 @@
 # 06 — Tectonics Module Specification
 
 **Document Type:** Tier 2 — System Specification
-**Status:** Draft v0.10
+**Status:** Draft v0.14
 **Last Updated:** July 2026
 **Owner:** Brax Johnson
 **Implementing Phase:** 1 (Geology Prototype)
 
 **Changelog:**
+- v0.14 (July 2026): **Continental collision realism, live-rift ocean protection, deep-time crust budget (P1-25).** (1) *Crustal shortening (§4.2).* Converging continent–continent contests no longer let footprints interpenetrate: the overlap is consumed by shortening — the losing claim's feature is deleted and the winner uplifts `SHORTENING_UPLIFT_M = 250 m` — so colliding continents crumple (Himalaya) instead of ghosting through each other unchanged (the 2.29B→2.52B pass-through caught on owner screenshots). A pair accumulating ≥3 shortening contacts registers in `colliding_pairs` for the jam below. (2) *Collision jam (§4.6).* Plates in a registered collision relax their angular velocities toward the shared mean with τ = 10 My — kinematic suturing: the pair keeps drifting as one welded block instead of one sliding through the other. (3) *Gravitational collapse (§8.5).* A new post-erosion pass spreads relief that exceeds rock strength under its own weight (three-regime relaxation toward the ~5 km cap, `COLLAPSE_RELAX_YEARS = 10 My` — do not shorten; the aggressive version cascaded the world to a puddle, see the constant's comment). Mountains come down without water, as they must until Doc 8 owns erosion. Measured adjacent-hex steps across three gate seeds: 8.3–11.1 km non-trench, ≤16.3 km trench-adjacent. (4) *Crust budget retune (§4.7, §5.10).* Subduction erosion is resolution-normalized (per-hex consumption probability scales with hex width so the margin retreat rate is resolution-independent); `initial_continental_fraction` 0.22→0.30 and `CONTINENTAL_FREEBOARD_M` 550→800 so continents stand higher and the ratchet starts from an honest base. (5) *Live-rift protection (§5.8).* A trapped basin adjacent to an *actively opening* divergent edge is a growing ocean (Red Sea, Gulf of California), not an obduction candidate: the accretion pass no longer converts it (a stalled rift loses protection, mirroring the convergent rule), but its floor is still capped at `MARGINAL_SEA_EQUILIBRIUM_M` — hot young ocean floor never sits at trench depth, and the cap keeps margin-profile relief inside gate #14. Without the guard the pass strangled every infant ocean at birth (newborn below-sea rift floor is a small enclosed component and converted in one tick): measured with 4B flux instrumentation (subdiv 7), accretion events fell 66k → 47–53k and the mid-run crust curve flattened (0.30 → 0.39 across 1B–2.5B, was 0.31 → 0.55). A stronger variant — continental breakup by converting rift margins to oceanic crust — was implemented and REVERTED on gate evidence: conversion width was one hex ring per side, an area term that scales with resolution, and at subdiv 5 it amputated continents to ≤2% crust by 1B (waterworld, zero mountains). Earth creates ocean floor overwhelmingly by ridge accretion — which the sim already has (§4.2 gap minting) — while margins stay continental. (6) *Gates (§11).* #10 asserts continental crust AREA 0.10–0.45 at 1B with land printed informationally (fixed-seed land bands police Wilson-phase noise, not physics); #11's fossil-floor check now excludes components touching ANY live margin, convergent or divergent (Afar/Baikal rift floors are current geology, not fossil relief); #14's trench bucket discriminates at `MARGINAL_SEA_EQUILIBRIUM_M` (−4,500 m) instead of −6,000 m, because live-margin-protected basins sit at exactly the cap — the Andes-class profile (+9,000 clamped peak beside a −4,500 back-arc floor = 13.5 km) is margin geology (Earth's trench-to-summit max ≈ 15 km), while the 12 km limit keeps policing land-vs-land steps. All green ×3 seeds (42/43/44). *Known issues:* (a) the resolution-normalization helpers use the 10·4^level+2 cell-count formula while the grid is ISEA3H (10·3^level+2) — mislabeled but calibrated: the 4^ quirk accidentally yields the physical retreat rate the passing gates were tuned against, and "correcting" it would strengthen the sink ~2.7× and force a full recalibration; flagged, deliberately not churned. (b) *Deep-time ratchet — resolved in this version.* With conversion-split instrumentation the 1B→4B budget read: +28.4k trapped-basin conversions (accelerating: ~210/100My at 100M → ~1,000–1,800/100My after 3B) against −3.8k subduction erosion and an inferred ~−15.6k from shortening + rift gap-minting, net +8.9k hexes: crust 0.30 → 0.59–0.71 at 4B across two realizations of the same physics (Earth: ~0.40, quasi-steady since ~2.5 Ga). The unphysical term was instant one-tick conversion of enclosed basins — on Earth the Mediterranean/Caspian/Black Sea persist as oceanic crust for tens to hundreds of My while suturing proceeds. The fix is §5.8 item 5: gradual suture conversion at `SUTURE_HALF_LIFE_MY`, with the §5.9 enclosure cap applied to unconverted floors so no sealed basin holds abyssal depth while it waits. Calibration measured at 4B (subdiv 7, 3 realizations per rate): 75 My half-life → 13–22% crust (ratchet dead but ocean-heavy); **55 My → 18.5–27.3% crust with land 18.7–25.3%** — adopted as the better match to Earth's present ~29% land. §11 #10/#11 green on all six 4B runs (deepest detached basin −4,500 to −5,097 m) and on the 1B gate ×3 seeds (crust 0.130–0.148, max non-trench step 8.6–11.1 km). Same seed produces different output post-P1-25 (expected).
+- v0.13 (July 2026): **Slab-pull plate motion, crust mass balance, tick perf (P1-24).** (1) *Speed is emergent, not sampled (§2.4).* The sampled log-normal base rate + compounding collision damping + 5% stall floor + 2%/tick rift recovery machinery is deleted. Boundary scans now tally each plate's live slab edges (convergent, this plate's oceanic crust downgoing) and ridge edges; the motion step relaxes every rate toward the force set-point `min(15, 1.5 + 10·slab_frac + 2·ridge_frac) × velocity_scale × rotation_factor` cm/yr with a 25 My exponential time constant. Slab-girdled oceanic plates run Pacific-fast, slab-less continents drift Africa-slow, and suturing slows a plate over ~25 My as its trench chokes — the India transient from physics, not a script. This kills both failure modes of the old model: no compounding damping toward zero (the floor is the 1.5 drift base) and no release back to a log-normal high tail (the ceiling is 15 cm/yr; the old tail could sustain ~30–55 cm/yr ≈ a quarter of the planet per 10 My). "Stalled" for Wilson-cadence reorg pressure and split/merge targeting is now an absolute < 2 cm/yr threshold; `base_motion_rates` is gone. Measured at subdiv 7: speeds 2.0–6.4 cm/yr, median 3.3–4.2, at 200M/1B/4B; new §11 gate #13 (0.5–20 × scale at 1B). (2) *Subduction erosion (§5.10).* Accretion only created continental crust, so the fraction ratcheted to ~53% of the sphere by 4B years. Live continent–ocean margins now consume overriding forearc rims at `p = 0.0025`/My per rim hex (compounded per tick length; `tectonics.subduction_erosion` stream), converting them to oceanic crust at trench depth — von Huene & Scholl's erosive margins. The first calibration at 0.01/My over-corrected (continents drained to ~5% by 4B); at 0.0025 the fluxes balance: land 23.5% → 23.9% → 38.1% at 200M/1B/4B (was 27.3 → 33.8 → 48.9), §11 #10–11 green at all three snapshots (4B detached 2.67% → 0.95%). (3) *Tick perf.* One water-realm component labeling per tick, shared by trench enclosure and accretion (was two identical O(n) BFS labelings — exact, since `elevation_mean` only changes at world rebuilds); one `BoundaryInfo` clone removed; slow-step log threshold is env-tunable (`GENESIS_SLOW_TICK_STEP_MS`). Net 4B-year run: 134s → 127s at subdiv 7 with the new physics included; the profile names `repartition_hexes` (~9.5 ms/tick) as the remaining hotspot for a future pass. (4) *Menu: Continental crust % knob.* The setup screen now exposes `initial_continental_fraction` (2-point steps, 5–60%, default 22%) — the physically meaningful lever: ocean-vs-continental composition emerges from crust area at formation, so major/minor (size classes) stay as they are. Same seed produces different output post-P1-24 (expected).
+- v0.12 (July 2026): **Deep-time Wilson-cycle pass (P1-23).** Six mechanisms that make the supercontinent cycle actually cycle, plus the §11 gates to hold them. (1) *Ocean-opening splits (§4.5).* Splits now preferentially target stalled plates (rate < 50% of unstressed base — rifts nucleate in welded supercontinents) and choose the child's motion axis from 8 sampled candidates to maximize divergence along the new boundary line (parent seed → midpoint → child seed): splits open young oceans with passive margins instead of shearing or instantly re-colliding. Split/merge weights also regulate the plate census into the §11 #2 band (≥15 plates: splits 40%→20%, mergers 20%→40%; ≤5: splits 60%, mergers off). (2) *Wilson cadence (§4.5).* Reorganization probability is `0.004 * geology_activity_scale * (1 + 2 * stalled_fraction)` — a fully welded world reorganizes up to 3× sooner than a drifting one (the doc previously said a flat 0.001; the code's 0.004 base is now documented and stall-scaled). (3) *Subduction choking (§5.9).* Trench arms skip their delta when the downgoing hex carries continental crust — buoyant debris jams the zone instead of being dragged below the isostatic rebound floor forever. (4) *Trench enclosure (§5.9).* A trench segment sealed off from the open ocean (component < 1% of cells) equilibrates at `MARGINAL_SEA_EQUILIBRIUM_M = −4500 m` (Japan Sea / Mediterranean), infilling at 10× the subduction rate; the accretion pass applies the same cap to live-protected back-arc basins, whose floors previously sat at −8500 m one hex behind the trench line. Deepest detached basin at 200M/1B/4B: exactly −4500 m. (5) *Velocity-gated fossil-trench healing (§5.8).* "Live" subduction now requires closing velocity above the classification threshold — collision-stalled boundaries creeping at the 5% stall floor stop protecting their pits — and deep continental floors in trapped basins lift to the obduction depth (rebound refuses crust below its floor). (6) *Forearc emergence (§5.3).* CO arc uplift spreads 4 rings with falloff `[0.4, 1.0, 0.6, 0.25]` peaking at ring 2, and the coastal hex gets 30% (`FOREARC_UPLIFT_FRACTION`): subduction coasts read forearc → foothills → arc with land on both sides (Chile exists), not mountains dropping into the sea. *New §11 gates #10–12* (land 20–45% at 1B; sub-1% detached water < 2% of cells and ≥ −6000 m; passive-margin coastline ≥ 25%, tracked-informational for now). Calibration at subdiv 7: **200M — all four pass** (plates 15, land 27.3%, detached 0.13%, deepest −4500 m, passive 30.9%); **1B** — plates 14, land 33.8%, detached 1.02%, deepest −4500 m, passive 10.1% (1B regression gate `wilson_cycle_criteria_hold_at_one_billion_years` passes); **4B still off-target** (plates 17, land 48.9%, small detached 2.7%, passive 7.1%): continental crust area ratchets 27%→34%→53% of the sphere because trapped basins convert to permanent land and nothing recycles it — subduction erosion, delamination, and water-volume conservation are the follow-up (Doc 8-adjacent). Same seed produces different output post-P1-23 (expected).
+- v0.11 (July 2026): **Water visuals removed pending Doc 8; suture accretion; orogeny recalibration (P1-22).** (1) *No visible water.* Water is removed as a visible surface feature until Doc 8 (hydrology) lands — the renderer uses a dry hypsometric ramp (ocean floor renders as deep charcoal relief, never blue), the Rivers render mode and the provisional `genesis_hydrology` crate are deleted (prior art retained in Doc 08), and climate regime classification now assigns a regime to every hex instead of leaving below-sea hexes `Unset`. `sea_level_m` and Doc 07's internal ocean model (distance-to-ocean, currents, moisture) are unchanged — climate depends on them. (2) *Suture accretion (§5.8).* Below-sea basins trapped between colliding continents no longer persist as permanent inland seas (previously ~150 detached oceanic-crust components at 1B years; trapped crust sat on the −4000 m floor forever because isostasy only lifts continental crust). A new per-tick accretion pass consumes trapped oceanic crust into the continent (obduction) and lifts it to 200 m below sea level for epeirogenic rebound to carry to freeboard. Regression guard: `history_leaves_no_trapped_oceanic_basins`. (3) *Orogeny recalibration.* CC collision uplift spreads 4 rings inland with falloff `[1.0, 0.6, 0.3, 0.15]` (was 2 rings); CO coastal arc uplift factor 0.25→0.10 so subduction coasts no longer rival collision ranges; bedrock erosion multipliers lowered (Metamorphic 0.25→0.15, Igneous 0.10→0.08) and `base_erosion_rate_per_year` default 1e-7→5e-8 so old collision belts persist as visible highlands between Wilson cycles. Same seed produces different output post-P1-22 (expected).
 - v0.10 (July 2026): **Level-8 continent-quality fixes (P1-21).** Three fixes to problems that only became visible at subdivision 8. (1) *Projection-hole speckle.* The world rebuild forward-rotates birth-indexed features to world hexes, a many-to-one resample that leaves holes; the old neighbor-mean hole patch dipped those holes below sea level next to any coast/ridge, riddling continents with phantom "lakes" in every render mode. The rebuild now resolves every owned hex (claimed and hole) through the `ProjectionCache`'s birth mapping — reading the plate's actual material, or the land baseline for an empty slot — and the neighbor-mean patch is deleted. (2) *Rebound floor made sea-relative.* `EPEIROGENIC_REBOUND_FLOOR_M` was an absolute −2000 m; once sea level fell to −1500 m, continental shelf crust only 500–1000 m under water sat below the floor and was frozen as permanently drowned. The floor is now `sea_level + offset`, so barely-submerged continental crust rebounds toward its freeboard; interior sub-sea hexes at level 8 fell ~2960→~500. (3) With the speckle gone, honest land fraction rose (the old ~29% was partly the speckle bug undercounting land), so `initial_continental_fraction` was recalibrated 0.29→0.22 for a stable Earthlike 23–27% land across 200M/1B/4.5B. Also: **stalled-plate motion floor.** An interior plate boxed in by converging neighbors was damped toward literal zero with recovery permanently gated off; `recover_motion_rates` now floors every plate at `MIN_STALL_FRACTION` (5%) of its base rate even while colliding, so a sutured interior continent creeps like a craton instead of freezing (min 4.5B displacement rose from a few hundred to ~2500 km). Same seed produces different output post-P1-21 (expected).
 - v0.9 (July 2026): **Level-8 generation performance (P1-20), no behavior change.** Full history at subdivision 8 (65,612 hexes, 200M years) dropped from ~137s to ~26s (5.3×), all worlds bit-for-bit identical. Two hot paths were re-engineered: (1) **Formation was O(n²)** — plate growth rescanned each plate's entire owned footprint to find its frontier on every single hex-addition, so the final additions each scanned tens of thousands of hexes. Each plate now maintains its unowned-adjacent frontier as an incrementally-updated `BTreeSet`; a set's ascending `HexId` iteration reproduces the old sort+dedup exactly and the frontier length feeds the same rng draw, so determinism is preserved to the bit. Formation alone: ~13.3s → ~0.08s (168×). (2) **Per-tick surface lookups** re-derived a quaternion rotation and ran a nearest-hex search for every hex in erosion, boundary classification, and the three world-rebuilds per tick. `repartition_hexes` already inverse-maps every claimed hex, so it now also emits a `ProjectionCache` (world→owning-plate birth-hex table, guarded by an ownership snapshot); `surface_elevation_at`, `continental_crust_at`, `modify_surface_at_world_hex`, the boundary-delta keys, and a cache-driven `rebuild_world_from_plate_surfaces_cached` take table lookups, falling back to direct computation when the cache does not cover the current ownership (tests, cold paths). The per-tick erosion noise map also moved from `BTreeMap` to a flat `Vec`. Deep-time gates and all 143 tectonics tests unchanged.
 - v0.8 (July 2026): **Wilson-cycle rift recovery and formation pit smoothing (P1-19).** Collision damping previously halved a colliding plate's motion rate permanently, so sutured continents parked forever. Plates now recover toward their unstressed base rate (2%/tick of the remaining gap, ~25M years to resume full speed) whenever they are NOT in an active converging continental collision; bases are tracked per plate and reset when a reorganization assigns new motion. Reorganization motion-changes preferentially target stalled plates (rate < 50% of base), feeding the supercontinent cycle. Formation noise gains a single-hex pit fill (lone dips >150 m below every neighbor rise to 50 m below the lowest) and `min_geologic_lake_depth_m` default rises 200→400 m, eliminating near-black one-hex "holes" in continent interiors while preserving multi-hex basins. Notable-event validation bound raised 15k→17k at 100M years (persistently active plates emit ~0.1% more events).
@@ -37,12 +41,10 @@ Tectonics must:
 
 This is explicitly NOT a research-grade plate tectonics simulator. We are not modeling:
 
-- Subduction angles, slab pull, ridge push at numerically accurate rates
-- Viscous mantle flow or convection cells
+- Subduction angles, slab geometry, viscous mantle flow, or convection cells (slab pull IS the motion driver — §2.4 — but as boundary tallies, not numerically accurate force balances)
 - Isostatic adjustment beyond a simple proxy
 - Mineralogical composition or igneous petrology
 - Earthquake mechanics
-- Continental drift at correct velocities (Earth: ~2-15 cm/year; we'll use values that produce visually interesting results at reasonable tick counts)
 - Specific Earth historical reconstruction (Pangea, Pannotia, Rodinia, etc. — though our worlds will go through analogous supercontinent cycles)
 
 If the player is a geophysicist, they will find things to nitpick. That's acceptable. The goal is plausible worldbuilding, not academic accuracy.
@@ -174,27 +176,20 @@ Continental plates preferentially get assigned to *major* plate slots (so most c
 
 ### 2.4 Plate Velocity
 
-Real Earth plates move at 0.5-15 cm/year. The Pacific Plate moves ~10 cm/year; the African Plate moves ~1-2 cm/year; the Antarctic Plate is nearly stationary. We want this variation, not uniform motion.
+Real Earth plates move at 0.5-15 cm/year. The Pacific Plate moves ~10 cm/year; the African Plate moves ~1-2 cm/year; the Antarctic Plate is nearly stationary. We want this variation, not uniform motion — and on Earth the variation is not random: it is set by **boundary forces**. Slab pull dominates (~90% of the driving budget): plates rimmed by subducting slabs run 6–15 cm/yr (Pacific, Nazca, pre-collision India ~18), plates without slabs drift at 1–3 cm/yr (Africa, Eurasia, Antarctica), and ridge push adds a little. When India's slab choked at the Asian suture, the plate slowed 18→5 cm/yr over ~20 My.
 
-Each plate's `motion_rate_rad_per_year` is sampled from a **log-normal distribution** centered on Earth-like values scaled by `WorldParameters.core.geology.plate_velocity_scale` and the rotation factor from §2.1:
-
-```
-effective_velocity_scale = plate_velocity_scale * sqrt(24.0 / rotation_period_hours)
-median_cm_per_year = 5.0 * effective_velocity_scale
-sigma = 0.6  // log-normal sigma, produces 0.5x-15x variation per plate
-```
-
-In radians per year on the planet's surface:
+So plate speed is **emergent from boundary geometry**, not a stored constant. Each tick the boundary scan tallies per plate: live convergent edges where the plate's oceanic crust is the downgoing slab (`slab_edges`), live divergent edges (`ridge_edges`), and all edges (`total_edges`) — "live" means closing/opening faster than the 0.005 m/yr classification threshold, so a stalled suture is not a pulling slab. The motion step then relaxes every plate's rate toward its force set-point:
 
 ```
-plate_rate_rad_per_year = sample_log_normal(median_cm_per_year, sigma) * 1e-5 / planet_radius_km
+rotation_factor = sqrt(24.0 / rotation_period_hours)
+target_cm_per_year = min(15, 1.5 + 10.0 * slab_edges/total_edges + 2.0 * ridge_edges/total_edges)
+                     * plate_velocity_scale * rotation_factor
+rate += (target - rate) * (1 - exp(-tick_years / 25 My))
 ```
 
-Why log-normal: it produces realistic skew. Most plates near the median, some much faster, rare ones very slow — matching observed Earth dynamics. Pure uniform or Gaussian distributions don't capture this.
+The 1.5 cm/yr drift base is the floor (mantle drag never fully stops a plate — no more boxed-in plates freezing to zero); 15 cm/yr is the sustained ceiling (no more plates crossing a quarter of the planet between screenshots); the 25 My exponential relax is tick-interval independent and produces the India-style slow-motion collision transient for free: an arriving continent chokes the trench (§5.9), the slab term vanishes, and the plate decays toward the drift base over ~25 My.
 
-**Plate type also biases velocity.** Continental plates carry more mass and tend to move slower; oceanic plates can move faster. Apply a 0.7x multiplier to continental plate rates after sampling. This is the simplification that gives us "Africa moves slowly, Pacific moves quickly."
-
-
+**Seeded rates.** Newborn plates (formation, splits, motion-changes) still get a sampled rate as an initial condition — log-normal, median `5.0 * plate_velocity_scale * rotation_factor` cm/yr, sigma 0.6, continental plates ×0.7 — because a fresh plate has no tally history yet. The relax converges in ~25 My, so the seed barely matters; it only keeps the first few ticks plausible.
 
 ## 3. Boundary Detection and Classification
 
@@ -280,15 +275,16 @@ Total tick count for default Earth-analog world:
 
 In order:
 
-1. **Update plate motion accumulators.** For each plate, increment `accumulated_rotation_rad` by `motion_rate_rad_per_year * tick_interval_years`.
-2. **Re-partition hexes to plates.** Recompute `WorldData.plate_id[hex]` for all hexes based on each plate's current effective position.
+1. **Update plate motion.** Relax every plate's motion rate toward its slab-pull force set-point (§2.4), then lock colliding continental pairs into a shared drift (collision jam, §4.6 — using last tick's contact tally; a 1-tick lag is geologically nothing), then advance rotation: increment `accumulated_rotation_rad` by `motion_rate_rad_per_year * tick_interval_years`.
+2. **Re-partition hexes to plates.** Recompute `WorldData.plate_id[hex]` for all hexes based on each plate's current effective position. Genuinely converging continental-continental contests consume the loser's crust into the orogen (crustal shortening, §5.2), and the repartition reports which plate pairs are in sustained collision contact (≥ 3 converging continental contacts) to drive next tick's jam (§4.6).
 3. **Detect boundary hexes and classify boundary types** (§3).
 4. **Apply boundary effects to elevation** (§5).
 5. **Apply hot spot effects** (§7).
 6. **Apply erosion** (§8).
-7. **Check for plate reorganization events** (§4.5).
-8. **Update sea level** (§4.6).
-9. **Emit events** based on what happened this tick (§6).
+7. **Apply gravitational collapse** (§8.5) — relax adjacent-hex relief beyond the rock-strength limit.
+8. **Check for plate reorganization events** (§4.5).
+9. **Update sea level** (§4.7).
+10. **Emit events** based on what happened this tick (§6).
 
 Each step uses a distinct RNG stream (§4.4) for any randomness, ensuring tick determinism.
 
@@ -316,7 +312,7 @@ Tectonics uses these named streams (derived from `WorldRng::stream(name)`):
 |---|---|
 | `tectonics.plate_seeds` | Initial plate seed hex selection |
 | `tectonics.plate_axes` | Plate motion axis sampling |
-| `tectonics.plate_rates` | Plate motion rate sampling |
+| `tectonics.plate_rates` | Newborn plate motion rate seeding (§2.4) |
 | `tectonics.plate_types` | Continental vs oceanic assignment |
 | `tectonics.initial_elevation_noise` | Per-hex initial elevation variation |
 | `tectonics.reorganization_check` | Per-tick check for whether a plate reorganization occurs |
@@ -325,6 +321,7 @@ Tectonics uses these named streams (derived from `WorldRng::stream(name)`):
 | `tectonics.hotspot_activity` | Per-tick activity at each hot spot |
 | `tectonics.volcanism` | Stochastic volcanic eruptions at boundaries |
 | `tectonics.erosion_noise` | Per-tick erosion variation |
+| `tectonics.subduction_erosion` | Per-tick forearc consumption draws (§5.10) |
 
 Each is initialized once at plate creation and re-derived deterministically every tick. Different streams ensure that, e.g., tweaking volcanism logic doesn't change initial plate layout.
 
@@ -332,15 +329,29 @@ Each is initialized once at plate creation and re-derived deterministically ever
 
 Real plate tectonics is not static — plates split, merge, and change motion direction over hundreds of millions of years. Modeling this gives our worlds varied geological history (multiple supercontinent cycles, not just one static configuration).
 
-Each Geological-era tick, with probability `0.001 * geology_activity_scale` (default ~once per 500 million simulated years), a reorganization event occurs. Reorganization is one of:
+Each Geological-era tick, a reorganization event fires with probability `0.004 * geology_activity_scale * (1 + 2 * stalled_fraction)`, where `stalled_fraction` is the share of plates creeping below the 2 cm/yr stall threshold (§2.4: slab-less plates relax to the ~1.5 cm/yr drift base, so welded continents pile up there while slab-driven plates sit far above it). A welded world — a supercontinent whose plates have sutured to a crawl — breaks up or redirects up to 3× sooner than an actively drifting one. This is the Wilson-cycle pacemaker: assembly stalls the machine, and the stall itself raises the pressure that tears it apart again (~16–30 events per 4.5B years at scale 1.0).
 
-- **Plate split** (40% of events): A randomly-chosen large plate splits along a chosen axis. Creates a new plate with a related but distinct motion axis. Continental plate splits often produce a new ocean basin between the two halves.
-- **Plate motion change** (40% of events): A randomly-chosen plate gets a new motion axis. Models the "the plate slowed down and changed direction" that happens in real Earth history.
-- **Plate merger** (20% of events): Two adjacent plates merge into one. Often happens after extensive continental collision when the boundary effectively locks up.
+Reorganization is one of (the split/merge weights adjust to hold the plate census in the Earthlike 5–15 band of §11 #2 — at ≥15 plates splits downweight to 20% and mergers rise to 40%, at ≤5 plates splits rise to 60% and mergers switch off; motion changes always keep 40%):
+
+- **Plate split** (normally 40% of events): A large plate (≥5% of grid cells) splits along the bisector between its seed and its farthest hex. The parent is chosen preferentially from *stalled* plates — rifts nucleate in welded supercontinents, not in plates that are already moving. The child gets a freshly sampled motion rate, and its motion axis is picked from 8 sampled candidates to maximize divergence from the parent along the new boundary line (parent seed → midpoint → child seed): the split opens a young ocean between the two halves instead of shearing or immediately re-colliding (§5.1).
+- **Plate motion change** (40% of events): A randomly-chosen plate (preferentially a stalled one) gets a new motion axis. Models the "the plate slowed down and changed direction" that happens in real Earth history.
+- **Plate merger** (normally 20% of events): Two adjacent plates merge into one. Often happens after extensive continental collision when the boundary effectively locks up.
 
 Each reorganization emits an event with `Significance::Pivotal` (these are the supercontinent-cycle-defining moments).
 
-### 4.6 Sea Level Drift
+### 4.6 Collision Locking (Kinematic Jam)
+
+When two continents collide, neither plate bounces off and they do not merge into one plate — on Earth, India and Eurasia remain distinct plates ~50 My after initial contact. What dies is the *relative* motion across the suture: convergence is increasingly accommodated by crustal shortening inside the widening orogen (§5.2) instead of by plate advance, until the two plates are drifting together as one kinematic unit.
+
+Mechanism:
+
+- During repartition (§4.2 step 2), every cross-plate hex contest between continental crust on genuinely converging plates (closing speed above `CONVERGENCE_THRESHOLD_M_PER_YEAR`) counts toward a per-pair contact tally. Pairs with ≥ `COLLISION_CONTACT_HEXES` (3) such contacts are **colliding**.
+- In the next tick's motion step, each colliding pair's rotation vectors relax toward their hex-count-weighted shared angular velocity with time constant `COLLISION_JAM_RELAX_YEARS = 10 My` (per-tick factor `1 − exp(−dt/τ)`). Relative velocity across the suture dies over ~10 My; the pair's absolute motion continues — the sutured continent drifts as one body, like India–Eurasia still moving north together today.
+- Plate identities, registries, and boundaries are untouched. A jammed pair reads as stalled (< 2 cm/yr), which raises reorganization pressure (§4.5) until a split tears the welded continent apart along a new rift — breakup is the next Wilson cycle, not a bounce.
+
+**Why not a registry merge:** an earlier version of this mechanism welded colliding plates into a single plate after sustained contact. Welds are deterministic while splits are stochastic, so welding outpaced splitting and the plate census collapsed to 3 plates by 1B years (§11 #2 requires 5–15), with the surviving super-plates paving 38% of the sphere. The kinematic jam keeps the census honest while producing the same observable geology.
+
+### 4.7 Sea Level Drift
 
 Per Doc 04 §3.3, sea level is variable (not fixed at zero). Tectonic activity affects ocean basin volume:
 
@@ -370,6 +381,8 @@ For each boundary hex h at a divergent boundary:
 
 If divergence happens within a continental plate (rifting), elevation drops more slowly and bedrock stays `Igneous` until the rift becomes oceanic (after ~50 million years of sustained divergence).
 
+Rifts in our worlds usually originate at reorganization splits (§4.5): the split's divergence-maximizing child axis means the new boundary starts pulling apart immediately, the split-boundary subsidence (50 m on continental hexes along the new boundary) seeds the rift valley, and sustained divergence then carries it through continental rifting to a young ocean basin with passive margins on both sides.
+
 ### 5.2 Convergent: Continental-Continental
 
 Two continents collide. Crust crumples upward.
@@ -380,7 +393,9 @@ For each boundary hex h at a continental-continental boundary:
 - `elevation_relief[h] += orogeny_rate * 0.3 * velocity_cm_per_year * tick_interval_years` (mountains get rougher)
 - Bedrock changes to `Metamorphic` (collision metamorphism)
 
-Effect spreads inland — hexes within 2-3 hexes of the boundary on the continental side also gain elevation, with falloff.
+Effect spreads inland — hexes within 4 hexes of the boundary on the continental side also gain elevation, with falloff `[1.0, 0.6, 0.3, 0.15]` per ring.
+
+**Crustal shortening (partition level).** Boundary deltas alone raised terrain without consuming area, so two converging continents could contest the same hexes indefinitely — the loser was merely hidden while overridden and re-emerged unchanged if the plates separated, which read as continents passing straight through each other. Now, when a genuinely converging continental-continental contest resolves, the losing feature is **consumed** (deleted from its plate's surface — its area has become orogen) and the winning feature gains `SHORTENING_UPLIFT_M = 250 m` scaled by its elevation headroom taper, plus relief at `SHORTENING_RELIEF_FRACTION = 0.3` of the uplift, with bedrock set to `Metamorphic` and `age_year` refreshed. Overlap becomes mountains once, permanently: India–Asia has shortened by > 1,000 km into the Himalaya and the Tibetan Plateau, and neither continent is waiting underneath the other to pop back out.
 
 ### 5.3 Convergent: Oceanic-Continental
 
@@ -389,9 +404,12 @@ Oceanic plate subducts under continental plate.
 For each boundary hex h on the **oceanic side**:
 - Elevation decreases sharply (forming a trench): `elevation_mean[h] -= subduction_rate * velocity * tick_interval`
 - `subduction_rate ≈ 1e-4 m per cm` (calibrated to produce ~10 km trench over 100 million years of sustained subduction)
+- The trench equilibrium is enclosure-aware (§5.9): open-ocean segments deepen toward −8500 m; segments sealed off from the world ocean infill toward marginal-sea depth (−4500 m)
 
-For each boundary hex h on the **continental side** (within 3 hexes inland):
-- Elevation increases (coastal mountains)
+For each boundary hex h on the **continental side**:
+- Elevation increases (coastal mountains) at 10% of the §5.2 orogeny rate (`OC_COASTAL_UPLIFT_FACTOR = 0.10`) — subduction arcs are modest beside continent-continent collision ranges
+- The boundary hex itself — the **forearc** (ring 0) — receives only 30% of the arc uplift (`FOREARC_UPLIFT_FRACTION = 0.3`): it rises gently and stays emergent, so there is always low land between the trench and the high peaks (Chile exists between the Peru–Chile Trench and the Andes)
+- Uplift spreads 4 rings inland with falloff `[0.4, 1.0, 0.6, 0.25]` per ring (`OC_INLAND_FALLOFF`), peaking at ring 2 — the magmatic arc crest sits ~150–450 km inland, so subduction coasts read as forearc strip → foothills → range instead of mountains dropping straight into the sea
 - Volcanism is likely (see §5.5)
 - Bedrock changes to `Igneous` (volcanic rock from arc magmatism)
 
@@ -406,7 +424,7 @@ For each boundary hex h on the **upper plate side**:
 - Bedrock changes to `Igneous`
 
 For each boundary hex h on the **lower plate side**:
-- Elevation decreases (the subducting trench); uses the same `subduction_rate ≈ 1e-4 m per cm` as §5.3
+- Elevation decreases (the subducting trench); uses the same `subduction_rate ≈ 1e-4 m per cm` as §5.3, subject to choking and enclosure (§5.9)
 
 ### 5.5 Volcanism (Boundary-Driven)
 
@@ -435,6 +453,32 @@ Elevation is clamped to a physically plausible range:
 - `MAX_RELIEF_M = 5_000.0`
 
 Bounds prevent runaway accumulation from poorly-tuned parameters. If a boundary somehow generates 50 km of elevation, we clamp and log a warning in debug builds.
+
+### 5.8 Suture Accretion (Trapped Basin Consumption)
+
+When an ocean basin closes, the oceanic floor caught between the colliding continental masses does not persist as a permanent inland sea — it is obducted onto the suture and isostatically rebounds with the continent (the Tethys → Himalaya mechanism). Each Geological tick (after hot spots, before erosion), the accretion pass:
+
+1. Labels connected components of below-sea hexes (ascending-`HexId` BFS, deterministic).
+2. Components covering ≥ 1% of all cells are open-ocean realm and never touched.
+3. Components touching a **live** convergent edge are active trench / back-arc systems: their basin and crust are left alone (floors deeper than marginal-sea depth are still capped per §5.9). "Live" requires real closing velocity: `normal_velocity > CONVERGENCE_THRESHOLD_M_PER_YEAR` (0.005 m/yr). A boundary still *classified* convergent but stalled — plates creeping below the threshold after the trench choked and their slab pull vanished (§2.4) — no longer protects its basin: the fossil trench heals.
+4. Components touching a **live** divergent edge are active rift / infant-ocean systems — a growing ocean (Red Sea, Gulf of California), not a trapped basin: their basin and crust are likewise left alone, with the same §5.9 floor cap (hot young ocean floor sits high, never at trench depth). "Live" mirrors the convergent rule: opening velocity beyond the same 0.005 m/yr threshold (`normal_velocity < −CONVERGENCE_THRESHOLD_M_PER_YEAR`, the same condition §3.2 uses to count ridge edges). A stalled rift no longer protects its basin: the failed-rift sea heals. Without this guard the pass strangled every infant ocean at birth — newborn below-sea rift floor is a small enclosed component and converted in a single tick — feeding the deep-time continental ratchet (see v0.14 changelog).
+5. Every other component is trapped: its floor sediments to `MARGINAL_SEA_EQUILIBRIUM_M` at once (§5.9 enclosure — a sealed basin never holds abyssal depth), and each oceanic-crust hex converts to continental crust **gradually**, with per-tick probability compounded from `SUTURE_HALF_LIFE_MY = 55 My` (`1 − 0.5^(Δt/55 My)`, tick-interval independent; per-tick `tectonics.suture_conversion` stream, ascending-hex draws). Suturing is a process, not an event: the Tethys took ~100 My, and Mediterranean/Caspian-style enclosed seas persist as oceanic crust while the suture grinds — so a trapped sea fills in over a Wilson half-cycle instead of flipping to permanent continent in one tick. This bounds the deep-time continental ratchet (instant conversion compounded to 0.59–0.71 crust fraction by 4B years; Earth's has held ~40% since ~2.5 Ga). At conversion the hex obducts: `OceanicCrust` bedrock becomes `Igneous` (ophiolite basement) and lifts to `sea_level − 200 m`. Continental-crust hexes sitting deeper than the obduction depth are lifted there immediately (not stochastically) — epeirogenic rebound refuses crust below its floor (sea − 2000 m), so deep continental floors in fossil trenches would otherwise stay pinned underwater forever (slab-breakoff rebound). Standard epeirogenic rebound (§8.2) then carries everything above the freeboard over the following ~50–100 My.
+
+Without this pass, trapped crust sat on the −4000 m oceanic floor forever (isostasy only lifts continental crust), riddling continents with ~150 detached inland seas by 1B years.
+
+### 5.9 Subduction Choking and Trench Enclosure
+
+Two guards keep trenches honest over deep time; both live in the trench arms of §5.3–§5.4.
+
+**Choking.** Subduction only consumes dense oceanic lithosphere. When continental crust — collision debris, an obducted sliver, a microcontinent — reaches the downgoing side of a trench, the zone chokes: buoyant crust jams instead of sinking, and no trench delta is applied. Without this guard, continental debris on a subducting plate was dragged below −8000 m and pinned under the isostatic rebound floor (§8.2) forever.
+
+**Enclosure.** A trench only stays abyssal while it connects to the abyss. Each tick the boundary-elevation pass labels below-sea connected components (same 1% open-ocean definition as §5.8); a trench segment whose component is *not* open ocean equilibrates at `MARGINAL_SEA_EQUILIBRIUM_M = −4500 m` (Japan Sea ≈ −3700 m, Mediterranean ≈ −5100 m) instead of the abyssal −8500 m. Above that floor the slab still pulls down; below it, sediment infill from the enclosing continents wins at 10× the subduction rate, so a freshly sealed −8500 m segment rises above −6000 m within ~1–2 ticks (1 My) instead of persisting as a fossil pit. Back-arc pits behind the trench line get no trench-arm processing, so the §5.8 accretion pass applies the same cap to live-protected components: their crust and basin survive, but their floor may not pass −4500 m. Both passes share one equilibrium, so neither fights the other. The infill is a placeholder for Doc 8's real sediment transport.
+
+### 5.10 Subduction Erosion (Forearc Consumption)
+
+Suture accretion (§5.8) only *creates* continental crust, so without a sink the continental fraction ratchets upward over deep time (it reached ~53% of the sphere by 4B years). On Earth roughly half of all margins are erosive (von Huene & Scholl): the trench slowly consumes the overriding plate's forearc rim and drags the slivers into the mantle.
+
+Each tick, every boundary hex on the **overriding (continental-crust) side** of a *live* continent–ocean margin (same 0.005 m/yr liveness threshold as §5.8) is consumed with probability `1 − (1 − p)^(tick_years/1 My)` with `p = 0.0025 × (hex_width / reference_width)` — the reference width is subdivision 7's, so the margin retreat rate (~0.15 km/My, the gentle end of Earth's erosive margins) is **resolution-independent**. Unscaled per-hex, a coarse grid consumes ~4× more area per event; at subdiv 5 the raw rate destroyed half to three-quarters of all continental crust within 1B years. A consumed hex becomes oceanic crust at ≥ 1000 m below sea level; the §5.3 trench arm treats it as the downgoing side from the next tick, so the margin migrates inland hex by hex. The per-hex probability compounds with tick length, keeping the long-run rate tick-interval independent; draws come from the per-tick `tectonics.subduction_erosion` stream in ascending-hex order (deterministic). The rate sits at Earth's slow end by design: the model has no arc-accretion source term, so erosion must not outrun formation. Calibration at the reference resolution: at `p = 0.01` erosion overwhelmed accretion and drained the continents to ~5% by 4B years.
 
 ## 6. Event Schema
 
@@ -540,7 +584,7 @@ pub struct GeologyParameters {
     pub tick_interval_overrides_years: Option<BTreeMap<Era, i64>>,
     
     /// Base erosion rate per year per meter of elevation above sea level.
-    /// Default 1e-7. Climate modifies via climate_modifier (Phase 2).
+    /// Default 5e-8. Climate modifies via climate_modifier (Phase 2).
     pub base_erosion_rate_per_year: f64,
 }
 ```
@@ -655,7 +699,7 @@ erosion_amount_m = elevation_above_sea * base_erosion_rate * climate_modifier(he
 ```
 
 Where:
-- `base_erosion_rate ≈ 1e-7` per year (calibrated so 5 km of mountain erodes meaningfully over ~100 million years; see open question 3)
+- `base_erosion_rate ≈ 5e-8` per year, scaled per hex by bedrock hardness: `Sedimentary` 1.2, `Limestone` 1.0, `Metamorphic` 0.15 (collision belts persist hundreds of My, like the Appalachians), `Igneous` 0.08 (cratons erode over billion-year scales); see open question 3
 - `elevation_above_sea = elevation_mean - sea_level_m`
 - `climate_modifier(hex)` is a multiplier from precipitation; default 1.0 when climate is not yet active
 - Hexes below sea level don't erode (handled by sediment deposition instead)
@@ -707,7 +751,19 @@ The key property your design wants: **fertility is monotonic and static**. Once 
 
 Phase 4 will use the fertility field to make biology and biome decisions ("this region has rich soil because it was a shallow sea long ago"). Phase 5 (Civilization) will use it for settlement and population — the "fertile crescent" hexes are where civilizations cluster.
 
+### 8.5 Gravitational Collapse (Rock-Strength Relief Limit)
 
+Erosion is not the only way mountains come down, and on a still-dry world (water returns in Doc 8) it is far too slow to police cliff geometry. Rock has finite strength: overthickened crust spreads under its own weight (**orogenic collapse** — the Tibetan Plateau is extending horizontally today), and no single rock face on Earth exceeds ~4,600 m (Nanga Parbat's Rupal face). The simulation previously had no such limit, so a ~9 km collision peak could stand one hex away from a below-sea floor — a five-mile instant cliff.
+
+After the erosion step each tick, scan adjacent hex pairs and relax steps beyond the cap, with three regimes per edge:
+
+- **Low side at trench depth** (≤ −6,000 m): cap 15,000 m, enforced **one-sided** — the arc side sheds, the floor never moves. That step is the subduction interface, not a single rock face (Earth's trench-to-summit profiles reach ~15 km over ~200 km, which a coarse hex grid must represent as one or two adjacent steps). Symmetric transfer here is forbidden: at tick scale it becomes an elevation conveyor from continents into live trenches that flattens all planetary relief.
+- **Low side submerged** (above trench depth): cap 5,000 m, one-sided — the high side sheds the excess into the ocean basin (sediment space is effectively infinite; Doc 8 will route it). This is what saws off coastal cliffs.
+- **Both sides land**: cap 5,000 m, symmetric — the excess spreads (high sheds, low receives: mass-conserving plateau extension).
+
+Pairs are skipped unless both hexes carry real surface features, so collapse never mints terrain into projection holes. The relaxation time is 10 My (~5% of the excess per 500k-year tick).
+
+**Two hard-won calibration notes.** (1) Do not shorten the time constant toward instant clipping: with relax → 1.0 per tick the coastal clip flattens coastal relief faster than margin geometry can recover, the water realm fragments into sub-1% components, and §5.8 obduction + §5.9 enclosure-infill cascade — measured: crust paving to 27–64%, trenches infilled to nothing, world relief compressed to the isostatic band [−3,500, +800] by 1B years. At 10 My the budget is stable through 4.5B years. (2) The price of the slow constant is that actively pumped margins equilibrate ABOVE the cap (measured 7–12 km non-trench steps at 1B) — the cliffs are bounded, not eliminated. A hard 5–6 km cap needs a **pump-side relief limit** (the boundary passes refuse uplift that would break the step cap and spread it to the next inland ring instead of moving mass after the fact); that is a separate, deliberate change deferred past Doc 8, when erosion and sediment routing can share the work.
 
 ## 9. Performance Targets
 
@@ -770,6 +826,12 @@ After running full geological simulation on a default Earth-analog world, the re
 6. **No runaway elevation:** Maximum elevation < 9000m, minimum > -11000m
 7. **Sea level plausible:** Final `sea_level_m` is within ±200m of 0
 8. **Event count sensible:** At default `Notable` granularity, event count is 500-3000 (loose bounds)
+9. **No inland seas:** below-sea hexes disconnected from the open ocean never persist as trapped oceanic-crust basins — suture accretion (§5.8) consumes them each tick (regression guard `history_leaves_no_trapped_oceanic_basins`)
+10. **Continental crust budget at 1B years:** continental crust covers 12–45% of the sphere — the Wilson cycle redistributes crust but sinks must not consume it (the unscaled subduction-erosion leak ate 50–75% of it at subdiv 5) nor may accretion pave the planet (the pre-v0.13 ratchet). The gate is on crust AREA, not land fraction: land at a snapshot is hostage to Wilson phase, the sea-level walk, and resolution (per-hex sink events bite proportionally harder on coarse grids), so a fixed-seed land band polices noise instead of physics. Land fraction is still measured and printed informationally (measured 13–25% across seeds at subdiv 5–7; early Earth plausibly exposed less land than today) (regression gate `wilson_cycle_criteria_hold_at_one_billion_years`)
+11. **No fossil abyss:** at 1B years, detached below-sea cells (water bodies smaller than the 1%-of-cells open-ocean threshold of §5.8 — a larger connected body is a real secondary ocean, not an inland sea) cover < 2% of all cells, and none are deeper than −6000 m — fossil trenches heal (§5.8), subduction chokes rather than dragging continental crust down, and sealed trench segments infill to marginal-sea depth (§5.9). Components touching a **live** margin, convergent or divergent (§5.8 liveness rules), are current geology — an active trench/back-arc still being consumed or a rift floor still being born (Afar, Baikal) — and are excluded from this check
+12. **Passive margins exist:** at 1B years, ≥ 25% of coastline hexes are passive margins (more than 2 rings from any convergent boundary) — Atlantic-style trailing edges left by ocean-opening splits (§4.5), not a planet walled in by arcs. *Status: tracked but not yet gated* — the Wilson split machinery roughly doubled the passive share (6.6% → ~16% at 1B); subduction erosion (v0.13) did not lift it further, so divergence-side margin creation is the remaining lever; the regression gate reports it informationally
+13. **Earth-like plate speeds:** at 1B years, every plate runs between 0.5 and 20 cm/yr (× `plate_velocity_scale`) — slab pull (§2.4) bounds speeds between the ~1.5 cm/yr drift base and the 15 cm/yr sustained ceiling, so plates neither freeze nor cross the planet between screenshots (regression gate `wilson_cycle_criteria_hold_at_one_billion_years`)
+14. **Bounded adjacent relief:** at 1B years, no two adjacent hexes differ by more than 12,000 m (or 16,500 m when the low side sits at or below marginal-sea depth, −4,500 m — trench arms and §5.9-capped live-margin basins alike; Earth's trench-to-summit profiles reach ~15 km over ~200 km, which a coarse hex grid represents as one or two adjacent steps). Gravitational collapse (§8.5) holds steps near its 5,000 m rock-face cap everywhere except actively pumped margins, where it provably equilibrates above the cap (measured 8.3–11.1 km non-trench, 15.5–16.3 km margin-adjacent across the 3 gate seeds); the gate's bands bracket those measurements and catch a deleted/neutered collapse pass (the pre-collapse worst case was an 18 km clamp-pinned step). A hard 5–6 km cap is deferred to the pump-side relief limit (§8.5 note 2)
 
 Implementation tests verify each of these against a fixed seed.
 
@@ -803,17 +865,33 @@ Implementation lives in `crates/genesis_tectonics/`:
 genesis_tectonics/
 ├── Cargo.toml
 └── src/
-    ├── lib.rs              # public API + TectonicsLayer impl
-    ├── plate.rs            # Plate, PlateType, Plate registry
-    ├── motion.rs           # Plate motion math (rotation about axis)
-    ├── partition.rs        # Voronoi partition (hex → plate)
-    ├── boundary.rs         # Boundary detection and classification
-    ├── elevation.rs        # Per-boundary-type elevation update rules
-    ├── volcanism.rs        # Boundary-driven and hot spot volcanism
-    ├── hotspots.rs         # Hot spot model
-    ├── erosion.rs          # Erosion and sedimentation
-    ├── reorganization.rs   # Plate split / merge / motion change
-    └── events.rs           # Event emission and granularity gating
+    ├── lib.rs                # public API + TectonicsLayer impl
+    ├── layer.rs              # SimulationLayer integration (per-tick pipeline wiring)
+    ├── history.rs            # History generation driver (tick coordinator)
+    ├── plate.rs              # Plate, PlateType, Plate registry
+    ├── plate_surface.rs      # Per-plate birth-indexed surface features
+    ├── motion.rs             # Plate motion math (rotation about axis)
+    ├── frames.rs             # Birth-frame ↔ world-frame conversion
+    ├── projection.rs         # ProjectionCache (world-hex → birth-hex table)
+    ├── partition.rs          # Voronoi partition (hex → plate)
+    ├── world_rebuild.rs      # Rebuilds WorldData per-hex fields from plate surfaces
+    ├── boundary.rs           # Boundary detection and classification
+    ├── boundary_events.rs    # Boundary-derived tectonic events
+    ├── elevation.rs          # Per-boundary-type elevation update rules
+    ├── accretion.rs          # Suture accretion (§5.8, trapped-basin consumption)
+    ├── volcanism.rs          # Boundary-driven and hot spot volcanism
+    ├── hotspots.rs           # Hot spot model
+    ├── erosion.rs            # Erosion and sedimentation
+    ├── sea_level.rs          # Sea level drift from divergent boundary length
+    ├── coast_cleanup.rs      # Removes geologically unjustified coast artifacts
+    ├── collapse.rs           # Gravitational collapse: rock-strength limit on adjacent-hex relief (§8.5)
+    ├── collision_jam.rs      # Kinematic lock for colliding continental pairs (§4.6)
+    ├── initial_generation.rs # Initial plate generation at world formation
+    ├── initial_terrain.rs    # Formation-era initial elevation and bedrock
+    ├── reorganization.rs     # Plate split / merge / motion change
+    ├── validation.rs         # §11 metrics and CI validation helpers
+    ├── diagnostics.rs        # Test-only manual terrain report (--ignored)
+    └── events.rs             # Event emission and granularity gating
 ```
 
 Depends on:

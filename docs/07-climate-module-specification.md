@@ -1,12 +1,13 @@
 # 07 — Climate Module Specification
 
 **Document Type:** Tier 2 — System Specification
-**Status:** Draft v0.2
+**Status:** Draft v0.3
 **Last Updated:** May 2026
 **Owner:** Brax Johnson
 **Implementing Phase:** 2 (Climate & Hydrology)
 
 **Changelog:**
+- v0.3 (July 2026): **Water visuals deferred to Doc 8 (Doc 06 v0.11 companion).** Rivers are removed and water is no longer rendered as a surface feature until Doc 8 lands: the renderer uses a dry hypsometric palette (ocean floor renders as deep relief, never blue) and the Rivers render mode is gone. Regime classification now assigns a regime to *every* hex — below-sea hexes classify like any other instead of staying `Unset` (supersedes the v0.2 note) — so the regime map stays a complete climate view while water is hidden. The internal ocean model is unchanged: `sea_level_m`, the distance-to-ocean BFS, basin/current simulation, and moisture sourcing still treat below-sea hexes as ocean because the climate system depends on them. Ocean behavior in this doc stays normative; it just isn't drawn until Doc 8.
 - v0.2 (July 2026): **Phase 2 complete (P2-10–P2-12).** Milankovitch-like orbital cycles implemented with STRETCHED periods (short 2.3M years, long 4x): real ~100k-year cycles are sub-tick at the 500k-year Geological cadence and sample as anti-correlated noise, so the model uses periods the tick rate can resolve (deviation from §12.1 noted). Glaciation state machine with asymmetric thresholds — deep-cold onset (-2.2°C), soft continuation (-0.8°C), shallow exit (+0.3°C) — so glacials are episodic excursions rather than half of history; emits Pivotal GlaciationBegan/GlaciationEnded events. Orbital modifier feeds the temperature field globally. Köppen-like regime classification (§10.2 decision tree) writes WorldData.climate_regime each tick (ocean hexes stay Unset); new Climate Regime render mode and screenshot step. Erosion climate feedback (§13 / Doc 06 §8.2) active: precipitation/800mm modifier with frozen damping. Validation §17 #5 (≥7 regimes) and #9 (≥1 glaciation cycle per 1B years) covered by tests.
 - v0.1 (May 2026): Initial draft. Defines planetary formation sequence, temperature, atmospheric circulation, precipitation, ocean circulation, climate-tectonics feedback, climate variability/ice ages, and event schema.
 

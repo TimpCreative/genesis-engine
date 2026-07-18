@@ -93,10 +93,41 @@ pub const EVENT_COUNT_NOTABLE_MAX_AT_FULL_YEAR: usize = 17_000;
 /// Minimum distinct mountain regions (§11 #3).
 pub const MIN_MOUNTAIN_REGIONS: usize = 3;
 
+/// Doc §11 #10 crust-area lower bound at 1B years (Wilson-cycle pass). The
+/// gate is on continental CRUST area, not land: land fraction at a snapshot
+/// is hostage to Wilson phase, sea level, and resolution (v0.14). The floor
+/// tolerates chaotic phase (measured 0.12–0.22 across seeds at subdiv 5)
+/// while catching crust-destruction regressions (the unscaled subduction
+/// erosion leak read 0.07).
+pub const WILSON_CRUST_FRACTION_MIN: f32 = 0.10;
+
+/// Doc §11 #10 crust-area upper bound at 1B years (guards the pre-v0.13
+/// accretion ratchet that paved ~half the sphere by 4B years).
+pub const WILSON_CRUST_FRACTION_MAX: f32 = 0.45;
+
+/// Doc §11 #11: detached below-sea cells (inland seas/pits cut off from the
+/// main ocean) must stay under this fraction of all cells.
+pub const DETACHED_BELOW_SEA_MAX_FRACTION: f32 = 0.02;
+
+/// Doc §11 #11: no detached below-sea component may be deeper than this (m) —
+/// fossil trenches and failed rifts heal; only the live world ocean reaches
+/// abyssal depth.
+pub const DETACHED_DEEPEST_FLOOR_M: f32 = -6_000.0;
+
+/// Doc §11 #12: minimum passive-margin share of coastline (Atlantic-style
+/// trailing edges, not convergent arcs).
+pub const PASSIVE_MARGIN_MIN_FRACTION: f64 = 0.25;
+
 /// Default `WorldParameters` for validation: seed 42, subdiv 5, production geology defaults.
+/// `GENESIS_VALIDATION_SEED` overrides the seed so chaotic-snapshot gates can be
+/// sampled across realizations (`GENESIS_VALIDATION_SEED=43 cargo test ...`).
 pub fn validation_parameters() -> WorldParameters {
     let mut params = WorldParameters::default();
-    params.core.seed = WorldSeed::from_integer(VALIDATION_SEED);
+    let seed = std::env::var("GENESIS_VALIDATION_SEED")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(VALIDATION_SEED);
+    params.core.seed = WorldSeed::from_integer(seed);
     params.core.grid.subdivision_level = VALIDATION_SUBDIVISION_LEVEL;
     params
 }
@@ -201,6 +232,169 @@ pub fn mountain_regions_above_elevation(data: &WorldData, threshold_m: f32) -> V
 pub fn ocean_basins_below_elevation(data: &WorldData, threshold_m: f32) -> Vec<usize> {
     let n = data.elevation_mean.len();
     count_connected_regions(&data.grid, n, |i| data.elevation_mean[i] < threshold_m)
+}
+
+/// Connected below-sea components as `(size_hexes, deepest_elevation_m)`,
+/// sorted by descending size (index 0 is the main ocean; the rest are
+/// detached inland seas/pits). Used by §11 #11 (Wilson-cycle pass).
+pub fn below_sea_components(data: &WorldData) -> Vec<(usize, f32)> {
+    let n = data.cell_count() as usize;
+    let sea = data.sea_level_m;
+    let below = |i: usize| data.elevation_mean[i] < sea;
+    let mut visited = vec![false; n];
+    let mut comps = Vec::new();
+    for start in 0..n {
+        if visited[start] || !below(start) {
+            continue;
+        }
+        visited[start] = true;
+        let mut queue = std::collections::VecDeque::from([start]);
+        let mut size = 0usize;
+        let mut deepest = f32::MAX;
+        while let Some(i) = queue.pop_front() {
+            size += 1;
+            deepest = deepest.min(data.elevation_mean[i]);
+            for nb in data.grid.neighbors(HexId(i as u32)) {
+                let j = nb.0 as usize;
+                if j < n && !visited[j] && below(j) {
+                    visited[j] = true;
+                    queue.push_back(j);
+                }
+            }
+        }
+        comps.push((size, deepest));
+    }
+    comps.sort_by_key(|c| std::cmp::Reverse(c.0));
+    comps
+}
+
+/// §11 #11 components: below-sea connected components that are detached
+/// (smaller than the §5.8 open-ocean threshold) AND not touching a live
+/// convergent or divergent margin. An active trench or its marginal basin is
+/// still being consumed by live subduction, and an actively opening rift
+/// basin is still being born (Afar, Baikal) — their depth is current
+/// geology, not fossil relief, so both are excluded from the fossil-floor
+/// check (mirrors §5.8's liveness rules: closing/opening velocity beyond
+/// `CONVERGENCE_THRESHOLD_M_PER_YEAR`).
+/// Returns `(cell_count, deepest_elevation)` per component.
+pub fn fossil_below_sea_components(
+    data: &WorldData,
+    boundaries: &crate::boundary::BoundaryInfo,
+) -> Vec<(usize, f32)> {
+    use crate::boundary::BoundaryClass;
+
+    let water = crate::accretion::label_water_components(data);
+    let n = data.cell_count() as usize;
+    let mut active = vec![false; n];
+    for (&hex, edges) in &boundaries.edges {
+        for edge in edges {
+            let live = match edge.class {
+                BoundaryClass::Convergent(_) => {
+                    edge.normal_velocity_m_per_year
+                        > crate::partition::CONVERGENCE_THRESHOLD_M_PER_YEAR
+                }
+                BoundaryClass::Divergent => {
+                    edge.normal_velocity_m_per_year
+                        < -crate::partition::CONVERGENCE_THRESHOLD_M_PER_YEAR
+                }
+                BoundaryClass::Transform => false,
+            };
+            if live {
+                active[hex.0 as usize] = true;
+                let j = edge.neighbor_hex.0 as usize;
+                if j < n {
+                    active[j] = true;
+                }
+            }
+        }
+    }
+    let mut touches_live = vec![false; water.comp_sizes.len()];
+    let mut deepest = vec![f32::MAX; water.comp_sizes.len()];
+    for (i, &id) in water.comp_of.iter().enumerate() {
+        if id == usize::MAX {
+            continue;
+        }
+        if active[i] {
+            touches_live[id] = true;
+        }
+        deepest[id] = deepest[id].min(data.elevation_mean[i]);
+    }
+    water
+        .comp_sizes
+        .iter()
+        .enumerate()
+        .filter(|&(ref id, &size)| size < water.open_ocean_min && !touches_live[*id])
+        .map(|(id, &size)| (size, deepest[id]))
+        .collect()
+}
+
+/// Fraction of coastline hexes (land hexes adjacent to a below-sea hex) that
+/// are NOT within 2 rings of a convergent boundary — Atlantic-style passive
+/// margins. Used by §11 #12 (Wilson-cycle pass).
+pub fn passive_margin_fraction(data: &WorldData, state: &TectonicsState) -> f64 {
+    use crate::boundary::{BoundaryClass, detect_and_classify_boundaries};
+
+    let n = data.cell_count() as usize;
+    let sea = data.sea_level_m;
+    let below_sea: Vec<bool> = (0..n).map(|i| data.elevation_mean[i] < sea).collect();
+
+    let boundaries = detect_and_classify_boundaries(data, &state.registry, &state.projection);
+
+    // BFS ring distance from convergent boundary hexes only.
+    let mut conv_dist = vec![u32::MAX; n];
+    let mut queue = std::collections::VecDeque::new();
+    for &h in &boundaries.boundary_hexes {
+        let is_convergent = boundaries.edges.get(&h).is_some_and(|edges| {
+            edges
+                .iter()
+                .any(|e| matches!(e.class, BoundaryClass::Convergent(_)))
+        });
+        if is_convergent {
+            let i = h.0 as usize;
+            if conv_dist[i] == u32::MAX {
+                conv_dist[i] = 0;
+                queue.push_back(i);
+            }
+        }
+    }
+    while let Some(i) = queue.pop_front() {
+        let d = conv_dist[i];
+        if d >= 2 {
+            continue;
+        }
+        for nb in data.grid.neighbors(HexId(i as u32)) {
+            let j = nb.0 as usize;
+            if j < n && conv_dist[j] == u32::MAX {
+                conv_dist[j] = d + 1;
+                queue.push_back(j);
+            }
+        }
+    }
+
+    let mut coastline = 0u64;
+    let mut passive = 0u64;
+    for i in 0..n {
+        if below_sea[i] {
+            continue;
+        }
+        let on_coast = data
+            .grid
+            .neighbors(HexId(i as u32))
+            .iter()
+            .any(|nb| (nb.0 as usize) < n && below_sea[nb.0 as usize]);
+        if !on_coast {
+            continue;
+        }
+        coastline += 1;
+        if conv_dist[i] > 2 {
+            passive += 1;
+        }
+    }
+    if coastline == 0 {
+        1.0
+    } else {
+        passive as f64 / coastline as f64
+    }
 }
 
 /// Distinct bedrock types present in the world.

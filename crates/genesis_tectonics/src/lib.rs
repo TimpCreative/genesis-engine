@@ -2,9 +2,14 @@
 //!
 //! Phase 1: plate generation, drift, boundaries, and terrain sculpting.
 
+pub mod accretion;
 pub mod boundary;
 pub mod boundary_events;
 pub mod coast_cleanup;
+pub mod collapse;
+pub mod collision_jam;
+#[cfg(test)]
+mod diagnostics;
 pub mod elevation;
 pub mod erosion;
 pub mod events;
@@ -25,6 +30,7 @@ pub mod validation;
 pub mod volcanism;
 pub mod world_rebuild;
 
+pub use accretion::{OBDUCTION_DEPTH_M, OPEN_OCEAN_MIN_FRACTION, accrete_trapped_oceanic_crust};
 pub use boundary::{
     BoundaryClass, BoundaryInfo, ClassifiedEdge, ConvergentSubtype, convergent_subtype,
     detect_and_classify_boundaries,
@@ -97,7 +103,7 @@ mod integration_tests {
     use genesis_core::events::{EventKind, Significance};
     use genesis_core::parameters::WorldParameters;
     use genesis_core::time::WorldYear;
-    use genesis_core::{PlateId, create_world};
+    use genesis_core::{HexId, PlateId, create_world};
 
     use crate::plate::PlateType;
 
@@ -976,6 +982,162 @@ mod integration_tests {
             saturated_max <= max_allowed && saturated_min <= max_allowed,
             "elevation clamp saturation at 1B years: {saturated_max} at MAX, {saturated_min} at MIN \
              (allowed {max_allowed})"
+        );
+    }
+
+    #[test]
+    #[ignore = "deep time: §11 #10-12 Wilson-cycle criteria at 1B years (cargo test -p genesis_tectonics -- --ignored)"]
+    fn wilson_cycle_criteria_hold_at_one_billion_years() {
+        use crate::validation::{
+            DETACHED_BELOW_SEA_MAX_FRACTION, DETACHED_DEEPEST_FLOOR_M, PASSIVE_MARGIN_MIN_FRACTION,
+            WILSON_CRUST_FRACTION_MAX, WILSON_CRUST_FRACTION_MIN, passive_margin_fraction,
+        };
+
+        let (world, state) =
+            run_validation_world(WorldYear(1_000_000_000)).expect("validation world runs");
+        eprintln!("{}", crate::validation::summarize_world(&world, &state));
+        let data = &world.data;
+
+        // §11 #10: the continental crust budget persists — neither consumed
+        // away by sinks nor ratcheted over the planet. Gate on crust AREA
+        // (sea-level-independent), not land fraction: land at a 1B snapshot
+        // is hostage to Wilson phase, the sea-level walk, and resolution
+        // (per-hex sinks bite harder at coarse subdivisions), so a fixed-seed
+        // land band polices noise. Measured post-v0.14: crust 15–22% of the
+        // sphere across seeds at subdiv 5; land 13–20% (informational).
+        let land_fraction = continental_fraction(data);
+        let mut crust_cells = 0usize;
+        for i in 0..data.cell_count() {
+            if crate::plate_surface::continental_crust_at(
+                data,
+                &state.registry,
+                &state.projection,
+                HexId(i),
+            ) {
+                crust_cells += 1;
+            }
+        }
+        let crust_fraction = crust_cells as f32 / data.cell_count() as f32;
+        eprintln!(
+            "§11 #10: crust area {crust_fraction:.3} of sphere, land fraction {land_fraction:.3} \
+             (informational; band [{WILSON_CRUST_FRACTION_MIN}, {WILSON_CRUST_FRACTION_MAX}] \
+             applies to crust)"
+        );
+        assert!(
+            (WILSON_CRUST_FRACTION_MIN..=WILSON_CRUST_FRACTION_MAX).contains(&crust_fraction),
+            "§11 #10: continental crust area {crust_fraction} at 1B years outside \
+             [{WILSON_CRUST_FRACTION_MIN}, {WILSON_CRUST_FRACTION_MAX}]"
+        );
+
+        // §11 #11: detached below-sea cells (inland pits cut off from the main
+        // ocean) are rare and shallow — no fossil abyssal trenches on land.
+        // "Detached" uses §5.8's trapped-basin definition: a connected water
+        // body ≥ 1% of cells is a real secondary ocean (keeps its abyssal
+        // trenches), not an inland sea; a body touching a live convergent
+        // margin is an active trench/marginal basin (its depth is live
+        // subduction, not fossil relief) and is likewise excluded.
+        let boundaries = crate::boundary::detect_and_classify_boundaries(
+            data,
+            &state.registry,
+            &state.projection,
+        );
+        let detached = crate::validation::fossil_below_sea_components(data, &boundaries);
+        let detached_cells: usize = detached.iter().map(|c| c.0).sum();
+        let detached_fraction = detached_cells as f32 / data.cell_count() as f32;
+        assert!(
+            detached_fraction < DETACHED_BELOW_SEA_MAX_FRACTION,
+            "§11 #11: detached below-sea fraction {detached_fraction} ({detached_cells} cells \
+             across {} components) exceeds {DETACHED_BELOW_SEA_MAX_FRACTION}",
+            detached.len()
+        );
+        let deepest_detached = detached.iter().map(|c| c.1).fold(f32::MAX, f32::min);
+        assert!(
+            deepest_detached >= DETACHED_DEEPEST_FLOOR_M,
+            "§11 #11: deepest detached component is {deepest_detached} m; below the \
+             {DETACHED_DEEPEST_FLOOR_M} m fossil-trench floor"
+        );
+
+        // §11 #12: passive-margin share is tracked but not yet gated — the
+        // Wilson split machinery roughly doubled it (6.6% → ~16% at 1B), but
+        // subduction erosion (v0.13) did not lift it further; divergence-side
+        // margin creation is the remaining lever, after which this becomes an
+        // assert. See Doc 06 v0.12/v0.13 changelogs.
+        let passive = passive_margin_fraction(data, &state);
+        eprintln!(
+            "§11 #12 (informational): passive-margin coastline fraction {passive:.3} \
+             (target {PASSIVE_MARGIN_MIN_FRACTION})"
+        );
+
+        // §11 #13: plate speeds are Earth-like — slab pull (§2.4) keeps every
+        // plate between the ~1.5 cm/yr drift base and the 15 cm/yr sustained
+        // ceiling. No frozen plates, no quarter-planet-per-screenshot
+        // runaways (the pre-v0.13 sampled-base failure mode).
+        let radius_km = data.parameters.core.planet.radius_km;
+        let scale = f64::from(data.parameters.core.geology.plate_velocity_scale);
+        let to_cm = |rate: f64| rate * radius_km * 1e5;
+        let max_speed = state
+            .registry
+            .iter()
+            .map(|p| to_cm(p.motion_rate_rad_per_year))
+            .fold(0.0_f64, f64::max);
+        assert!(
+            max_speed < 20.0 * scale,
+            "§11 #13: fastest plate runs {max_speed:.1} cm/yr at 1B years; above the \
+             {:.0} cm/yr runaway ceiling",
+            20.0 * scale
+        );
+        let min_speed = state
+            .registry
+            .iter()
+            .map(|p| to_cm(p.motion_rate_rad_per_year))
+            .fold(f64::INFINITY, f64::min);
+        assert!(
+            min_speed > 0.5 * scale,
+            "§11 #13: slowest plate creeps at {min_speed:.2} cm/yr at 1B years; below the \
+             {:.1} cm/yr freeze floor",
+            0.5 * scale
+        );
+
+        // §11 #14: adjacent-hex relief is bounded. Gravitational collapse
+        // (§8.5) relaxes steps toward the 5,000 m rock-strength cap every
+        // tick; actively pumped trench margins equilibrate higher (Earth's
+        // trench-to-arc profiles reach ~12 km compressed into a boundary
+        // hex). Gate the two regimes separately: non-trench pairs (the
+        // five-mile-cliff regression) and trench pairs (Tonga-profile).
+        // The deep-side discriminator is the marginal-sea floor, not abyssal
+        // depth: v0.14's live-margin protection holds enclosed basins at
+        // MARGINAL_SEA_EQUILIBRIUM_M (−4,500 m — Japan Sea / Mediterranean),
+        // so a margin profile's deep side may sit at either depth; pairs
+        // that deep are margin geology (Andes trench-to-summit ≈ 15 km),
+        // while the 12,000 m limit polices land-vs-land and shelf steps.
+        let grid = &data.grid;
+        let mut max_step = 0.0_f32;
+        let mut max_trench_step = 0.0_f32;
+        for i in 0..data.cell_count() {
+            for nb in grid.neighbors(HexId(i)) {
+                let j = nb.0 as usize;
+                let step = (data.elevation_mean[i as usize] - data.elevation_mean[j]).abs();
+                let low = data.elevation_mean[i as usize].min(data.elevation_mean[j]);
+                if low <= crate::elevation::MARGINAL_SEA_EQUILIBRIUM_M {
+                    max_trench_step = max_trench_step.max(step);
+                } else {
+                    max_step = max_step.max(step);
+                }
+            }
+        }
+        eprintln!(
+            "§11 #14: max adjacent step {max_step:.0} m (limit 12000); \
+             trench-adjacent {max_trench_step:.0} m (limit 16500)"
+        );
+        assert!(
+            max_step <= 12_000.0,
+            "§11 #14: adjacent-hex elevation step {max_step:.0} m at 1B years exceeds the \
+             12000 m bounded-relief limit"
+        );
+        assert!(
+            max_trench_step <= 16_500.0,
+            "§11 #14: trench-adjacent step {max_trench_step:.0} m at 1B years exceeds the \
+             16500 m trench-profile limit (Earth's max ~15 km)"
         );
     }
 

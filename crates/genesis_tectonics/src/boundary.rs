@@ -148,6 +148,92 @@ pub fn detect_and_classify_boundaries(
     info
 }
 
+/// Per-plate boundary-force tallies driving slab-pull motion (§2.2).
+///
+/// Counts are of directed owner-centric edges from [`BoundaryInfo`]; each
+/// physical plate contact appears once per side, which is exactly what the
+/// force fractions need: a continental plate's side of a continent–ocean
+/// margin is NOT slab pull even though the oceanic side of the same contact
+/// is.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BoundaryTally {
+    /// Live convergent edges where this plate's oceanic crust is the
+    /// downgoing slab. Slab pull is the dominant plate-driving force on
+    /// Earth (~90%); plates with long subducting rims run 6–15 cm/yr.
+    pub slab_edges: u32,
+    /// Live divergent edges (ridge push, a minor driving force).
+    pub ridge_edges: u32,
+    /// All classified edges; normalizer for the force fractions.
+    pub total_edges: u32,
+}
+
+/// Tallies each plate's slab and ridge edges from the latest boundary scan.
+///
+/// An edge only exerts force while it is genuinely active: convergent edges
+/// must close faster than [`crate::partition::CONVERGENCE_THRESHOLD_M_PER_YEAR`]
+/// (a stalled suture is not a pulling slab) and divergent edges must open at
+/// the same pace. Which side subducts follows the elevation model: at
+/// continent–ocean margins the oceanic-crust side sinks; at ocean–ocean
+/// margins the faster plate does ([`crate::elevation::subducting_plate_id`]);
+/// continent–continent collisions have no slab.
+pub fn plate_boundary_tallies(
+    data: &WorldData,
+    registry: &PlateRegistry,
+    cache: &ProjectionCache,
+    info: &BoundaryInfo,
+) -> BTreeMap<PlateId, BoundaryTally> {
+    let mut tallies: BTreeMap<PlateId, BoundaryTally> = BTreeMap::new();
+    for (&hex, edges) in &info.edges {
+        let owner_plate_id = data.plate_id[hex.0 as usize];
+        if owner_plate_id == PlateId::NONE {
+            continue;
+        }
+        let owner_oceanic = hex_crust_is_oceanic(data, registry, cache, hex);
+        let tally = tallies.entry(owner_plate_id).or_default();
+        for edge in edges {
+            tally.total_edges += 1;
+            match edge.class {
+                BoundaryClass::Divergent => {
+                    if edge.normal_velocity_m_per_year
+                        < -crate::partition::CONVERGENCE_THRESHOLD_M_PER_YEAR
+                    {
+                        tally.ridge_edges += 1;
+                    }
+                }
+                BoundaryClass::Convergent(subtype) => {
+                    if edge.normal_velocity_m_per_year
+                        <= crate::partition::CONVERGENCE_THRESHOLD_M_PER_YEAR
+                    {
+                        continue;
+                    }
+                    let subducts = match subtype {
+                        ConvergentSubtype::ContinentalContinental => false,
+                        ConvergentSubtype::ContinentalOceanic => owner_oceanic,
+                        ConvergentSubtype::OceanicOceanic => {
+                            let (Some(owner), Some(other)) =
+                                (registry.get(owner_plate_id), registry.get(edge.other_plate))
+                            else {
+                                continue;
+                            };
+                            crate::elevation::subducting_plate_id(
+                                owner_plate_id,
+                                edge.other_plate,
+                                owner,
+                                other,
+                            ) == owner_plate_id
+                        }
+                    };
+                    if subducts {
+                        tally.slab_edges += 1;
+                    }
+                }
+                BoundaryClass::Transform => {}
+            }
+        }
+    }
+    tallies
+}
+
 #[allow(clippy::too_many_arguments)]
 fn classify_edge(
     grid: &HexGrid,
@@ -490,5 +576,172 @@ mod tests {
             }
             assert_eq!(info.plate_contacts.get(&hex), Some(&expected));
         }
+    }
+
+    /// Two-hex world for tally tests: hex 10 on plate 0, hex 11 on plate 1.
+    /// Crust comes from the bedrock/elevation fallback (empty surfaces).
+    fn tally_fixture(
+        oceanic_owner: bool,
+        oceanic_other: bool,
+    ) -> (WorldData, PlateRegistry, ProjectionCache) {
+        use genesis_core::data::BedrockType;
+
+        let grid = HexGrid::new(4, EARTH_RADIUS_KM).expect("grid");
+        let params = WorldParameters::default();
+        let mut data = WorldData::new(grid, params);
+
+        let mut registry = PlateRegistry::new();
+        registry.insert(plate_with_motion(
+            0,
+            PlateType::Oceanic,
+            0,
+            [0.0, 0.0, 1.0],
+            2e-8,
+        ));
+        registry.insert(plate_with_motion(
+            1,
+            PlateType::Oceanic,
+            100,
+            [0.0, 0.0, 1.0],
+            1e-8,
+        ));
+
+        data.plate_id[10] = PlateId(0);
+        data.plate_id[11] = PlateId(1);
+        for (idx, oceanic) in [(10usize, oceanic_owner), (11usize, oceanic_other)] {
+            if oceanic {
+                data.bedrock_type[idx] = BedrockType::OceanicCrust;
+                data.elevation_mean[idx] = -4000.0;
+            } else {
+                data.bedrock_type[idx] = BedrockType::Igneous;
+                data.elevation_mean[idx] = 500.0;
+            }
+        }
+        (data, registry, ProjectionCache::empty())
+    }
+
+    fn tally_info(edges: &[(u32, ClassifiedEdge)]) -> BoundaryInfo {
+        let mut info = BoundaryInfo::default();
+        for &(hex, ref edge) in edges {
+            info.edges.entry(HexId(hex)).or_default().push(edge.clone());
+        }
+        info
+    }
+
+    fn edge_to(
+        neighbor: u32,
+        other_plate: u16,
+        class: BoundaryClass,
+        v_n: f64,
+    ) -> (u32, ClassifiedEdge) {
+        (
+            0, // placeholder, replaced by caller key
+            ClassifiedEdge {
+                neighbor_hex: HexId(neighbor),
+                other_plate: PlateId(other_plate),
+                class,
+                normal_velocity_m_per_year: v_n,
+                tangential_velocity_m_per_year: 0.0,
+            },
+        )
+    }
+
+    #[test]
+    fn tally_continent_ocean_margin_pulls_only_oceanic_side() {
+        let (data, registry, cache) = tally_fixture(true, false);
+        let (_, co_edge) = edge_to(
+            11,
+            1,
+            BoundaryClass::Convergent(ConvergentSubtype::ContinentalOceanic),
+            0.02,
+        );
+        let (_, co_edge_back) = edge_to(
+            10,
+            0,
+            BoundaryClass::Convergent(ConvergentSubtype::ContinentalOceanic),
+            0.02,
+        );
+        let info = tally_info(&[(10, co_edge), (11, co_edge_back)]);
+
+        let tallies = plate_boundary_tallies(&data, &registry, &cache, &info);
+        let oceanic = tallies[&PlateId(0)];
+        let continental = tallies[&PlateId(1)];
+        assert_eq!(oceanic.slab_edges, 1, "oceanic side subducts: {oceanic:?}");
+        assert_eq!(
+            continental.slab_edges, 0,
+            "overriding side has no slab: {continental:?}"
+        );
+        assert_eq!(oceanic.total_edges, 1);
+        assert_eq!(continental.total_edges, 1);
+    }
+
+    #[test]
+    fn tally_ocean_ocean_margin_pulls_faster_plate() {
+        let (data, registry, cache) = tally_fixture(true, true);
+        let (_, oo_edge) = edge_to(
+            11,
+            1,
+            BoundaryClass::Convergent(ConvergentSubtype::OceanicOceanic),
+            0.02,
+        );
+        let (_, oo_edge_back) = edge_to(
+            10,
+            0,
+            BoundaryClass::Convergent(ConvergentSubtype::OceanicOceanic),
+            0.02,
+        );
+        let info = tally_info(&[(10, oo_edge), (11, oo_edge_back)]);
+
+        let tallies = plate_boundary_tallies(&data, &registry, &cache, &info);
+        assert_eq!(tallies[&PlateId(0)].slab_edges, 1, "faster plate subducts");
+        assert_eq!(tallies[&PlateId(1)].slab_edges, 0);
+    }
+
+    #[test]
+    fn tally_stalled_convergence_has_no_slab() {
+        let (data, registry, cache) = tally_fixture(true, false);
+        let (_, slow_edge) = edge_to(
+            11,
+            1,
+            BoundaryClass::Convergent(ConvergentSubtype::ContinentalOceanic),
+            0.001,
+        );
+        let info = tally_info(&[(10, slow_edge)]);
+
+        let tallies = plate_boundary_tallies(&data, &registry, &cache, &info);
+        let tally = tallies[&PlateId(0)];
+        assert_eq!(tally.slab_edges, 0, "stalled margin is not a pulling slab");
+        assert_eq!(tally.total_edges, 1);
+    }
+
+    #[test]
+    fn tally_continental_collision_has_no_slab() {
+        let (data, registry, cache) = tally_fixture(false, false);
+        let (_, cc_edge) = edge_to(
+            11,
+            1,
+            BoundaryClass::Convergent(ConvergentSubtype::ContinentalContinental),
+            0.02,
+        );
+        let info = tally_info(&[(10, cc_edge)]);
+
+        let tallies = plate_boundary_tallies(&data, &registry, &cache, &info);
+        assert_eq!(tallies[&PlateId(0)].slab_edges, 0, "sutures have no slab");
+    }
+
+    #[test]
+    fn tally_live_ridge_counts_and_stalled_ridge_does_not() {
+        let (data, registry, cache) = tally_fixture(true, true);
+        let (_, ridge) = edge_to(11, 1, BoundaryClass::Divergent, -0.02);
+        let (_, stalled_ridge) = edge_to(11, 1, BoundaryClass::Divergent, -0.001);
+        let info = tally_info(&[(10, ridge), (11, stalled_ridge)]);
+
+        let tallies = plate_boundary_tallies(&data, &registry, &cache, &info);
+        assert_eq!(tallies[&PlateId(0)].ridge_edges, 1);
+        assert_eq!(
+            tallies[&PlateId(1)].ridge_edges,
+            0,
+            "below-threshold opening is not ridge push"
+        );
     }
 }

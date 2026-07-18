@@ -2551,7 +2551,6 @@ dependencies = [
  "bevy",
  "genesis_climate",
  "genesis_core",
- "genesis_hydrology",
  "genesis_render",
  "genesis_tectonics",
  "genesis_ui",
@@ -2593,13 +2592,6 @@ name = "genesis_export"
 version = "0.1.0"
 
 [[package]]
-name = "genesis_hydrology"
-version = "0.1.0"
-dependencies = [
- "genesis_core",
-]
-
-[[package]]
 name = "genesis_mods"
 version = "0.1.0"
 
@@ -2635,7 +2627,6 @@ dependencies = [
  "bevy",
  "genesis_climate",
  "genesis_core",
- "genesis_hydrology",
  "genesis_render",
  "genesis_tectonics",
 ]

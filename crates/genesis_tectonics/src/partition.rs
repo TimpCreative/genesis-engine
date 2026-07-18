@@ -7,6 +7,13 @@
 //! diverging plates are filled with newly accreted oceanic crust. Plates
 //! therefore drift as coherent material bodies — continents keep their shapes —
 //! instead of being re-clipped to moving Voronoi cells each tick.
+//!
+//! Where two continents genuinely converge, the overlap cannot hide and
+//! re-emerge on the far side: the losing feature is consumed into the
+//! collision orogen (crustal shortening — India–Asia turned >1000 km of map
+//! area into the Himalaya/Tibet instead of the continents passing through
+//! each other), the winning feature thickens, and the pair is reported so
+//! the collision jam ([`crate::collision_jam`]) can lock their motions.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -92,33 +99,42 @@ fn claim_beats(a: &Claim, b: &Claim) -> bool {
 }
 
 /// Converging continental-continental contact hexes needed before the pair
-/// counts as a collision and both plates' motion is damped.
+/// counts as a collision and is reported via
+/// [`RepartitionOutcome::colliding_pairs`]. The plates' slowdown is NOT
+/// scripted here: the choked trench removes the pair's slab pull, and the
+/// collision jam ([`crate::collision_jam`]) locks their motions into a shared
+/// drift over ~10 My.
 pub const COLLISION_CONTACT_HEXES: usize = 3;
 
-/// Multiplier applied to both plates' motion rates per tick while a
-/// continental collision is active. Compounds: convergence effectively stalls
-/// within a few ticks of suturing, as on Earth (India–Asia slowdown).
-pub const COLLISION_MOTION_DAMPING: f64 = 0.5;
+/// Elevation credited to the overriding feature for each continental feature
+/// consumed by crustal shortening (m), before the isostatic headroom taper
+/// ([`crate::elevation::uplift_headroom_factor`]). The consumed column's
+/// crustal volume mostly feeds the orogen's root; the surface expression per
+/// consumed hex is small because the §5.2 orogeny pass carries the belt's
+/// elevation. The consumption itself is the point: overlapped map area
+/// disappears into the belt instead of tunneling through.
+pub const SHORTENING_UPLIFT_M: f32 = 250.0;
 
-/// Fraction of the gap back to a plate's base motion rate recovered per tick
-/// while it is NOT in an active continental collision (Wilson cycle rifting
-/// pressure): sutured plates stall, then creep back to speed over ~25M years
-/// once convergence ends, so continents never stay parked forever.
-pub const MOTION_RECOVERY_PER_TICK: f64 = 0.02;
+/// Relief added per consumed feature, as a fraction of [`SHORTENING_UPLIFT_M`].
+pub const SHORTENING_RELIEF_FRACTION: f32 = 0.3;
 
-/// Floor on a plate's live motion rate as a fraction of its unstressed base.
-/// Collision damping compounds (×0.5/tick), which drives a plate boxed in by
-/// converging neighbors on all sides toward literal zero — it can never be
-/// flagged non-colliding, so ordinary recovery never fires. Enforcing this
-/// floor every tick keeps such an interior plate creeping like a slow craton
-/// (mantle drag never fully stops a plate) instead of freezing solid.
-pub const MIN_STALL_FRACTION: f64 = 0.05;
+/// A continental feature destroyed by crustal shortening at a converging
+/// continental-continental contest, and the overriding feature it feeds.
+struct ConsumedCrust {
+    loser_plate: PlateId,
+    loser_birth: HexId,
+    winner_plate: PlateId,
+    winner_birth: HexId,
+}
 
 /// Result of a repartition pass: plates in active continental collision this
-/// tick (for rift recovery) and the world→birth projection table derived from
-/// the claims (for the rest of the tick's surface lookups).
+/// tick (derived from `colliding_pairs`, kept for tests), the colliding plate
+/// pairs (for the suturing weld in [`crate::suture`]), and the world→birth
+/// projection table derived from the claims (for the rest of the tick's
+/// surface lookups).
 pub struct RepartitionOutcome {
     pub colliding: BTreeSet<PlateId>,
+    pub colliding_pairs: BTreeSet<(PlateId, PlateId)>,
     pub projection: ProjectionCache,
 }
 
@@ -169,6 +185,7 @@ pub fn repartition_hexes(data: &mut WorldData, registry: &mut PlateRegistry) -> 
 
     let mut winner: Vec<Option<Claim>> = vec![None; n];
     let mut subducted: Vec<(PlateId, HexId)> = Vec::new();
+    let mut consumed: Vec<ConsumedCrust> = Vec::new();
     let mut cc_collisions: BTreeMap<(PlateId, PlateId), usize> = BTreeMap::new();
 
     {
@@ -220,7 +237,8 @@ pub fn repartition_hexes(data: &mut WorldData, registry: &mut PlateRegistry) -> 
                         // transform contacts keep both features.
                         let real_convergence =
                             converging_at(current_world, plate_id, existing.plate_id);
-                        if real_convergence && existing.continental && continental {
+                        let cc_shortening = real_convergence && existing.continental && continental;
+                        if cc_shortening {
                             let pair = if existing.plate_id < plate_id {
                                 (existing.plate_id, plate_id)
                             } else {
@@ -232,13 +250,28 @@ pub fn repartition_hexes(data: &mut WorldData, registry: &mut PlateRegistry) -> 
                             if real_convergence && !existing.continental {
                                 subducted.push((existing.plate_id, existing.birth_hex));
                             }
+                            if cc_shortening {
+                                consumed.push(ConsumedCrust {
+                                    loser_plate: existing.plate_id,
+                                    loser_birth: existing.birth_hex,
+                                    winner_plate: plate_id,
+                                    winner_birth: birth_hex,
+                                });
+                            }
                             *existing = candidate;
+                        } else if cc_shortening {
+                            consumed.push(ConsumedCrust {
+                                loser_plate: plate_id,
+                                loser_birth: birth_hex,
+                                winner_plate: existing.plate_id,
+                                winner_birth: existing.birth_hex,
+                            });
                         } else if real_convergence && !continental {
                             subducted.push((plate_id, birth_hex));
                         }
-                        // Losing continental crust stays on its plate (buoyant);
-                        // it is hidden while overridden and re-emerges if the
-                        // plates separate again.
+                        // Continental crust at a passive or transform contact
+                        // stays on its plate (buoyant); it is hidden while
+                        // overridden and re-emerges if the plates separate.
                     }
                 }
             }
@@ -252,18 +285,53 @@ pub fn repartition_hexes(data: &mut WorldData, registry: &mut PlateRegistry) -> 
         }
     }
 
-    // Continental collision resistance: converging continental pairs suture and
-    // stall instead of sailing through each other.
+    // Crustal shortening: destroy continental crust consumed at converging
+    // continental contacts and thicken the overriding feature. The overlap
+    // becomes orogen instead of hiding under the other continent and
+    // re-emerging on the far side — colliding continents weld into a mountain
+    // belt with land on both sides, and continental area gets the sink that
+    // balances accretion over deep time.
+    for c in consumed {
+        if let Some(loser) = registry.plates_mut().get_mut(&c.loser_plate) {
+            loser.surface.clear(c.loser_birth);
+        }
+        if let Some(winner_plate) = registry.plates_mut().get_mut(&c.winner_plate)
+            && let Some(feature) = winner_plate.surface.get(c.winner_birth).cloned()
+        {
+            let headroom = f64::from(crate::elevation::uplift_headroom_factor(
+                feature.elevation_m,
+            ));
+            let uplift = f64::from(SHORTENING_UPLIFT_M) * headroom;
+            winner_plate.surface.set(
+                c.winner_birth,
+                crate::plate_surface::SurfaceFeature {
+                    elevation_m: (feature.elevation_m + uplift as f32)
+                        .min(crate::elevation::MAX_ELEVATION_M),
+                    relief_m: (feature.relief_m
+                        + (uplift * f64::from(SHORTENING_RELIEF_FRACTION)) as f32)
+                        .min(crate::elevation::MAX_RELIEF_M),
+                    bedrock: BedrockType::Metamorphic,
+                    fertility: feature.fertility,
+                    age_year: tick_year,
+                    continental_crust: feature.continental_crust,
+                },
+            );
+        }
+    }
+
+    // Continental collision pairs: converging continental contacts past the
+    // collision threshold. Reported to the next tick's collision jam
+    // ([`crate::collision_jam`]), which locks the pair's motions — no rate
+    // mutation here.
     let mut colliding: BTreeSet<PlateId> = BTreeSet::new();
+    let mut colliding_pairs: BTreeSet<(PlateId, PlateId)> = BTreeSet::new();
     for ((a, b), count) in &cc_collisions {
         if *count < COLLISION_CONTACT_HEXES {
             continue;
         }
+        colliding_pairs.insert((*a, *b));
         for id in [a, b] {
             colliding.insert(*id);
-            if let Some(plate) = registry.plates_mut().get_mut(id) {
-                plate.motion_rate_rad_per_year *= COLLISION_MOTION_DAMPING;
-            }
         }
     }
 
@@ -281,6 +349,7 @@ pub fn repartition_hexes(data: &mut WorldData, registry: &mut PlateRegistry) -> 
     if queue.is_empty() {
         return RepartitionOutcome {
             colliding,
+            colliding_pairs,
             projection: ProjectionCache::empty(),
         };
     }
@@ -384,40 +453,8 @@ pub fn repartition_hexes(data: &mut WorldData, registry: &mut PlateRegistry) -> 
     data.plate_id.copy_from_slice(&owner);
     RepartitionOutcome {
         colliding,
+        colliding_pairs,
         projection,
-    }
-}
-
-/// Rift recovery: plates not in an active continental collision drift back
-/// toward their unstressed base rate (Wilson cycle — sutures eventually rift
-/// and continents resume moving). Bases initialize lazily to the first
-/// observed rate and are reset by reorganizations.
-pub fn recover_motion_rates(
-    registry: &mut PlateRegistry,
-    base_rates: &mut BTreeMap<PlateId, f64>,
-    colliding: &std::collections::BTreeSet<PlateId>,
-) {
-    let plate_ids = registry.plate_ids();
-    for id in plate_ids {
-        let Some(plate) = registry.plates_mut().get_mut(&id) else {
-            continue;
-        };
-        let base = *base_rates
-            .entry(id)
-            .or_insert(plate.motion_rate_rad_per_year);
-        // Never let compounding collision damping drive a plate below a small
-        // fraction of its base rate — a boxed-in interior plate creeps instead
-        // of freezing to zero. Applies even while colliding (that is exactly
-        // when a permanently-sutured plate would otherwise decay to nothing).
-        let floor = base * MIN_STALL_FRACTION;
-        if plate.motion_rate_rad_per_year < floor {
-            plate.motion_rate_rad_per_year = floor;
-        }
-        if colliding.contains(&id) || plate.motion_rate_rad_per_year >= base {
-            continue;
-        }
-        plate.motion_rate_rad_per_year +=
-            (base - plate.motion_rate_rad_per_year) * MOTION_RECOVERY_PER_TICK;
     }
 }
 
@@ -624,86 +661,52 @@ mod tests {
     }
 
     #[test]
-    fn stalled_plates_recover_toward_base_rate_when_not_colliding() {
-        let n = 100;
-        let mut registry = PlateRegistry::new();
-        let mut plate = plate_at(0, 0, [0.0, 0.0, 1.0], 0.0, PlateType::Continental);
-        plate.surface = PlateSurface::new(n);
-        registry.insert(plate);
-
-        let base_rate = 8e-9_f64;
-        let mut base_rates = BTreeMap::new();
-        base_rates.insert(PlateId(0), base_rate);
-        // Collision damping stalled the plate to 1% of its base.
-        registry
-            .plates_mut()
-            .get_mut(&PlateId(0))
-            .unwrap()
-            .motion_rate_rad_per_year = base_rate * 0.01;
-
-        let no_collisions = std::collections::BTreeSet::new();
-        for _ in 0..100 {
-            recover_motion_rates(&mut registry, &mut base_rates, &no_collisions);
+    fn repartition_reports_continental_collision_without_scripted_damping() {
+        let mut world = test_world(5);
+        let n = world.data.cell_count() as usize;
+        // Opposed spins → converging near +Y; both plates fully continental.
+        let (mut registry, _contested) = opposed_plates(
+            &world,
+            n,
+            1.0,
+            -1.0,
+            PlateType::Continental,
+            PlateType::Continental,
+        );
+        // Full-sphere overlapping continental footprints: the converging
+        // contact is far wider than the COLLISION_CONTACT_HEXES threshold.
+        for id in [PlateId(0), PlateId(1)] {
+            let plate = registry.plates_mut().get_mut(&id).unwrap();
+            for i in 0..n {
+                plate
+                    .surface
+                    .set(HexId(i as u32), feature(800.0, BedrockType::Igneous));
+            }
         }
-        let recovered = registry.get(PlateId(0)).unwrap().motion_rate_rad_per_year;
-        assert!(
-            recovered > base_rate * 0.5,
-            "stalled plate should recover most of its base rate over 100 ticks, got {recovered}"
-        );
+        let rate_of = |registry: &PlateRegistry, id: PlateId| {
+            registry.get(id).unwrap().motion_rate_rad_per_year
+        };
+        let a_before = rate_of(&registry, PlateId(0));
+        let b_before = rate_of(&registry, PlateId(1));
 
-        // While colliding, no recovery toward base happens, but the stall
-        // floor keeps the plate from freezing below MIN_STALL_FRACTION.
-        let mut colliding = std::collections::BTreeSet::new();
-        colliding.insert(PlateId(0));
-        registry
-            .plates_mut()
-            .get_mut(&PlateId(0))
-            .unwrap()
-            .motion_rate_rad_per_year = base_rate * 0.01;
-        recover_motion_rates(&mut registry, &mut base_rates, &colliding);
-        let colliding_rate = registry.get(PlateId(0)).unwrap().motion_rate_rad_per_year;
-        assert!(
-            (colliding_rate - base_rate * MIN_STALL_FRACTION).abs() < 1e-18,
-            "a colliding plate is floored at MIN_STALL_FRACTION, not recovered: got {colliding_rate}"
-        );
-        assert!(
-            colliding_rate < base_rate * 0.5,
-            "a colliding plate still does not recover toward base"
-        );
-    }
+        world.data.plate_id.fill(PlateId::NONE);
+        let outcome = repartition_hexes(&mut world.data, &mut registry);
 
-    #[test]
-    fn boxed_in_plate_creeps_and_never_freezes() {
-        // A plate damped every tick (perpetual collision) must stay at the
-        // stall floor forever, never decaying toward zero.
-        let n = 100;
-        let mut registry = PlateRegistry::new();
-        let mut plate = plate_at(0, 0, [0.0, 0.0, 1.0], 0.0, PlateType::Continental);
-        plate.surface = PlateSurface::new(n);
-        registry.insert(plate);
-
-        let base_rate = 8e-9_f64;
-        let mut base_rates = BTreeMap::new();
-        base_rates.insert(PlateId(0), base_rate);
-
-        let mut colliding = std::collections::BTreeSet::new();
-        colliding.insert(PlateId(0));
-        for _ in 0..2000 {
-            // Simulate the per-tick collision damping, then the floor pass.
-            let r = &mut registry
-                .plates_mut()
-                .get_mut(&PlateId(0))
-                .unwrap()
-                .motion_rate_rad_per_year;
-            *r *= COLLISION_MOTION_DAMPING;
-            recover_motion_rates(&mut registry, &mut base_rates, &colliding);
-        }
-        let rate = registry.get(PlateId(0)).unwrap().motion_rate_rad_per_year;
         assert!(
-            rate >= base_rate * MIN_STALL_FRACTION * COLLISION_MOTION_DAMPING,
-            "boxed-in plate must keep creeping, not freeze: got {rate}"
+            outcome.colliding.contains(&PlateId(0)),
+            "wide converging CC contact must report a collision"
         );
-        assert!(rate > 0.0, "motion never reaches literal zero");
+        assert!(outcome.colliding.contains(&PlateId(1)));
+        assert!(
+            outcome.colliding_pairs.contains(&(PlateId(0), PlateId(1))),
+            "the pair is reported for the suturing weld"
+        );
+        assert_eq!(
+            rate_of(&registry, PlateId(0)),
+            a_before,
+            "collision slowdown is emergent (slab loss), never scripted damping"
+        );
+        assert_eq!(rate_of(&registry, PlateId(1)), b_before);
     }
 
     #[test]
@@ -745,6 +748,61 @@ mod tests {
                 .is_some(),
             "oceanic crust at a passive contact must NOT be subducted"
         );
+    }
+
+    #[test]
+    fn converging_continental_contest_consumes_loser_into_orogen() {
+        let mut world = test_world(5);
+        let n = world.data.cell_count() as usize;
+        // a spins +Z, b spins -Z → converging near +Y; both fully continental.
+        let (mut registry, contested) = opposed_plates(
+            &world,
+            n,
+            1.0,
+            -1.0,
+            PlateType::Continental,
+            PlateType::Continental,
+        );
+        registry
+            .plates_mut()
+            .get_mut(&PlateId(0))
+            .unwrap()
+            .surface
+            .set(contested, feature(800.0, BedrockType::Igneous));
+        registry
+            .plates_mut()
+            .get_mut(&PlateId(1))
+            .unwrap()
+            .surface
+            .set(contested, feature(900.0, BedrockType::Igneous));
+
+        world.data.plate_id.fill(PlateId::NONE);
+        repartition_hexes(&mut world.data, &mut registry);
+
+        // The older/lower-id plate wins the claim; the loser's crust does NOT
+        // hide and re-emerge later — it is consumed into the collision orogen.
+        assert_eq!(world.data.plate_id[contested.0 as usize], PlateId(0));
+        assert!(
+            registry
+                .get(PlateId(1))
+                .unwrap()
+                .surface
+                .get(contested)
+                .is_none(),
+            "losing continental crust at a converging suture is consumed"
+        );
+        let winner_feature = registry
+            .get(PlateId(0))
+            .unwrap()
+            .surface
+            .get(contested)
+            .expect("winner keeps its feature");
+        assert!(
+            winner_feature.elevation_m > 800.0,
+            "overriding crust thickens by SHORTENING_UPLIFT_M: {}",
+            winner_feature.elevation_m
+        );
+        assert_eq!(winner_feature.bedrock, BedrockType::Metamorphic);
     }
 
     #[test]

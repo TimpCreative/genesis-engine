@@ -4,7 +4,6 @@
 //! labels every hex with one of ten regimes. Biology (Phase 4) maps regimes to
 //! biomes; rendering exposes them as a map mode.
 
-use genesis_core::HexId;
 use genesis_core::data::{ClimateRegimePlaceholder, WorldData};
 
 /// Classifies one hex (Doc 07 §10.2 thresholds).
@@ -49,22 +48,17 @@ pub fn classify(temp_mean_c: f32, temp_range_c: f32, precip_mm: f32) -> ClimateR
     R::Tropical
 }
 
-/// Writes `WorldData.climate_regime` for every hex. Ocean hexes (below sea
-/// level) keep `Unset`: regimes describe land climate for biology.
+/// Writes `WorldData.climate_regime` for every hex. With surface water removed
+/// until Doc 08, every hex is classifiable terrain; the below-sea-level datum
+/// no longer suppresses classification.
 pub fn classify_regimes(data: &mut WorldData) {
     let n = data.cell_count() as usize;
     for i in 0..n {
-        let hex = HexId(i as u32);
-        let _ = hex;
-        data.climate_regime[i] = if data.elevation_mean[i] < data.sea_level_m {
-            ClimateRegimePlaceholder::Unset
-        } else {
-            classify(
-                data.temperature_mean[i],
-                data.temperature_range[i],
-                data.precipitation[i],
-            )
-        };
+        data.climate_regime[i] = classify(
+            data.temperature_mean[i],
+            data.temperature_range[i],
+            data.precipitation[i],
+        );
     }
 }
 
@@ -89,7 +83,7 @@ mod tests {
     }
 
     #[test]
-    fn ocean_hexes_stay_unset_and_land_gets_regimes() {
+    fn every_hex_gets_a_regime_regardless_of_elevation() {
         let mut params = genesis_core::parameters::WorldParameters::default();
         params.core.grid.subdivision_level = 5;
         let mut world = genesis_core::create_world(params).expect("world");
@@ -103,6 +97,6 @@ mod tests {
         world.data.sea_level_m = 0.0;
         classify_regimes(&mut world.data);
         assert_eq!(world.data.climate_regime[0], R::Subtropical);
-        assert_eq!(world.data.climate_regime[1], R::Unset);
+        assert_eq!(world.data.climate_regime[1], R::Subtropical);
     }
 }

@@ -149,6 +149,31 @@ pub fn surface_elevation_at(
     })
 }
 
+/// Whether a real surface feature (not a plate-type baseline fallback) exists
+/// at a world hex. Passes that transfer mass between hexes
+/// ([`crate::collapse`]) must skip holes: writing display data back would mint
+/// crust out of nothing.
+pub fn surface_feature_exists_at(
+    data: &WorldData,
+    registry: &PlateRegistry,
+    cache: &ProjectionCache,
+    world_hex: HexId,
+) -> bool {
+    let idx = world_hex.0 as usize;
+    if idx >= data.plate_id.len() {
+        return false;
+    }
+    let plate_id = data.plate_id[idx];
+    if plate_id == PlateId::NONE {
+        return false;
+    }
+    let Some(plate) = registry.get(plate_id) else {
+        return false;
+    };
+    let birth_hex = birth_hex_at(data, plate, cache, world_hex);
+    plate.surface.get(birth_hex).is_some()
+}
+
 /// Elevation below which a featureless hex is presumed oceanic crust (m).
 pub const CRUST_FALLBACK_DEPTH_M: f32 = -1500.0;
 

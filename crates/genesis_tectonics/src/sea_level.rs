@@ -1,4 +1,4 @@
-//! Sea level drift from divergent boundary length (Doc 06 §4.6).
+//! Sea level drift from divergent boundary length (Doc 06 §4.7).
 
 use genesis_core::branches::BranchId;
 use genesis_core::data::WorldData;

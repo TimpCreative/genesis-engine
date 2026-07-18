@@ -199,7 +199,7 @@ pub struct TectonicsState {
     pub elevation_at_tick_start: Vec<f32>,
     /// Prior tick directed edge classes for `BoundaryTransition` detection.
     pub previous_edge_class: BTreeMap<(genesis_core::HexId, genesis_core::HexId), BoundaryType>,
-    /// Baseline divergent boundary length for sea level (§4.6); set on first Geological tick.
+    /// Baseline divergent boundary length for sea level (§4.7); set on first Geological tick.
     pub baseline_divergent_length_km: Option<f64>,
     /// Events queued during ticks; flushed to root branch at end of history generation.
     pub pending_events: Vec<genesis_core::events::Event>,
@@ -207,15 +207,18 @@ pub struct TectonicsState {
     pub next_event_id: u64,
     /// Plate reorganizations fired during geological ticks (diagnostics).
     pub reorg_count: u64,
-    /// Each plate's unstressed motion rate (rad/year). Collision damping slows
-    /// the live rate; rift recovery restores it toward this base once the
-    /// collision ends (Wilson cycle). Reset when a reorganization assigns a
-    /// new rate; lazily initialized to the first observed rate.
-    pub base_motion_rates: BTreeMap<PlateId, f64>,
+    /// Latest per-plate boundary-force tallies (slab/ridge edges) from the
+    /// most recent boundary detection; drives slab-pull motion targets in
+    /// the next tick's motion step (§2.2).
+    pub boundary_tallies: BTreeMap<PlateId, crate::boundary::BoundaryTally>,
     /// World→birth projection table from the latest repartition; consulted by
     /// surface reads/writes for the rest of the tick instead of per-hex
     /// inverse rotations (perf, subdivision level 8).
     pub projection: crate::projection::ProjectionCache,
+    /// Continental pairs in active collision from the latest repartition;
+    /// drives the collision jam in the next tick's motion step (§4.6) —
+    /// one tick behind, like the boundary tallies.
+    pub colliding_pairs: std::collections::BTreeSet<(PlateId, PlateId)>,
 }
 
 impl TectonicsState {

@@ -1,55 +1,74 @@
 //! Hex coloring for elevation and climate visualization.
 //!
-//! Elevation colors follow Doc 06 §15 step 10. Temperature and precipitation
-//! ramps support multi-mode rendering (Doc 07 fields).
+//! Elevation colors follow Doc 06 §15 step 10, rendered DRY: surface water is
+//! out of the game until Doc 08, so the ramp below the sea-level datum shows
+//! basin-floor terrain (grays/tans), never blue water. Temperature and
+//! precipitation ramps support multi-mode rendering (Doc 07 fields).
 
 use bevy::prelude::*;
 use genesis_core::data::WorldData;
 
 use crate::render_mode::RenderMode;
 
-/// Uniform ocean color for climate modes (keeps land patterns readable).
-pub const OCEAN_BASELINE_COLOR: Color = Color::srgb(0.1, 0.3, 0.5);
-
 /// Matches tectonics clamp (Doc 06 §5.7); local to render — no `genesis_tectonics` dependency.
 pub const MIN_ELEVATION_M: f32 = -11_000.0;
 pub const MAX_ELEVATION_M: f32 = 9_000.0;
 
 struct ColorStop {
-    /// Absolute elevation in meters (may equal `sea_level_m` for coast stops).
+    /// Absolute elevation in meters.
     elev_m: f32,
     rgb: [f32; 3],
 }
 
-/// Piecewise-linear ramp in absolute elevation; `sea_level_m` anchors shallow water and coast.
-fn elevation_stops(sea_level_m: f32) -> Vec<ColorStop> {
+/// Piecewise-linear ramp in absolute elevation. The whole planet renders as
+/// terrain: deep basins read as dark rock, the 0 m datum is a subtle coast
+/// cue, and land runs plain → lowland → piedmont → upland → tan → brown →
+/// white. No water colors anywhere (Doc 08 will reintroduce them properly).
+fn elevation_stops() -> Vec<ColorStop> {
     vec![
         ColorStop {
             elev_m: MIN_ELEVATION_M,
-            rgb: [0.02, 0.05, 0.28],
+            rgb: [0.09, 0.08, 0.08],
         },
         ColorStop {
             elev_m: -4_000.0,
-            rgb: [0.05, 0.12, 0.42],
+            rgb: [0.20, 0.18, 0.16],
         },
         ColorStop {
-            elev_m: sea_level_m - 50.0,
-            rgb: [0.12, 0.35, 0.55],
+            elev_m: -1_000.0,
+            rgb: [0.36, 0.32, 0.27],
         },
         ColorStop {
-            elev_m: sea_level_m,
-            rgb: [0.22, 0.48, 0.62],
+            elev_m: 0.0,
+            rgb: [0.47, 0.43, 0.35],
+        },
+        // Coastal plain: bright grass green.
+        ColorStop {
+            elev_m: 10.0,
+            rgb: [0.38, 0.54, 0.24],
+        },
+        // Lowland: rich green.
+        ColorStop {
+            elev_m: 200.0,
+            rgb: [0.27, 0.48, 0.20],
+        },
+        // Piedmont: olive.
+        ColorStop {
+            elev_m: 600.0,
+            rgb: [0.48, 0.52, 0.24],
+        },
+        // Upland: khaki.
+        ColorStop {
+            elev_m: 1_200.0,
+            rgb: [0.62, 0.55, 0.30],
+        },
+        // High plateau: tan.
+        ColorStop {
+            elev_m: 2_000.0,
+            rgb: [0.66, 0.55, 0.36],
         },
         ColorStop {
-            elev_m: sea_level_m + 10.0,
-            rgb: [0.25, 0.45, 0.20],
-        },
-        ColorStop {
-            elev_m: sea_level_m + 1_500.0,
-            rgb: [0.45, 0.42, 0.28],
-        },
-        ColorStop {
-            elev_m: sea_level_m + 4_000.0,
+            elev_m: 4_000.0,
             rgb: [0.55, 0.48, 0.42],
         },
         ColorStop {
@@ -99,9 +118,12 @@ fn sample_stops(stops: &[ColorStop], elevation_m: f32) -> [f32; 3] {
 }
 
 /// Pure elevation → color mapping for terrain visualization.
-pub fn elevation_color(elevation_m: f32, sea_level_m: f32) -> Color {
+///
+/// `_sea_level_m` is retained for the Doc 08 water re-introduction; the dry
+/// ramp does not use it.
+pub fn elevation_color(elevation_m: f32, _sea_level_m: f32) -> Color {
     let elev = clamp_elevation(elevation_m);
-    let stops = elevation_stops(sea_level_m);
+    let stops = elevation_stops();
     let rgb = sample_stops(&stops, elev);
     Color::srgb(rgb[0], rgb[1], rgb[2])
 }
@@ -190,7 +212,8 @@ pub fn precipitation_to_color(precip_mm: f32) -> Color {
     Color::srgb(r, g, b)
 }
 
-/// Resolves fill color for a hex under the active render mode.
+/// Resolves fill color for a hex under the active render mode. Every mode
+/// colors every hex — no water masking (surface water returns with Doc 08).
 pub fn hex_color_for_mode(
     data: &WorldData,
     hex_idx: usize,
@@ -202,30 +225,9 @@ pub fn hex_color_for_mode(
 
     match mode {
         RenderMode::Elevation => hex_fill_color(elev, sea_level, is_pentagon),
-        RenderMode::Temperature => {
-            if elev < sea_level {
-                OCEAN_BASELINE_COLOR
-            } else {
-                temperature_to_color(data.temperature_mean[hex_idx])
-            }
-        }
-        RenderMode::Precipitation => {
-            if elev < sea_level {
-                OCEAN_BASELINE_COLOR
-            } else {
-                precipitation_to_color(data.precipitation[hex_idx])
-            }
-        }
-        RenderMode::ClimateRegime => {
-            if elev < sea_level {
-                OCEAN_BASELINE_COLOR
-            } else {
-                regime_to_color(data.climate_regime[hex_idx])
-            }
-        }
-        // Rivers mode: elevation base palette; the water itself is drawn by
-        // the polyline overlay (rivers.rs), not by hex fills.
-        RenderMode::Rivers => hex_fill_color(elev, sea_level, is_pentagon),
+        RenderMode::Temperature => temperature_to_color(data.temperature_mean[hex_idx]),
+        RenderMode::Precipitation => precipitation_to_color(data.precipitation[hex_idx]),
+        RenderMode::ClimateRegime => regime_to_color(data.climate_regime[hex_idx]),
     }
 }
 
@@ -285,7 +287,7 @@ mod tests {
     }
 
     #[test]
-    fn deep_ocean_darker_than_shallow_submerged() {
+    fn deep_basin_darker_than_shallow_basin() {
         let deep = color_to_rgb(elevation_color(-8_000.0, 0.0));
         let shallow = color_to_rgb(elevation_color(-500.0, 0.0));
         assert!(
@@ -297,14 +299,25 @@ mod tests {
     }
 
     #[test]
-    fn land_greener_than_ocean_at_same_sea_level() {
-        let sea = 0.0_f32;
-        let ocean = color_to_rgb(elevation_color(-200.0, sea));
-        let land = color_to_rgb(elevation_color(500.0, sea));
+    fn dry_ramp_has_no_water_blues() {
+        // Surface water is gone until Doc 08: no elevation may render blue.
+        for e in (-11_000..9_000).step_by(250) {
+            let [r, g, b] = color_to_rgb(elevation_color(e as f32, 0.0));
+            assert!(
+                b <= r + 0.10 || b <= g + 0.05,
+                "elevation {e} renders bluish: r={r} g={g} b={b}"
+            );
+        }
+    }
+
+    #[test]
+    fn land_greener_than_basin_floor() {
+        let basin = color_to_rgb(elevation_color(-200.0, 0.0));
+        let land = color_to_rgb(elevation_color(500.0, 0.0));
         assert!(
-            land[1] > ocean[1],
-            "land should be greener: ocean {:?} land {:?}",
-            ocean,
+            land[1] > basin[1],
+            "land should be greener: basin {:?} land {:?}",
+            basin,
             land
         );
     }

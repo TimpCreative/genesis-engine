@@ -48,12 +48,6 @@ pub struct WorldData {
     pub precipitation: Vec<f32>,
     /// Habitability score from 0.0 to 1.0.
     pub habitability: Vec<f32>,
-    /// Primary flow direction toward a neighbor; `None` when there is no flow.
-    pub flow_direction: Vec<Option<Direction>>,
-    /// Water volume passing through the hex, in m³/year.
-    pub flow_volume: Vec<f32>,
-    /// Soil fertility from 0.0 to 1.0.
-    pub soil_fertility: Vec<f32>,
 
     // ---- Climate Layer (populated by genesis_climate; Phase 2) ----
     /// Per-hex prevailing wind direction in radians (0 = north, π/2 = east).
@@ -112,9 +106,6 @@ impl WorldData {
             temperature_range: vec![0.0; n],
             precipitation: vec![0.0; n],
             habitability: vec![0.0; n],
-            flow_direction: vec![None; n],
-            flow_volume: vec![0.0; n],
-            soil_fertility: vec![0.0; n],
             wind_direction_rad: vec![0.0; n],
             wind_speed_m_s: vec![0.0; n],
             ocean_current_vec: vec![[0.0, 0.0]; n],
@@ -192,9 +183,6 @@ mod tests {
         assert_eq!(world.temperature_range.len(), n);
         assert_eq!(world.precipitation.len(), n);
         assert_eq!(world.habitability.len(), n);
-        assert_eq!(world.flow_direction.len(), n);
-        assert_eq!(world.flow_volume.len(), n);
-        assert_eq!(world.soil_fertility.len(), n);
         assert_eq!(world.wind_direction_rad.len(), n);
         assert_eq!(world.wind_speed_m_s.len(), n);
         assert_eq!(world.ocean_current_vec.len(), n);
@@ -224,7 +212,6 @@ mod tests {
         assert_eq!(world.global_temperature_c, 15.0);
         assert_eq!(world.sea_level_m, 0.0);
         assert!(world.population.iter().all(|&p| p == 0));
-        assert!(world.flow_direction.iter().all(|d| d.is_none()));
         assert!(world.settlement_id.iter().all(|s| s.is_none()));
         assert!(world.nation_id.iter().all(|n| n.is_none()));
         assert!(world.fertility.iter().all(|&f| f == 0.0));
@@ -275,9 +262,9 @@ mod tests {
     }
 
     #[test]
-    fn flow_direction_round_trip() {
+    fn mutate_plate_id_smoke() {
         let mut world = world_at_level(4);
-        world.flow_direction[10] = Some(Direction::D2);
-        assert_eq!(world.flow_direction[10], Some(Direction::D2));
+        world.plate_id[10] = PlateId(7);
+        assert_eq!(world.plate_id[10], PlateId(7));
     }
 }

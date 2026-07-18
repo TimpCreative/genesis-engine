@@ -76,7 +76,7 @@ pub enum EventKind {
         from: BoundaryType,
         to: BoundaryType,
     },
-    /// Global sea level adjustment (Doc 06 §4.6).
+    /// Global sea level adjustment (Doc 06 §4.7).
     SeaLevelChange { delta_m: f32, new_sea_level_m: f32 },
     /// Surface temperature crossed a cooling threshold during Formation (Doc 07 §15).
     PlanetaryCoolingMilestone { surface_temp_c: f32 },

@@ -14,8 +14,6 @@ pub enum RenderMode {
     Precipitation,
     /// Color by Köppen-like climate regime (Doc 07 §10).
     ClimateRegime,
-    /// Color land by accumulated water flow (rivers), log scale.
-    Rivers,
 }
 
 impl RenderMode {
@@ -24,8 +22,7 @@ impl RenderMode {
             Self::Elevation => Self::Temperature,
             Self::Temperature => Self::Precipitation,
             Self::Precipitation => Self::ClimateRegime,
-            Self::ClimateRegime => Self::Rivers,
-            Self::Rivers => Self::Elevation,
+            Self::ClimateRegime => Self::Elevation,
         }
     }
 
@@ -35,7 +32,6 @@ impl RenderMode {
             Self::Temperature => "Temperature",
             Self::Precipitation => "Precipitation",
             Self::ClimateRegime => "Climate Regime",
-            Self::Rivers => "Rivers",
         }
     }
 }

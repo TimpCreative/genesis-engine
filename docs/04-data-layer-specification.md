@@ -584,14 +584,10 @@ pub struct WorldData {
     /// Habitability score (0.0-1.0). Derived from temperature, precipitation, hazards.
     pub habitability: Vec<f32>,
 
-    /// Which neighbor (Direction) water primarily flows toward. None = no flow (e.g., ocean).
-    pub flow_direction: Vec<Option<Direction>>,
-
-    /// Volume of water passing through the hex, in m³/year.
-    pub flow_volume: Vec<f32>,
-
-    /// Soil fertility score (0.0-1.0). Derived from bedrock, climate, organics.
-    pub soil_fertility: Vec<f32>,
+    // NOTE (July 2026): `flow_direction`, `flow_volume`, and `soil_fertility`
+    // were removed along with the provisional hydrology layer; surface water
+    // returns with the full Doc 08 hydrology pass, which will define its own
+    // fields.
 
     // ---- Global Physical State ----
     /// Current global sea level in meters (relative to baseline).

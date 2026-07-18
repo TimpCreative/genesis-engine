@@ -32,10 +32,11 @@ pub const SHALLOW_SEA_DEPTH_M: f32 = 200.0;
 
 /// Isostatic freeboard: land elevation (m above sea level) that continental
 /// crust erodes down to and rebounds up toward. Crustal buoyancy offsets
-/// denudation on low continents (Earth's mean continental elevation is
-/// ~840 m; old cratons sit near 300–600 m). Oceanic-crust land (island arcs,
+/// denudation on low continents — target Earth's mean continental elevation
+/// (~840 m) so interiors read as real high ground and shelves stay emergent
+/// through ±100 m sea-level excursions. Oceanic-crust land (island arcs,
 /// hotspot volcanoes) has no freeboard and erodes to sea level.
-pub const CONTINENTAL_FREEBOARD_M: f32 = 550.0;
+pub const CONTINENTAL_FREEBOARD_M: f32 = 800.0;
 
 /// Epeirogenic rebound rate: fraction of the gap to the freeboard closed per
 /// year for low or submerged continental crust. At 2e-8/yr a 500k-year tick
@@ -105,8 +106,10 @@ pub fn climate_modifier(data: &WorldData, hex: HexId, climate_active: bool) -> f
 fn bedrock_erosion_multiplier(bedrock: BedrockType) -> f64 {
     match bedrock {
         // Continental cratons (Igneous) erode slowly over billion-year scales.
-        BedrockType::Igneous => 0.10,
-        BedrockType::Metamorphic => 0.25,
+        BedrockType::Igneous => 0.08,
+        // Collision belts (Metamorphic) persist hundreds of My, like the
+        // Appalachians — old sutures stay visible between Wilson cycles.
+        BedrockType::Metamorphic => 0.15,
         BedrockType::Sedimentary => 1.2,
         BedrockType::Limestone => 1.0,
         BedrockType::OceanicCrust => 0.0,

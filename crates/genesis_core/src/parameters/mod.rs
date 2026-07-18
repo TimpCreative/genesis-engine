@@ -59,7 +59,7 @@ impl Default for WorldParameters {
                     simulation_end_year: WorldYear(4_500_000_000),
                 },
                 geology: GeologyParameters {
-                    initial_continental_fraction: 0.22,
+                    initial_continental_fraction: 0.30,
                     plate_velocity_scale: 1.0,
                     volcanism_scale: 1.0,
                     geology_activity_scale: 1.0,
@@ -67,7 +67,7 @@ impl Default for WorldParameters {
                     initial_minor_plate_count: 8,
                     event_granularity: Significance::Notable,
                     tick_interval_overrides_years: None,
-                    base_erosion_rate_per_year: 1e-7,
+                    base_erosion_rate_per_year: 5e-8,
                     max_ephemeral_island_hexes: 10,
                     max_ephemeral_island_height_m: 100.0,
                     max_ephemeral_island_relief_m: 250.0,
