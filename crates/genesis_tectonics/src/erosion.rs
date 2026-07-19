@@ -312,11 +312,19 @@ pub fn apply_erosion_tick(
         registry,
         cumulative_deposition_m,
         projection,
+        prev_ice_load_m,
         ..
     } = state;
 
     apply_isostasy(registry, data.sea_level_m, tick_interval_years);
-    apply_ice_load_isostasy(data, registry, projection, tick_interval_years, tick_year);
+    apply_ice_load_isostasy(
+        data,
+        registry,
+        projection,
+        prev_ice_load_m,
+        tick_interval_years,
+        tick_year,
+    );
 
     // Doc 08 §8.5: apply pending hydrology elevation deltas to plate surfaces
     // before any tectonic denudation this tick.
@@ -463,42 +471,64 @@ pub fn apply_isostasy(registry: &mut PlateRegistry, sea_level_m: f32, tick_inter
     }
 }
 
-/// GIA: depresses crust under ice load toward freeboard − load (Doc 08 §9.1).
-/// Deglaciated hexes rebound via [`apply_isostasy`]'s epeirogenic path.
+/// GIA: depresses crust under ice load toward freeboard − load, and rebounds
+/// deglaciated crust back toward the freeboard (Doc 08 §9.1). The rebound is
+/// upward-only: high ground that once carried ice is not pulled down.
 fn apply_ice_load_isostasy(
     data: &mut WorldData,
     registry: &mut PlateRegistry,
     cache: &ProjectionCache,
+    prev_ice_load_m: &mut Vec<f32>,
     tick_interval_years: f64,
     tick_year: WorldYear,
 ) {
-    if data.ice_load_m.iter().all(|&l| l == 0.0) {
+    let n = data.cell_count() as usize;
+    if prev_ice_load_m.len() != n {
+        // First tick (or grid resized): adopt the current loads as the
+        // baseline so no spurious rebound fires.
+        *prev_ice_load_m = data.ice_load_m.clone();
+    }
+    if data.ice_load_m.iter().all(|&l| l == 0.0) && prev_ice_load_m.iter().all(|&l| l == 0.0) {
         return;
     }
     let fraction = (EPEIROGENIC_REBOUND_RATE_PER_YEAR * tick_interval_years).min(1.0) as f32;
-    if fraction <= 0.0 {
-        return;
-    }
-    let sea = data.sea_level_m;
-    let tick_value = tick_year.value();
-    let n = data.cell_count() as usize;
     let loads: Vec<f32> = data.ice_load_m.clone();
-    let crust: Vec<bool> = data.continental_crust.clone();
-    for i in 0..n {
-        let load = loads[i];
-        if load <= 0.0 {
-            continue;
+    if fraction > 0.0 {
+        let sea = data.sea_level_m;
+        let tick_value = tick_year.value();
+        let prevs: Vec<f32> = prev_ice_load_m.clone();
+        let crust: Vec<bool> = data.continental_crust.clone();
+        for i in 0..n {
+            let load = loads[i];
+            let freeboard = if crust[i] {
+                CONTINENTAL_FREEBOARD_M
+            } else {
+                0.0
+            };
+            if load > 0.0 {
+                let target = sea + freeboard - load;
+                let hex = HexId(i as u32);
+                modify_surface_at_world_hex(registry, data, cache, hex, tick_value, |feature| {
+                    feature.elevation_m += (target - feature.elevation_m) * fraction;
+                });
+            } else if prevs[i] > 0.0 {
+                // Deglaciated: rebound toward the unloaded freeboard.
+                let target = sea + freeboard;
+                let hex = HexId(i as u32);
+                modify_surface_at_world_hex(registry, data, cache, hex, tick_value, |feature| {
+                    if feature.elevation_m < target {
+                        feature.elevation_m += (target - feature.elevation_m) * fraction;
+                    }
+                });
+            }
         }
-        let freeboard = if crust[i] {
-            CONTINENTAL_FREEBOARD_M
-        } else {
-            0.0
-        };
-        let target = sea + freeboard - load;
-        let hex = HexId(i as u32);
-        modify_surface_at_world_hex(registry, data, cache, hex, tick_value, |feature| {
-            feature.elevation_m += (target - feature.elevation_m) * fraction;
-        });
+    }
+    // Track the most recent load per hex: sticky across ice-free ticks so the
+    // rebound keeps relaxing over the following My; refreshed on reload.
+    for (prev, &load) in prev_ice_load_m.iter_mut().zip(loads.iter()) {
+        if load > 0.0 {
+            *prev = load;
+        }
     }
 }
 
@@ -1048,6 +1078,85 @@ mod tests {
         assert_eq!(
             state.cumulative_deposition_m.len(),
             world.data.grid.cell_count() as usize
+        );
+    }
+
+    #[test]
+    fn deglaciated_hex_rebounds_after_ice_load_clears() {
+        let mut world = small_world();
+        let data = &mut world.data;
+        let mut registry = PlateRegistry::new();
+        assign_single_plate(data, &mut registry);
+        data.sea_level_m = 0.0;
+        let loaded = HexId(40);
+        let control = HexId(41);
+        for hex in [loaded, control] {
+            let idx = hex.0 as usize;
+            data.elevation_mean[idx] = CONTINENTAL_FREEBOARD_M;
+            data.continental_crust[idx] = true;
+        }
+        seed_surfaces_from_world(data, &mut registry);
+        // Mark the seeded features continental too, so world rebuilds keep
+        // `data.continental_crust` set for these hexes.
+        for hex in [loaded, control] {
+            let plate = registry.plates_mut().get_mut(&PlateId(0)).expect("plate");
+            let mut feature = plate.surface.get(hex).expect("feature").clone();
+            feature.continental_crust = true;
+            plate.surface.set(hex, feature);
+        }
+
+        let mut prev_ice_load_m = Vec::new();
+        let cache = ProjectionCache::empty();
+        // 200 ticks of 500k years: the relaxation closes ~87% of the gap.
+        let ticks = 200;
+        let interval = 500_000.0;
+        let tick_year = WorldYear(500_000);
+
+        // Load phase: the iced hex depresses toward sea + freeboard − load.
+        data.ice_load_m[loaded.0 as usize] = 250.0;
+        for _ in 0..ticks {
+            apply_ice_load_isostasy(
+                data,
+                &mut registry,
+                &cache,
+                &mut prev_ice_load_m,
+                interval,
+                tick_year,
+            );
+        }
+        rebuild_world_from_plate_surfaces(data, &registry);
+        let depressed = data.elevation_mean[loaded.0 as usize];
+        assert!(
+            depressed < CONTINENTAL_FREEBOARD_M - 100.0,
+            "loaded hex should depress well below the freeboard, got {depressed}"
+        );
+
+        // Unload phase: the deglaciated hex measurably rebounds; the
+        // never-loaded control is untouched throughout.
+        data.ice_load_m[loaded.0 as usize] = 0.0;
+        for _ in 0..ticks {
+            apply_ice_load_isostasy(
+                data,
+                &mut registry,
+                &cache,
+                &mut prev_ice_load_m,
+                interval,
+                tick_year,
+            );
+        }
+        rebuild_world_from_plate_surfaces(data, &registry);
+        let rebounded = data.elevation_mean[loaded.0 as usize];
+        assert!(
+            rebounded > depressed + 100.0,
+            "deglaciated hex should rebound, depressed {depressed} → rebounded {rebounded}"
+        );
+        assert!(
+            rebounded <= CONTINENTAL_FREEBOARD_M,
+            "rebound is upward-only, never above the freeboard; got {rebounded}"
+        );
+        assert_eq!(
+            data.elevation_mean[control.0 as usize], CONTINENTAL_FREEBOARD_M,
+            "never-loaded control hex must stay unchanged"
         );
     }
 }

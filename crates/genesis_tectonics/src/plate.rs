@@ -223,6 +223,10 @@ pub struct TectonicsState {
     pub cumulative_deposition_m: Vec<f32>,
     /// `elevation_mean` snapshot before boundary elevation this tick (boundary events).
     pub elevation_at_tick_start: Vec<f32>,
+    /// Most recent per-hex ice load (m); drives GIA rebound after deglaciation
+    /// (Doc 08 §9.1). Sticky: holds the last nonzero load so post-glacial
+    /// rebound keeps relaxing across ice-free ticks.
+    pub prev_ice_load_m: Vec<f32>,
     /// Prior tick directed edge classes for `BoundaryTransition` detection.
     pub previous_edge_class: BTreeMap<(genesis_core::HexId, genesis_core::HexId), BoundaryType>,
     /// Events queued during ticks; flushed to root branch at end of history generation.
