@@ -30,6 +30,18 @@ pub const TROPICAL_LATITUDE_DEG: f64 = 30.0;
 /// Maximum water depth for shallow-shelf fertility proxy (§8.4).
 pub const SHALLOW_SEA_DEPTH_M: f32 = 200.0;
 
+/// Deepest water over which carbonate platforms grow, m below sea level
+/// (Doc 08 §6.3): the photic/shallow-marine window.
+pub const LIMESTONE_MAX_DEPTH_M: f32 = 150.0;
+
+/// Highest land elevation still counted as platform, m above sea level
+/// (Doc 08 §6.3): low coastal plains and supratidal flats.
+pub const LIMESTONE_MAX_ELEVATION_M: f32 = 100.0;
+
+/// |latitude| below which (degrees) surface waters stay warm enough for
+/// carbonate factories (Doc 08 §6.3 karst precondition).
+pub const LIMESTONE_MAX_LATITUDE_DEG: f64 = 35.0;
+
 /// Isostatic freeboard: land elevation (m above sea level) that continental
 /// crust erodes down to and rebounds up toward. Crustal buoyancy offsets
 /// denudation on low continents — target Earth's mean continental elevation
@@ -287,6 +299,49 @@ pub fn increment_shallow_tropical_fertility(
     }
 }
 
+/// Assigns `BedrockType::Limestone` on warm shallow-water continental
+/// platforms (Doc 08 §6.3): continental crust within the platform
+/// elevation window at tropical/subtropical latitudes. Sticky — the pass
+/// only ever SETS limestone, never clears it: uplifted platforms keep
+/// their carbonate cap (karst towers form that way). v1 simplification:
+/// no deep-burial or subduction recycling of carbonate (Phase 4 scope).
+/// Deterministic: ascending HexId order; no RNG.
+pub fn assign_platform_limestone(
+    data: &WorldData,
+    registry: &mut PlateRegistry,
+    cache: &ProjectionCache,
+    tick_year: WorldYear,
+) {
+    let sea = data.sea_level_m;
+    let lat_limit_rad = LIMESTONE_MAX_LATITUDE_DEG.to_radians();
+    let tick_value = tick_year.value();
+
+    for hex in data.grid.iter() {
+        let idx = hex.0 as usize;
+        if !data.continental_crust.get(idx).copied().unwrap_or(false) {
+            continue;
+        }
+
+        let Some(elevation_m) = surface_elevation_at(data, registry, cache, hex) else {
+            continue;
+        };
+        let platform =
+            (sea - LIMESTONE_MAX_DEPTH_M..=sea + LIMESTONE_MAX_ELEVATION_M).contains(&elevation_m);
+        if !platform {
+            continue;
+        }
+
+        let (lat_rad, _) = data.grid.center_lat_lon(hex);
+        if lat_rad.abs() >= lat_limit_rad {
+            continue;
+        }
+
+        modify_surface_at_world_hex(registry, data, cache, hex, tick_value, |feature| {
+            feature.bedrock = BedrockType::Limestone;
+        });
+    }
+}
+
 /// Builds per-hex erosion noise multipliers from `tectonics.erosion_noise` at this tick year.
 pub fn erosion_noise_factors(data: &WorldData, rng: &WorldRng, tick_year: WorldYear) -> Vec<f64> {
     let mut noise_rng = rng.stream_at(EROSION_NOISE_STREAM, tick_year.value() as u64);
@@ -335,6 +390,10 @@ pub fn apply_erosion_tick(
         cumulative_deposition_m,
         tick_year,
     );
+
+    // Doc 08 §6.3: carbonate platforms grow every tick regardless of which
+    // erosion branch runs below (sticky — never cleared once set).
+    assign_platform_limestone(data, registry, projection, tick_year);
 
     let base_rate = data.parameters.core.geology.base_erosion_rate_per_year;
     if base_rate <= 0.0 {
@@ -1157,6 +1216,142 @@ mod tests {
         assert_eq!(
             data.elevation_mean[control.0 as usize], CONTINENTAL_FREEBOARD_M,
             "never-loaded control hex must stay unchanged"
+        );
+    }
+
+    /// Seeds `hexes` with the given elevation/crust/bedrock on both the world
+    /// arrays and the plate features, so rebuilds keep the crust flags.
+    fn seed_limestone_fixture(
+        data: &mut WorldData,
+        registry: &mut PlateRegistry,
+        hexes: &[(HexId, f32, bool)],
+    ) {
+        for &(hex, elevation_m, continental) in hexes {
+            let idx = hex.0 as usize;
+            data.elevation_mean[idx] = elevation_m;
+            data.continental_crust[idx] = continental;
+            data.bedrock_type[idx] = BedrockType::Igneous;
+        }
+        seed_surfaces_from_world(data, registry);
+        for &(hex, _, continental) in hexes {
+            let plate = registry.plates_mut().get_mut(&PlateId(0)).expect("plate");
+            let mut feature = plate.surface.get(hex).expect("feature").clone();
+            feature.elevation_m = data.elevation_mean[hex.0 as usize];
+            feature.continental_crust = continental;
+            plate.surface.set(hex, feature);
+        }
+    }
+
+    #[test]
+    fn warm_shallow_continental_platform_gets_limestone() {
+        let mut world = small_world();
+        let data = &mut world.data;
+        let mut registry = PlateRegistry::new();
+        assign_single_plate(data, &mut registry);
+        data.sea_level_m = 0.0;
+
+        let lat_limit_rad = LIMESTONE_MAX_LATITUDE_DEG.to_radians();
+        let mut tropicals = Vec::new();
+        let mut polar = None;
+        for hex in data.grid.iter() {
+            let (lat, _) = data.grid.center_lat_lon(hex);
+            if lat.abs() < lat_limit_rad && tropicals.len() < 4 {
+                tropicals.push(hex);
+            }
+            if lat.abs() >= lat_limit_rad && polar.is_none() {
+                polar = Some(hex);
+            }
+        }
+        let polar = polar.expect("grid should have a high-latitude hex");
+        let [platform, deep, highland, oceanic] = tropicals[..4] else {
+            panic!("grid should have four tropical hexes");
+        };
+
+        seed_limestone_fixture(
+            data,
+            &mut registry,
+            &[
+                (platform, -50.0, true), // in the window: should convert
+                (deep, -500.0, true),    // too deep
+                (highland, 500.0, true), // too high
+                (oceanic, -50.0, false), // oceanic crust
+                (polar, -50.0, true),    // too cold
+            ],
+        );
+
+        assign_platform_limestone(
+            data,
+            &mut registry,
+            &ProjectionCache::empty(),
+            WorldYear(500_000),
+        );
+        rebuild_world_from_plate_surfaces(data, &registry);
+
+        assert_eq!(
+            data.bedrock_type[platform.0 as usize],
+            BedrockType::Limestone,
+            "warm shallow continental platform should gain limestone"
+        );
+        for (hex, why) in [
+            (deep, "deep hex"),
+            (highland, "uplifted hex"),
+            (oceanic, "oceanic-crust hex"),
+            (polar, "high-latitude hex"),
+        ] {
+            assert_eq!(
+                data.bedrock_type[hex.0 as usize],
+                BedrockType::Igneous,
+                "{why} must stay untouched"
+            );
+        }
+    }
+
+    #[test]
+    fn limestone_is_sticky_after_uplift() {
+        let mut world = small_world();
+        let data = &mut world.data;
+        let mut registry = PlateRegistry::new();
+        assign_single_plate(data, &mut registry);
+        data.sea_level_m = 0.0;
+
+        let lat_limit_rad = LIMESTONE_MAX_LATITUDE_DEG.to_radians();
+        let platform = data
+            .grid
+            .iter()
+            .find(|&hex| data.grid.center_lat_lon(hex).0.abs() < lat_limit_rad)
+            .expect("grid should have a tropical hex");
+
+        seed_limestone_fixture(data, &mut registry, &[(platform, -50.0, true)]);
+        assign_platform_limestone(
+            data,
+            &mut registry,
+            &ProjectionCache::empty(),
+            WorldYear(500_000),
+        );
+        rebuild_world_from_plate_surfaces(data, &registry);
+        assert_eq!(
+            data.bedrock_type[platform.0 as usize],
+            BedrockType::Limestone
+        );
+
+        // Uplift far above the platform window (feature keeps its bedrock;
+        // only elevation changes): the pass never clears limestone.
+        data.elevation_mean[platform.0 as usize] = 3_000.0;
+        let plate = registry.plates_mut().get_mut(&PlateId(0)).expect("plate");
+        let mut feature = plate.surface.get(platform).expect("feature").clone();
+        feature.elevation_m = 3_000.0;
+        plate.surface.set(platform, feature);
+        assign_platform_limestone(
+            data,
+            &mut registry,
+            &ProjectionCache::empty(),
+            WorldYear(1_000_000),
+        );
+        rebuild_world_from_plate_surfaces(data, &registry);
+        assert_eq!(
+            data.bedrock_type[platform.0 as usize],
+            BedrockType::Limestone,
+            "uplifted platform keeps its limestone (karst-tower pathway)"
         );
     }
 }

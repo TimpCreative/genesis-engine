@@ -43,8 +43,9 @@ pub use elevation::{
 };
 pub use erosion::{
     DEPOSITION_THRESHOLD_M, EROSION_NOISE_STREAM, FERTILITY_INCREMENT_PER_TICK,
+    LIMESTONE_MAX_DEPTH_M, LIMESTONE_MAX_ELEVATION_M, LIMESTONE_MAX_LATITUDE_DEG,
     SHALLOW_SEA_DEPTH_M, TROPICAL_LATITUDE_DEG, apply_erosion_tick, apply_land_erosion,
-    climate_fields_active, climate_modifier, ensure_deposition_buffer,
+    assign_platform_limestone, climate_fields_active, climate_modifier, ensure_deposition_buffer,
     increment_shallow_tropical_fertility, lowest_elevation_neighbor, route_eroded_mass,
 };
 pub use events::flush_events_to_branch;
@@ -82,8 +83,8 @@ pub use validation::{
     SEA_LEVEL_MAX_ABS_M, VALIDATION_SEED, VALIDATION_SUBDIVISION_LEVEL,
     VALIDATION_TARGET_YEAR_ADVECTION_DRIFT, VALIDATION_TARGET_YEAR_DEEP_PERSISTENCE,
     VALIDATION_TARGET_YEAR_FULL, VALIDATION_TARGET_YEAR_ONE_BILLION, VALIDATION_TARGET_YEAR_QUICK,
-    bedrock_types_present, check_phase1_bedrock_diversity, continental_fraction,
-    count_saturated_hexes, elevation_bounds, elevation_distribution, event_count_at_granularity,
+    bedrock_types_present, check_bedrock_diversity, continental_fraction, count_saturated_hexes,
+    elevation_bounds, elevation_distribution, event_count_at_granularity,
     format_elevation_distribution, min_ocean_basin_hex_threshold, mountain_regions_above_elevation,
     ocean_basins_below_elevation, peak_elevation_hex, plate_motion_summary, run_validation_world,
     summarize_world, validation_parameters,
@@ -686,7 +687,7 @@ mod integration_tests {
         );
 
         let bedrock = bedrock_types_present(&world.data);
-        check_phase1_bedrock_diversity(&bedrock)
+        check_bedrock_diversity(&bedrock)
             .unwrap_or_else(|e| panic!("§11 #5 bedrock: {e} (types: {bedrock:?})"));
 
         let notable_events = event_count_at_granularity(&world, Significance::Notable);

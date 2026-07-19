@@ -405,8 +405,11 @@ pub fn bedrock_types_present(data: &WorldData) -> BTreeSet<BedrockType> {
     types
 }
 
-/// Phase 1 bedrock check: four tectonic types assigned; Limestone deferred to Phase 4 (§8.4 / §11 #5).
-pub fn check_phase1_bedrock_diversity(types: &BTreeSet<BedrockType>) -> Result<(), String> {
+/// Bedrock diversity check: the four tectonic types must be assigned (§11 #5).
+/// Phase 1 deferred `Limestone` (§8.4); since Phase 2 the platform pass
+/// (`assign_platform_limestone`, Doc 08 §6.3) assigns it on warm shallow
+/// continental platforms, so its presence is expected, not an error.
+pub fn check_bedrock_diversity(types: &BTreeSet<BedrockType>) -> Result<(), String> {
     let required = [
         BedrockType::Igneous,
         BedrockType::Sedimentary,
@@ -415,17 +418,12 @@ pub fn check_phase1_bedrock_diversity(types: &BTreeSet<BedrockType>) -> Result<(
     ];
     for &bt in &required {
         if !types.contains(&bt) {
-            return Err(format!(
-                "missing bedrock type {bt:?} (Phase 1 tectonic set)"
-            ));
+            return Err(format!("missing bedrock type {bt:?} (tectonic set)"));
         }
     }
     let has_assigned = types.iter().any(|t| *t != BedrockType::Unknown);
     if !has_assigned {
         return Err("all hexes still Unknown; expected tectonic bedrock assignment".into());
-    }
-    if types.contains(&BedrockType::Limestone) {
-        return Err("Limestone present but Phase 1 does not assign it (§8.4); unexpected".into());
     }
     Ok(())
 }
@@ -600,7 +598,7 @@ mod tests {
     }
 
     #[test]
-    fn phase1_bedrock_check_accepts_four_tectonic_types() {
+    fn bedrock_check_accepts_four_tectonic_types() {
         let types = BTreeSet::from([
             BedrockType::Igneous,
             BedrockType::Sedimentary,
@@ -608,17 +606,30 @@ mod tests {
             BedrockType::OceanicCrust,
             BedrockType::Unknown,
         ]);
-        check_phase1_bedrock_diversity(&types).expect("ok");
+        check_bedrock_diversity(&types).expect("ok");
     }
 
     #[test]
-    fn phase1_bedrock_check_rejects_missing_igneous() {
+    fn bedrock_check_accepts_limestone_since_phase2() {
+        // Doc 08 §6.3: the platform pass assigns Limestone in Phase 2.
+        let types = BTreeSet::from([
+            BedrockType::Igneous,
+            BedrockType::Sedimentary,
+            BedrockType::Metamorphic,
+            BedrockType::OceanicCrust,
+            BedrockType::Limestone,
+        ]);
+        check_bedrock_diversity(&types).expect("limestone expected since Phase 2");
+    }
+
+    #[test]
+    fn bedrock_check_rejects_missing_igneous() {
         let types = BTreeSet::from([
             BedrockType::Sedimentary,
             BedrockType::Metamorphic,
             BedrockType::OceanicCrust,
         ]);
-        assert!(check_phase1_bedrock_diversity(&types).is_err());
+        assert!(check_bedrock_diversity(&types).is_err());
     }
 
     #[test]
