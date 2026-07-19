@@ -11,7 +11,8 @@ use std::sync::mpsc::{Receiver, channel};
 
 use bevy::prelude::*;
 use genesis_render::{
-    ColorsDirty, CurrentRenderMode, HexEntityCache, HexMeshIndex, WorldDirty, WorldResource,
+    ColorsDirty, CurrentRenderMode, HexEntityCache, HexMeshIndex, RiversDirty, WorldDirty,
+    WorldResource,
 };
 
 use crate::worldgen::{GenEvent, HistoryFrame, WorldGenConfig, generate_world_streaming};
@@ -51,6 +52,7 @@ pub enum Param {
     MajorPlates,
     MinorPlates,
     ContinentalFraction,
+    WaterInventory,
 }
 
 /// Marks the text node displaying a parameter's current value.
@@ -269,13 +271,14 @@ fn spawn_main_menu(mut commands: Commands) {
 // Setup screen
 // ---------------------------------------------------------------------------
 
-const SETUP_PARAMS: [(Param, &str); 6] = [
+const SETUP_PARAMS: [(Param, &str); 7] = [
     (Param::Seed, "Seed"),
     (Param::SubdivisionLevel, "Detail (subdivision level)"),
     (Param::TargetYear, "Simulate to year"),
     (Param::MajorPlates, "Major plates"),
     (Param::MinorPlates, "Minor plates"),
     (Param::ContinentalFraction, "Continental crust %"),
+    (Param::WaterInventory, "Water inventory (GEL m)"),
 ];
 
 fn spawn_setup_screen(mut commands: Commands) {
@@ -349,6 +352,7 @@ fn format_param(config: &WorldGenConfig, param: Param) -> String {
         Param::MajorPlates => config.major_plates.to_string(),
         Param::MinorPlates => config.minor_plates.to_string(),
         Param::ContinentalFraction => format!("{:.0}%", config.continental_fraction * 100.0),
+        Param::WaterInventory => format!("{:.0}", config.water_inventory_gel_m),
     }
 }
 
@@ -398,6 +402,10 @@ fn adjust_param(config: &mut WorldGenConfig, param: Param, direction: i8) {
             // ~29% present-day Earth.
             let steps = (config.continental_fraction * 50.0).round() + f32::from(direction);
             config.continental_fraction = (steps / 50.0).clamp(0.05, 0.60);
+        }
+        Param::WaterInventory => {
+            let next = config.water_inventory_gel_m + f32::from(direction) * 250.0;
+            config.water_inventory_gel_m = next.clamp(500.0, 6000.0);
         }
     }
 }
@@ -677,10 +685,12 @@ fn apply_current_frame(
     timeline: &WorldTimeline,
     world_res: &mut WorldResource,
     colors_dirty: &mut ColorsDirty,
+    rivers_dirty: &mut RiversDirty,
 ) {
     if let Some(frame) = timeline.frames.get(timeline.current) {
         frame.apply(&mut world_res.0.data);
         colors_dirty.0 = true;
+        rivers_dirty.dirty = true;
     }
 }
 
@@ -691,6 +701,7 @@ fn timeline_keyboard(
     timeline: Option<ResMut<WorldTimeline>>,
     world_res: Option<ResMut<WorldResource>>,
     mut colors_dirty: ResMut<ColorsDirty>,
+    mut rivers_dirty: ResMut<RiversDirty>,
 ) {
     let (Some(mut timeline), Some(mut world_res)) = (timeline, world_res) else {
         return;
@@ -726,7 +737,12 @@ fn timeline_keyboard(
     if step_now {
         timeline.playing = false;
         step_timeline(&mut timeline, held);
-        apply_current_frame(&timeline, &mut world_res, &mut colors_dirty);
+        apply_current_frame(
+            &timeline,
+            &mut world_res,
+            &mut colors_dirty,
+            &mut rivers_dirty,
+        );
     }
 }
 
@@ -741,6 +757,7 @@ fn timeline_playback(
     timeline: Option<ResMut<WorldTimeline>>,
     world_res: Option<ResMut<WorldResource>>,
     mut colors_dirty: ResMut<ColorsDirty>,
+    mut rivers_dirty: ResMut<RiversDirty>,
 ) {
     let (Some(mut timeline), Some(mut world_res)) = (timeline, world_res) else {
         return;
@@ -761,7 +778,12 @@ fn timeline_playback(
         return;
     }
     timeline.current += 1;
-    apply_current_frame(&timeline, &mut world_res, &mut colors_dirty);
+    apply_current_frame(
+        &timeline,
+        &mut world_res,
+        &mut colors_dirty,
+        &mut rivers_dirty,
+    );
 }
 
 #[allow(clippy::type_complexity)]
@@ -824,10 +846,12 @@ fn handle_actions(
     timeline: Option<ResMut<WorldTimeline>>,
     world_res: Option<ResMut<WorldResource>>,
     colors_dirty: Option<ResMut<ColorsDirty>>,
+    rivers_dirty: Option<ResMut<RiversDirty>>,
 ) {
     let mut timeline = timeline;
     let mut world_res = world_res;
     let mut colors_dirty = colors_dirty;
+    let mut rivers_dirty = rivers_dirty;
 
     for (interaction, action) in &interactions {
         if *interaction != Interaction::Pressed {
@@ -850,12 +874,15 @@ fn handle_actions(
                 adjust_param(&mut config.0, param, direction);
             }
             UiAction::TimelineStep(step) => {
-                if let (Some(timeline), Some(world_res), Some(colors_dirty)) =
-                    (timeline.as_mut(), world_res.as_mut(), colors_dirty.as_mut())
-                {
+                if let (Some(timeline), Some(world_res), Some(colors_dirty), Some(rivers_dirty)) = (
+                    timeline.as_mut(),
+                    world_res.as_mut(),
+                    colors_dirty.as_mut(),
+                    rivers_dirty.as_mut(),
+                ) {
                     timeline.playing = false;
                     step_timeline(timeline, step);
-                    apply_current_frame(timeline, world_res, colors_dirty);
+                    apply_current_frame(timeline, world_res, colors_dirty, rivers_dirty);
                 }
             }
             UiAction::PlayPause => {

@@ -5,7 +5,8 @@
 //! Also computes per-hex seasonal range (`temperature_range`).
 
 use genesis_core::HexId;
-use genesis_core::data::WorldData;
+use genesis_core::data::{HydroFlags, WorldData};
+use rayon::prelude::*;
 
 use crate::state::{AtmosphericComposition, ClimateState, GlaciationState};
 
@@ -28,7 +29,6 @@ pub const GLACIATION_MAX_COOLING_C: f32 = 10.0;
 ///
 /// Writes `WorldData.temperature_mean` and `WorldData.temperature_range`.
 pub fn compute_temperature_field(data: &mut WorldData, climate: &ClimateState) {
-    let n = data.cell_count() as usize;
     let grid = &data.grid;
 
     let axial_tilt_rad = f64::from(data.parameters.core.planet.axial_tilt_degrees).to_radians();
@@ -41,29 +41,40 @@ pub fn compute_temperature_field(data: &mut WorldData, climate: &ClimateState) {
     // formation-era and orbital-free tests are unaffected.
     let t_orbital = crate::glaciation::orbital_temperature_modifier_c(climate);
 
-    for i in 0..n {
-        let hex = HexId(i as u32);
-        let (lat_rad, _lon_rad) = grid.center_lat_lon(hex);
-        let elevation_m = data.elevation_mean[i];
-        let distance_km = data.distance_to_ocean_km[i];
+    {
+        let elev = &data.elevation_mean[..];
+        let dist = &data.distance_to_ocean_km[..];
+        let ice = &data.ice_mask[..];
+        let flags = &data.hydro_flags[..];
+        let sea_level = data.sea_level_m;
+        let mean = &mut data.temperature_mean[..];
+        let range = &mut data.temperature_range[..];
 
-        let t_baseline = baseline_temperature_c(lat_rad, p, solar_luminosity, composition);
-        let t_elevation = elevation_adjustment_c(elevation_m, data.sea_level_m);
-        let t_continentality = continentality_adjustment_c(distance_km);
-        let t_ocean_current = 0.0_f32;
-        let t_glaciation = glaciation_adjustment_c(lat_rad, glaciation);
-        let t_greenhouse = composition.greenhouse_forcing;
+        mean.par_iter_mut()
+            .zip(range.par_iter_mut())
+            .enumerate()
+            .for_each(|(i, (t_out, range_out))| {
+                let hex = HexId(i as u32);
+                let (lat_rad, _lon_rad) = grid.center_lat_lon(hex);
 
-        let temperature = t_baseline
-            + t_elevation
-            + t_continentality
-            + t_ocean_current
-            + t_glaciation
-            + t_greenhouse
-            + t_orbital;
+                let t_baseline = baseline_temperature_c(lat_rad, p, solar_luminosity, composition);
+                let t_elevation = elevation_adjustment_c(elev[i], sea_level);
+                let t_continentality = continentality_adjustment_c(dist[i]);
+                let t_ocean_current = 0.0_f32;
+                let t_glaciation = glaciation_adjustment_c(lat_rad, glaciation);
+                let t_ice_albedo = ice_albedo_cooling_c(ice[i], flags[i]);
+                let t_greenhouse = composition.greenhouse_forcing;
 
-        data.temperature_mean[i] = temperature;
-        data.temperature_range[i] = seasonal_range_c(lat_rad, distance_km, axial_tilt_rad);
+                *t_out = t_baseline
+                    + t_elevation
+                    + t_continentality
+                    + t_ocean_current
+                    + t_glaciation
+                    + t_ice_albedo
+                    + t_greenhouse
+                    + t_orbital;
+                *range_out = seasonal_range_c(lat_rad, dist[i], axial_tilt_rad);
+            });
     }
 
     let coastal_adjustments = crate::ocean_currents::compute_coastal_temperature_adjustments(data);
@@ -111,16 +122,23 @@ fn continentality_adjustment_c(distance_km: f32) -> f32 {
 }
 
 fn glaciation_adjustment_c(lat_rad: f64, glaciation: GlaciationState) -> f32 {
-    let intensity = match glaciation {
-        GlaciationState::Interglacial => 0.0,
-        GlaciationState::Transition => 0.3,
-        GlaciationState::Glacial => 1.0,
-    };
+    let intensity = crate::glaciation::glaciation_state_intensity(glaciation);
     if intensity == 0.0 {
         return 0.0;
     }
     let lat_factor = (1.0 - lat_rad.cos().abs()) as f32;
     -GLACIATION_MAX_COOLING_C * intensity * lat_factor
+}
+
+/// Local ice-albedo cooling from prev-tick ice / sea-ice (Doc 08 §2.3).
+fn ice_albedo_cooling_c(ice_mask: bool, flags: HydroFlags) -> f32 {
+    if ice_mask {
+        -2.0
+    } else if flags.contains(HydroFlags::SEA_ICE) {
+        -1.0
+    } else {
+        0.0
+    }
 }
 
 fn seasonal_range_c(lat_rad: f64, distance_km: f32, axial_tilt_rad: f64) -> f32 {

@@ -6,6 +6,7 @@ mod polygon;
 mod projection;
 mod render_mode;
 mod resources;
+mod rivers;
 mod systems;
 
 pub use color::{
@@ -16,5 +17,6 @@ pub use plugin::GenesisRenderPlugin;
 pub use polygon::hex_polygon_vertices;
 pub use render_mode::{CurrentRenderMode, RenderMode};
 pub use resources::{
-    CameraState, ColorsDirty, HexChunk, HexEntityCache, HexMeshIndex, WorldDirty, WorldResource,
+    CameraState, ColorsDirty, HexChunk, HexEntityCache, HexMeshIndex, RiversDirty, WorldDirty,
+    WorldResource,
 };

@@ -8,7 +8,9 @@ use std::collections::BTreeMap;
 
 use genesis_core::HexId;
 use genesis_core::data::{BasinId, WorldData};
+use rayon::prelude::*;
 
+use crate::hydro_mask::is_hydro_ocean;
 use crate::state::{OceanBasin, OceanBasins};
 
 /// Minimum basin size (hex count) to compute gyre currents.
@@ -27,12 +29,9 @@ pub const EQUATORIAL_BIAS_LAT_HALFWIDTH_RAD: f64 = std::f64::consts::FRAC_PI_6;
 ///
 /// Writes `WorldData.ocean_current_vec` (east, north components in m/s).
 pub fn compute_ocean_currents(data: &mut WorldData, basins: &OceanBasins) {
-    let n = data.cell_count() as usize;
     let grid = &data.grid;
 
-    for i in 0..n {
-        data.ocean_current_vec[i] = [0.0, 0.0];
-    }
+    data.ocean_current_vec.fill([0.0, 0.0]);
 
     let mut basin_by_id: BTreeMap<BasinId, &OceanBasin> = BTreeMap::new();
     for basin in &basins.basins {
@@ -41,51 +40,56 @@ pub fn compute_ocean_currents(data: &mut WorldData, basins: &OceanBasins) {
         }
     }
 
-    for i in 0..n {
-        let hex = HexId(i as u32);
-        let basin_id = data.basin_id[i];
+    let basin_ids = &data.basin_id[..];
+    data.ocean_current_vec
+        .par_iter_mut()
+        .enumerate()
+        .for_each(|(i, out)| {
+            let basin_id = basin_ids[i];
+            if basin_id == BasinId::NONE {
+                *out = [0.0, 0.0];
+                return;
+            }
 
-        if basin_id == BasinId::NONE {
-            continue;
-        }
+            let hex = HexId(i as u32);
+            let (lat_rad, _lon_rad) = grid.center_lat_lon(hex);
 
-        let (lat_rad, _lon_rad) = grid.center_lat_lon(hex);
+            let gyre_vec = if let Some(basin) = basin_by_id.get(&basin_id) {
+                gyre_tangent_at_hex(grid, hex, basin, lat_rad)
+            } else {
+                [0.0, 0.0]
+            };
 
-        let gyre_vec = if let Some(basin) = basin_by_id.get(&basin_id) {
-            gyre_tangent_at_hex(grid, hex, basin, lat_rad)
-        } else {
-            [0.0, 0.0]
-        };
+            let bias_vec = equatorial_bias_vector(lat_rad);
 
-        let bias_vec = equatorial_bias_vector(lat_rad);
-
-        let combined_east = gyre_vec[0] + bias_vec[0];
-        let combined_north = gyre_vec[1] + bias_vec[1];
-        let magnitude = (combined_east * combined_east + combined_north * combined_north).sqrt();
-        let scale = if magnitude > MAX_CURRENT_SPEED_M_S {
-            MAX_CURRENT_SPEED_M_S / magnitude
-        } else {
-            1.0
-        };
-        data.ocean_current_vec[i] = [combined_east * scale, combined_north * scale];
-        let [e, n] = data.ocean_current_vec[i];
-        let speed = (e * e + n * n).sqrt();
-        if speed > MAX_CURRENT_SPEED_M_S {
-            let fix = MAX_CURRENT_SPEED_M_S / speed;
-            data.ocean_current_vec[i] = [e * fix, n * fix];
-        }
-    }
+            let combined_east = gyre_vec[0] + bias_vec[0];
+            let combined_north = gyre_vec[1] + bias_vec[1];
+            let magnitude =
+                (combined_east * combined_east + combined_north * combined_north).sqrt();
+            let scale = if magnitude > MAX_CURRENT_SPEED_M_S {
+                MAX_CURRENT_SPEED_M_S / magnitude
+            } else {
+                1.0
+            };
+            let mut vec = [combined_east * scale, combined_north * scale];
+            let [e, north] = vec;
+            let speed = (e * e + north * north).sqrt();
+            if speed > MAX_CURRENT_SPEED_M_S {
+                let fix = MAX_CURRENT_SPEED_M_S / speed;
+                vec = [e * fix, north * fix];
+            }
+            *out = vec;
+        });
 }
 
 /// Computes coastal temperature adjustments from ocean currents (Doc 07 §4.5, §8.3).
 pub fn compute_coastal_temperature_adjustments(data: &WorldData) -> BTreeMap<HexId, f32> {
     let n = data.cell_count() as usize;
     let grid = &data.grid;
-    let sea_level = data.sea_level_m;
     let mut adjustments = BTreeMap::new();
 
     for i in 0..n {
-        if data.elevation_mean[i] < sea_level {
+        if is_hydro_ocean(data, i) {
             continue;
         }
 
@@ -97,7 +101,7 @@ pub fn compute_coastal_temperature_adjustments(data: &WorldData) -> BTreeMap<Hex
 
         for &neighbor in neighbors {
             let n_idx = neighbor.0 as usize;
-            if data.elevation_mean[n_idx] >= sea_level {
+            if !is_hydro_ocean(data, n_idx) {
                 continue;
             }
 
@@ -113,7 +117,7 @@ pub fn compute_coastal_temperature_adjustments(data: &WorldData) -> BTreeMap<Hex
             };
             let upstream_idx = upstream_hex.0 as usize;
 
-            if data.elevation_mean[upstream_idx] >= sea_level {
+            if !is_hydro_ocean(data, upstream_idx) {
                 continue;
             }
 

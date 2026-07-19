@@ -58,6 +58,9 @@ pub fn orbital_temperature_modifier_c(state: &ClimateState) -> f32 {
 /// Steps the glaciation state machine and emits Pivotal events on entering or
 /// leaving a full glacial. Hysteresis: the modifier must swing past opposite
 /// thresholds to reverse, and each swing moves one stage per tick.
+///
+/// Prev-tick `ice_mask` areal fraction cools the effective orbital modifier
+/// (Doc 08 §17.2 ice-albedo feedback into the state machine).
 pub fn advance_glaciation(
     data: &WorldData,
     state: &mut ClimateState,
@@ -65,7 +68,9 @@ pub fn advance_glaciation(
     event_granularity: Significance,
     branch_id: BranchId,
 ) {
-    let modifier = orbital_temperature_modifier_c(state);
+    let ice_frac = ice_mask_land_fraction(data);
+    // Extra cooling when ice is already extensive (albedo feedback).
+    let modifier = orbital_temperature_modifier_c(state) - 1.5 * ice_frac;
 
     let next = match state.glaciation {
         GlaciationState::Interglacial if modifier < GLACIAL_ONSET_THRESHOLD_C => {
@@ -128,6 +133,44 @@ pub fn advance_glaciation(
             event_granularity,
         );
     }
+}
+
+/// Discrete glaciation-state intensity (Doc 07 §12 / Doc 08 §9.1).
+pub fn glaciation_state_intensity(glaciation: GlaciationState) -> f32 {
+    match glaciation {
+        GlaciationState::Interglacial => 0.0,
+        GlaciationState::Transition => 0.3,
+        GlaciationState::Glacial => 1.0,
+    }
+}
+
+/// Land fraction currently under ice sheets / alpine ice (prev-tick mask).
+pub fn ice_mask_land_fraction(data: &WorldData) -> f32 {
+    let n = data.cell_count() as usize;
+    let mut land = 0_usize;
+    let mut iced = 0_usize;
+    for i in 0..n {
+        if data.elevation_mean[i] < data.sea_level_m {
+            continue;
+        }
+        land += 1;
+        if data.ice_mask[i] {
+            iced += 1;
+        }
+    }
+    if land == 0 {
+        0.0
+    } else {
+        iced as f32 / land as f32
+    }
+}
+
+/// Writes [`WorldData::glaciation_intensity`] from orbital state blended with
+/// prev-tick ice extent (Doc 08 §17.2).
+pub fn write_glaciation_intensity(data: &mut WorldData, state: &ClimateState) {
+    let base = glaciation_state_intensity(state.glaciation);
+    let ice_frac = ice_mask_land_fraction(data);
+    data.glaciation_intensity = (base * 0.7 + ice_frac * 0.3).clamp(0.0, 1.0);
 }
 
 #[cfg(test)]

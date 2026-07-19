@@ -9,6 +9,7 @@ use std::collections::VecDeque;
 use genesis_core::HexId;
 use genesis_core::data::{BasinId, WorldData};
 
+use crate::hydro_mask::is_hydro_ocean;
 use crate::state::{OceanBasin, OceanBasins};
 
 /// Ocean hex count at or above this in a non-main component is a marginal sea, not inland.
@@ -157,7 +158,7 @@ pub fn identify_ocean_basins(data: &mut WorldData) -> OceanBasins {
 }
 
 fn is_ocean(data: &WorldData, idx: usize) -> bool {
-    data.elevation_mean[idx] < data.sea_level_m
+    is_hydro_ocean(data, idx)
 }
 
 fn is_permeable_land(data: &WorldData, idx: usize, sill_height: f32) -> bool {
@@ -186,10 +187,9 @@ fn flood_connectivity_component(
 
     while let Some(i) = queue.pop_front() {
         let hex = HexId(i as u32);
-        let mut neighbors: Vec<HexId> = grid.neighbors(hex).to_vec();
-        neighbors.sort_by_key(|h| h.0);
+        let neighbors = grid.neighbors_sorted(hex);
 
-        for neighbor in neighbors {
+        for &neighbor in neighbors {
             let j = neighbor.0 as usize;
             if j >= n || connectivity[j] != u32::MAX {
                 continue;
@@ -226,10 +226,9 @@ fn flood_world_ocean_reachability(
 
     while let Some(i) = queue.pop_front() {
         let hex = HexId(i as u32);
-        let mut neighbors: Vec<HexId> = grid.neighbors(hex).to_vec();
-        neighbors.sort_by_key(|h| h.0);
+        let neighbors = grid.neighbors_sorted(hex);
 
-        for neighbor in neighbors {
+        for &neighbor in neighbors {
             let j = neighbor.0 as usize;
             if j >= n || reachable[j] || !can_traverse(data, j, sill_height) {
                 continue;
@@ -271,9 +270,8 @@ fn fully_enclosed_ocean_component(
 ) -> bool {
     for &idx in ocean_indices {
         let hex = HexId(idx as u32);
-        let mut neighbors: Vec<HexId> = grid.neighbors(hex).to_vec();
-        neighbors.sort_by_key(|h| h.0);
-        for neighbor in neighbors {
+        let neighbors = grid.neighbors_sorted(hex);
+        for &neighbor in neighbors {
             let j = neighbor.0 as usize;
             if is_ocean(data, j) && connectivity[j] != component_id {
                 return false;

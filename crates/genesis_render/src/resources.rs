@@ -69,3 +69,19 @@ impl HexMeshIndex {
         self.chunks.clear();
     }
 }
+
+/// When true (or LOD band changes), river overlay meshes are rebuilt.
+#[derive(Resource)]
+pub struct RiversDirty {
+    pub dirty: bool,
+    pub last_lod: Option<genesis_core::data::RiverClass>,
+}
+
+impl Default for RiversDirty {
+    fn default() -> Self {
+        Self {
+            dirty: true,
+            last_lod: None,
+        }
+    }
+}

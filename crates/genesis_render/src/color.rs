@@ -1,12 +1,11 @@
-//! Hex coloring for elevation and climate visualization.
+//! Hex coloring for elevation, climate, water, and soil visualization.
 //!
-//! Elevation colors follow Doc 06 §15 step 10, rendered DRY: surface water is
-//! out of the game until Doc 08, so the ramp below the sea-level datum shows
-//! basin-floor terrain (grays/tans), never blue water. Temperature and
-//! precipitation ramps support multi-mode rendering (Doc 07 fields).
+//! Elevation colors follow Doc 06 §15 / Doc 08 §12.1: wet hexes
+//! (`water_level_m > elevation_mean`) render depth-tinted water; ice is white;
+//! salt flats pale; land uses the terrain ramp.
 
 use bevy::prelude::*;
-use genesis_core::data::WorldData;
+use genesis_core::data::{HydroFlags, SoilClass, WATER_NONE, WaterBodyId, WorldData};
 
 use crate::render_mode::RenderMode;
 
@@ -212,23 +211,111 @@ pub fn precipitation_to_color(precip_mm: f32) -> Color {
     Color::srgb(r, g, b)
 }
 
-/// Resolves fill color for a hex under the active render mode. Every mode
-/// colors every hex — no water masking (surface water returns with Doc 08).
+/// Resolves fill color for a hex under the active render mode.
 pub fn hex_color_for_mode(
     data: &WorldData,
     hex_idx: usize,
     mode: RenderMode,
     is_pentagon: bool,
 ) -> Color {
-    let elev = data.elevation_mean[hex_idx];
-    let sea_level = data.sea_level_m;
+    let _elev = data.elevation_mean[hex_idx];
+    let _sea_level = data.sea_level_m;
 
     match mode {
-        RenderMode::Elevation => hex_fill_color(elev, sea_level, is_pentagon),
+        RenderMode::Elevation => water_aware_elevation_color(data, hex_idx, is_pentagon),
         RenderMode::Temperature => temperature_to_color(data.temperature_mean[hex_idx]),
         RenderMode::Precipitation => precipitation_to_color(data.precipitation[hex_idx]),
         RenderMode::ClimateRegime => regime_to_color(data.climate_regime[hex_idx]),
+        RenderMode::Soil => soil_to_color(data, hex_idx),
     }
+}
+
+/// Doc 08 §12.1 water-aware terrain ramp.
+fn water_aware_elevation_color(data: &WorldData, hex_idx: usize, is_pentagon: bool) -> Color {
+    let elev = data.elevation_mean[hex_idx];
+    let sea_level = data.sea_level_m;
+    let flags = data
+        .hydro_flags
+        .get(hex_idx)
+        .copied()
+        .unwrap_or(HydroFlags::NONE);
+    if data.ice_mask.get(hex_idx).copied().unwrap_or(false) || flags.contains(HydroFlags::SEA_ICE) {
+        return Color::srgb(0.92, 0.95, 0.98);
+    }
+    if data.salt_accumulated.get(hex_idx).copied().unwrap_or(0.0) > 0.0
+        && data
+            .water_body_id
+            .get(hex_idx)
+            .copied()
+            .unwrap_or(WaterBodyId::NONE)
+            == WaterBodyId::NONE
+    {
+        return Color::srgb(0.85, 0.82, 0.72);
+    }
+    let water_level = data
+        .water_level_m
+        .get(hex_idx)
+        .copied()
+        .unwrap_or(WATER_NONE);
+    if water_level > elev && water_level.is_finite() {
+        let depth = (water_level - elev).max(0.0);
+        let mut c = water_depth_color(depth);
+        if flags.contains(HydroFlags::FJORD) {
+            // Narrow deep-incursion cue: darker teal.
+            c = Color::srgb(0.08, 0.22, 0.42);
+        } else if flags.contains(HydroFlags::ESTUARY) {
+            c = Color::srgb(0.25, 0.55, 0.55);
+        }
+        return c;
+    }
+    if flags.contains(HydroFlags::OASIS) {
+        return Color::srgb(0.25, 0.55, 0.35);
+    }
+    hex_fill_color(elev, sea_level, is_pentagon)
+}
+
+fn water_depth_color(depth_m: f32) -> Color {
+    // Shelf → abyss blue ramp.
+    if depth_m < 50.0 {
+        Color::srgb(0.35, 0.65, 0.75)
+    } else if depth_m < 200.0 {
+        Color::srgb(0.20, 0.45, 0.70)
+    } else if depth_m < 2000.0 {
+        Color::srgb(0.10, 0.28, 0.55)
+    } else {
+        Color::srgb(0.05, 0.12, 0.30)
+    }
+}
+
+fn soil_to_color(data: &WorldData, hex_idx: usize) -> Color {
+    if data
+        .water_body_id
+        .get(hex_idx)
+        .copied()
+        .unwrap_or(WaterBodyId::NONE)
+        != WaterBodyId::NONE
+    {
+        return water_depth_color(10.0);
+    }
+    let fertility = data.soil_fertility.get(hex_idx).copied().unwrap_or(0.0);
+    let class = data
+        .soil_class
+        .get(hex_idx)
+        .copied()
+        .unwrap_or(SoilClass::None);
+    let (r, g, b) = match class {
+        SoilClass::None => (0.35, 0.35, 0.35),
+        SoilClass::Sandy => (0.75, 0.70, 0.45),
+        SoilClass::Loamy => (0.40, 0.55, 0.25),
+        SoilClass::Alluvial => (0.35, 0.50, 0.20),
+        SoilClass::Loess => (0.70, 0.60, 0.35),
+        SoilClass::Volcanic => (0.35, 0.25, 0.25),
+        SoilClass::Calcareous => (0.70, 0.72, 0.55),
+        SoilClass::Peaty => (0.30, 0.35, 0.22),
+        SoilClass::Saline => (0.85, 0.82, 0.70),
+    };
+    // Tint toward fertility (greener when fertile).
+    Color::srgb(r * (1.0 - 0.3 * fertility), g * (0.7 + 0.3 * fertility), b)
 }
 
 /// Distinct fill per Köppen-like regime (Doc 07 §10), loosely following the

@@ -2,7 +2,9 @@
 
 use genesis_core::HexId;
 use genesis_core::data::WorldData;
+use rayon::prelude::*;
 
+use crate::hydro_mask::{is_hydro_ocean, is_large_inland_water};
 use crate::state::{ClimateState, GlaciationState};
 
 /// Earth-like global precipitation baseline at sea level under average conditions.
@@ -20,6 +22,9 @@ pub const MONSOON_DISTANCE_KM: f32 = 200.0;
 /// Maximum monsoon bonus in mm/year (added to base precipitation in eligible regions).
 pub const MONSOON_MAX_BONUS_MM: f32 = 1200.0;
 
+/// Maximum lake-effect precipitation bonus (Doc 08 §2.3).
+pub const LAKE_EFFECT_MAX_MM: f32 = 400.0;
+
 /// Glaciation reduces global precipitation by this factor at maximum intensity.
 pub const GLACIATION_PRECIPITATION_REDUCTION: f32 = 0.2;
 
@@ -28,29 +33,36 @@ pub const GLACIATION_PRECIPITATION_REDUCTION: f32 = 0.2;
 /// Writes `WorldData.precipitation` (mm per year).
 pub fn compute_precipitation_field(data: &mut WorldData, climate: &ClimateState) {
     let n = data.cell_count() as usize;
-    let grid = &data.grid;
     let glaciation_factor = match climate.glaciation {
         GlaciationState::Glacial => 1.0 - GLACIATION_PRECIPITATION_REDUCTION,
         GlaciationState::Transition => 1.0 - GLACIATION_PRECIPITATION_REDUCTION * 0.5,
         GlaciationState::Interglacial => 1.0,
     };
 
-    for i in 0..n {
-        let hex = HexId(i as u32);
-        let (lat_rad, _lon_rad) = grid.center_lat_lon(hex);
-        let temp_c = data.temperature_mean[i];
-        let distance_km = data.distance_to_ocean_km[i];
+    // Neighbor gathers in orographic/coastal helpers are read-only; each index
+    // produces only its own precipitation value (gather-parallel contract).
+    let values: Vec<f32> = {
+        let data = &*data;
+        (0..n)
+            .into_par_iter()
+            .map(|i| {
+                let hex = HexId(i as u32);
+                let (lat_rad, _lon_rad) = data.grid.center_lat_lon(hex);
+                let temp_c = data.temperature_mean[i];
+                let distance_km = data.distance_to_ocean_km[i];
 
-        let base = base_precipitation_mm(temp_c, lat_rad);
-        let orographic = orographic_precipitation_mm(data, hex, i);
-        let monsoon = monsoon_modifier_mm(lat_rad, distance_km);
-        let coastal = coastal_current_modifier_mm(data, hex, i);
+                let base = base_precipitation_mm(temp_c, lat_rad);
+                let orographic = orographic_precipitation_mm(data, hex, i);
+                let monsoon = monsoon_modifier_mm(lat_rad, distance_km);
+                let coastal = coastal_current_modifier_mm(data, hex, i);
+                let lake = lake_effect_precipitation_mm(data, hex, i);
 
-        let combined = (base + orographic + monsoon + coastal) * glaciation_factor;
-        let clamped = combined.clamp(PRECIPITATION_MIN_MM, PRECIPITATION_MAX_MM);
-
-        data.precipitation[i] = clamped;
-    }
+                let combined = (base + orographic + monsoon + coastal + lake) * glaciation_factor;
+                combined.clamp(PRECIPITATION_MIN_MM, PRECIPITATION_MAX_MM)
+            })
+            .collect()
+    };
+    data.precipitation.copy_from_slice(&values);
 }
 
 /// Base precipitation from temperature and latitude (circulation cell bands).
@@ -190,10 +202,7 @@ fn monsoon_modifier_mm(lat_rad: f64, distance_to_ocean_km: f32) -> f32 {
 
 /// Coastal precipitation modifier from adjacent ocean currents.
 fn coastal_current_modifier_mm(data: &WorldData, hex: HexId, idx: usize) -> f32 {
-    let sea_level = data.sea_level_m;
-    let elevation = data.elevation_mean[idx];
-
-    if elevation < sea_level {
+    if is_hydro_ocean(data, idx) {
         return 0.0;
     }
     if !data.distance_to_ocean_km[idx].is_finite() || data.distance_to_ocean_km[idx] > 100.0 {
@@ -206,7 +215,7 @@ fn coastal_current_modifier_mm(data: &WorldData, hex: HexId, idx: usize) -> f32 
 
     for &neighbor in data.grid.neighbors(hex) {
         let n_idx = neighbor.0 as usize;
-        if data.elevation_mean[n_idx] >= sea_level {
+        if !is_hydro_ocean(data, n_idx) {
             continue;
         }
         let neighbor_temp = data.temperature_mean[n_idx];
@@ -227,6 +236,26 @@ fn coastal_current_modifier_mm(data: &WorldData, hex: HexId, idx: usize) -> f32 
 
     let avg_anomaly = anomaly_sum / neighbor_count as f32;
     (avg_anomaly * 30.0).clamp(-300.0, 400.0)
+}
+
+/// Lake-effect precipitation near large inland water bodies (Doc 08 §2.3).
+fn lake_effect_precipitation_mm(data: &WorldData, hex: HexId, idx: usize) -> f32 {
+    if is_hydro_ocean(data, idx) || is_large_inland_water(data, idx) {
+        return 0.0;
+    }
+    let mut adjacent_lakes = 0_u32;
+    for &neighbor in data.grid.neighbors(hex) {
+        if is_large_inland_water(data, neighbor.0 as usize) {
+            adjacent_lakes += 1;
+        }
+    }
+    if adjacent_lakes == 0 {
+        return 0.0;
+    }
+    // Mild downwind preference: wind blowing from lake toward hex boosts more.
+    let wind_dir = data.wind_direction_rad[idx];
+    let wind_boost = 0.5 + 0.5 * wind_dir.cos().abs();
+    LAKE_EFFECT_MAX_MM * (adjacent_lakes as f32 / 6.0).min(1.0) * wind_boost
 }
 
 #[cfg(test)]

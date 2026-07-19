@@ -7,7 +7,7 @@
 
 use genesis_climate::{ClimateLayer, ClimateState, flush_events_to_branch as flush_climate_events};
 use genesis_core::World;
-use genesis_core::data::{ClimateRegimePlaceholder, WorldData};
+use genesis_core::data::{ClimateRegimePlaceholder, Direction, HydroFlags, SoilClass, WorldData};
 use genesis_core::lifecycle::{GenerationError, advance_with_coordinator_observed};
 use genesis_core::parameters::{WorldParameters, WorldSeed};
 use genesis_core::time::{TickCoordinator, WorldYear};
@@ -21,8 +21,8 @@ use genesis_tectonics::{
 /// Memory budget for buffered history frames (Doc 05 §A).
 pub const FRAME_MEMORY_BUDGET_BYTES: usize = 256 << 20;
 
-/// Approximate bytes per cell in a [`HistoryFrame`]: 3 × f32 fields + regime.
-const FRAME_BYTES_PER_CELL: usize = 13;
+/// Approximate bytes per cell in a [`HistoryFrame`] (Doc 08 §12.4 + polish fields).
+const FRAME_BYTES_PER_CELL: usize = 36;
 
 /// Frame cap for a grid size, from the memory budget.
 pub fn max_history_frames(cell_count: u32) -> usize {
@@ -40,6 +40,8 @@ pub struct WorldGenConfig {
     /// Target continental crust coverage at formation (fraction of the
     /// sphere's area; ~0.29 is present-day Earth, 0.22 a Hadean world).
     pub continental_fraction: f32,
+    /// Planetary water inventory in global-equivalent-layer meters (Doc 08 §3.1).
+    pub water_inventory_gel_m: f32,
 }
 
 impl Default for WorldGenConfig {
@@ -53,6 +55,7 @@ impl Default for WorldGenConfig {
             major_plates: defaults.core.geology.initial_major_plate_count,
             minor_plates: defaults.core.geology.initial_minor_plate_count,
             continental_fraction: defaults.core.geology.initial_continental_fraction,
+            water_inventory_gel_m: defaults.core.hydrology.water_inventory_gel_m,
         }
     }
 }
@@ -66,6 +69,7 @@ impl WorldGenConfig {
         params.core.geology.initial_major_plate_count = self.major_plates;
         params.core.geology.initial_minor_plate_count = self.minor_plates;
         params.core.geology.initial_continental_fraction = self.continental_fraction;
+        params.core.hydrology.water_inventory_gel_m = self.water_inventory_gel_m;
         params
     }
 }
@@ -79,6 +83,15 @@ pub struct HistoryFrame {
     pub temperature_mean: Vec<f32>,
     pub precipitation: Vec<f32>,
     pub climate_regime: Vec<ClimateRegimePlaceholder>,
+    /// Doc 08 §12.4 water fields.
+    pub water_level_m: Vec<f32>,
+    pub river_discharge_m3_yr: Vec<f32>,
+    pub hydro_flags: Vec<HydroFlags>,
+    pub ice_mask: Vec<bool>,
+    pub soil_fertility: Vec<f32>,
+    pub soil_class: Vec<SoilClass>,
+    pub flow_direction: Vec<Option<Direction>>,
+    pub salt_accumulated: Vec<f32>,
 }
 
 impl HistoryFrame {
@@ -90,6 +103,14 @@ impl HistoryFrame {
             temperature_mean: data.temperature_mean.clone(),
             precipitation: data.precipitation.clone(),
             climate_regime: data.climate_regime.clone(),
+            water_level_m: data.water_level_m.clone(),
+            river_discharge_m3_yr: data.river_discharge_m3_yr.clone(),
+            hydro_flags: data.hydro_flags.clone(),
+            ice_mask: data.ice_mask.clone(),
+            soil_fertility: data.soil_fertility.clone(),
+            soil_class: data.soil_class.clone(),
+            flow_direction: data.flow_direction.clone(),
+            salt_accumulated: data.salt_accumulated.clone(),
         }
     }
 
@@ -103,6 +124,18 @@ impl HistoryFrame {
             .copy_from_slice(&self.temperature_mean);
         data.precipitation.copy_from_slice(&self.precipitation);
         data.climate_regime.copy_from_slice(&self.climate_regime);
+        if data.water_level_m.len() == self.water_level_m.len() {
+            data.water_level_m.copy_from_slice(&self.water_level_m);
+            data.river_discharge_m3_yr
+                .copy_from_slice(&self.river_discharge_m3_yr);
+            data.hydro_flags.copy_from_slice(&self.hydro_flags);
+            data.ice_mask.copy_from_slice(&self.ice_mask);
+            data.soil_fertility.copy_from_slice(&self.soil_fertility);
+            data.soil_class.copy_from_slice(&self.soil_class);
+            data.flow_direction.copy_from_slice(&self.flow_direction);
+            data.salt_accumulated
+                .copy_from_slice(&self.salt_accumulated);
+        }
     }
 }
 
@@ -347,6 +380,57 @@ mod tests {
         assert_ne!(
             world_a.data.elevation_mean, world_b.data.elevation_mean,
             "different seed, different world"
+        );
+    }
+
+    /// Doc 08 §15 gate #10 sketch + calibration smoke: same seed → identical
+    /// sea level / wet count at a short horizon (full 200M/1B/4B are manual).
+    #[test]
+    #[ignore = "full-stack determinism; run with --ignored"]
+    fn hydrology_determinism_short_horizon() {
+        let config = WorldGenConfig {
+            seed: 42,
+            subdivision_level: 5,
+            target_year: 5_000_000,
+            water_inventory_gel_m: 1000.0,
+            ..WorldGenConfig::default()
+        };
+        let (a, _) = generate_world_with_history(&config, |_, _| {}).expect("a");
+        let (b, _) = generate_world_with_history(&config, |_, _| {}).expect("b");
+        assert_eq!(a.data.sea_level_m, b.data.sea_level_m);
+        assert_eq!(a.data.water_level_m, b.data.water_level_m);
+        assert_eq!(a.data.river_discharge_m3_yr, b.data.river_discharge_m3_yr);
+        assert_eq!(a.data.ice_mask, b.data.ice_mask);
+        assert_eq!(a.data.glaciation_intensity, b.data.glaciation_intensity);
+    }
+
+    /// Doc 08 §15 gate #2 / P2-34 inventory sweep on a live stack.
+    #[test]
+    #[ignore = "3-inventory land-fraction sweep; run with --ignored"]
+    fn inventory_sweep_land_fraction_monotonic() {
+        let mut land_fracs = Vec::new();
+        for gel in [500.0_f32, 1000.0, 3000.0] {
+            let config = WorldGenConfig {
+                seed: 42,
+                subdivision_level: 5,
+                target_year: 10_000_000,
+                water_inventory_gel_m: gel,
+                ..WorldGenConfig::default()
+            };
+            let (world, _) = generate_world_with_history(&config, |_, _| {}).expect("gen");
+            let n = world.data.cell_count() as f32;
+            let land = world
+                .data
+                .water_body_id
+                .iter()
+                .filter(|&&id| id == genesis_core::data::WaterBodyId::NONE)
+                .count() as f32
+                / n;
+            land_fracs.push(land);
+        }
+        assert!(
+            land_fracs[0] + 0.02 >= land_fracs[1] && land_fracs[1] + 0.02 >= land_fracs[2],
+            "more water → less or equal land: {land_fracs:?}"
         );
     }
 }

@@ -5,7 +5,7 @@ use bevy::prelude::Resource;
 /// Determines how each hex is colored.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub enum RenderMode {
-    /// Color by elevation (current behavior).
+    /// Color by elevation (water-aware when hydrology has written levels).
     #[default]
     Elevation,
     /// Color by mean annual temperature.
@@ -14,6 +14,8 @@ pub enum RenderMode {
     Precipitation,
     /// Color by Köppen-like climate regime (Doc 07 §10).
     ClimateRegime,
+    /// Color by soil fertility / class (Doc 08 §12).
+    Soil,
 }
 
 impl RenderMode {
@@ -22,7 +24,8 @@ impl RenderMode {
             Self::Elevation => Self::Temperature,
             Self::Temperature => Self::Precipitation,
             Self::Precipitation => Self::ClimateRegime,
-            Self::ClimateRegime => Self::Elevation,
+            Self::ClimateRegime => Self::Soil,
+            Self::Soil => Self::Elevation,
         }
     }
 
@@ -32,6 +35,7 @@ impl RenderMode {
             Self::Temperature => "Temperature",
             Self::Precipitation => "Precipitation",
             Self::ClimateRegime => "Climate Regime",
+            Self::Soil => "Soil",
         }
     }
 }

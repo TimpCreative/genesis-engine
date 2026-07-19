@@ -9,6 +9,7 @@ pub mod circulation;
 pub mod events;
 pub mod formation;
 pub mod glaciation;
+pub mod hydro_mask;
 pub mod layer;
 pub mod ocean_basins;
 pub mod ocean_currents;
@@ -22,7 +23,8 @@ pub mod wind;
 pub use circulation::compute_circulation;
 pub use glaciation::{
     MILANKOVITCH_AMPLITUDE_C, advance_glaciation, advance_orbital_phase,
-    orbital_temperature_modifier_c,
+    glaciation_state_intensity, ice_mask_land_fraction, orbital_temperature_modifier_c,
+    write_glaciation_intensity,
 };
 pub use ocean_basins::identify_ocean_basins;
 pub use ocean_currents::compute_ocean_currents;

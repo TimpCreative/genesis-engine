@@ -6,6 +6,7 @@
 
 use genesis_core::HexId;
 use genesis_core::data::WorldData;
+use rayon::prelude::*;
 
 use crate::state::{CirculationCell, CirculationCells};
 
@@ -23,37 +24,38 @@ pub const WIND_ELEVATION_DAMPING_FULL_M: f32 = 6000.0;
 /// Per Doc 07 §7. Writes `WorldData.wind_direction_rad` and `WorldData.wind_speed_m_s`.
 /// Writes `(0, 0)` if circulation cells aren't initialized yet.
 pub fn compute_wind_field(data: &mut WorldData, cells: &CirculationCells) {
-    let n = data.cell_count() as usize;
-
     if cells.cells.is_empty() {
-        for i in 0..n {
-            data.wind_direction_rad[i] = 0.0;
-            data.wind_speed_m_s[i] = 0.0;
-        }
+        data.wind_direction_rad.fill(0.0);
+        data.wind_speed_m_s.fill(0.0);
         return;
     }
 
     let grid = &data.grid;
+    let elevation = &data.elevation_mean[..];
+    let wind_dir = &mut data.wind_direction_rad[..];
+    let wind_speed = &mut data.wind_speed_m_s[..];
 
-    for i in 0..n {
-        let hex = HexId(i as u32);
-        let (lat_rad, _lon_rad) = grid.center_lat_lon(hex);
+    wind_dir
+        .par_iter_mut()
+        .zip(wind_speed.par_iter_mut())
+        .enumerate()
+        .for_each(|(i, (direction_out, speed_out))| {
+            let hex = HexId(i as u32);
+            let (lat_rad, _lon_rad) = grid.center_lat_lon(hex);
 
-        let Some(cell) = cells.cell_for_latitude(lat_rad) else {
-            data.wind_direction_rad[i] = 0.0;
-            data.wind_speed_m_s[i] = 0.0;
-            continue;
-        };
+            let Some(cell) = cells.cell_for_latitude(lat_rad) else {
+                *direction_out = 0.0;
+                *speed_out = 0.0;
+                return;
+            };
 
-        let direction = cell_wind_direction_at_latitude(cell, lat_rad);
-        let mut speed = WIND_BASE_SPEED_M_S * cell.intensity;
+            let direction = cell_wind_direction_at_latitude(cell, lat_rad);
+            let mut speed = WIND_BASE_SPEED_M_S * cell.intensity;
+            speed *= elevation_damping_factor(elevation[i]);
 
-        let elevation = data.elevation_mean[i];
-        speed *= elevation_damping_factor(elevation);
-
-        data.wind_direction_rad[i] = direction;
-        data.wind_speed_m_s[i] = speed;
-    }
+            *direction_out = direction;
+            *speed_out = speed;
+        });
 }
 
 /// Returns the prevailing surface wind direction in radians (0=N, π/2=E,

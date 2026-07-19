@@ -177,6 +177,9 @@ impl SimulationLayer for ClimateLayer {
                     world.parameters.core.climate.event_granularity,
                     BranchId::ROOT,
                 );
+                crate::glaciation::write_glaciation_intensity(world, &state);
+            } else {
+                world.glaciation_intensity = 0.0;
             }
 
             let temp_start = std::time::Instant::now();
