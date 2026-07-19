@@ -5,6 +5,7 @@
 //! precipitation, regimes, atmospheric composition, variability,
 //! and climate-tectonics feedback.
 
+pub mod carbon;
 pub mod circulation;
 pub mod events;
 pub mod formation;
@@ -20,6 +21,7 @@ pub mod state;
 pub mod temperature;
 pub mod wind;
 
+pub use carbon::update_carbon_cycle;
 pub use circulation::compute_circulation;
 pub use glaciation::{
     MILANKOVITCH_AMPLITUDE_C, advance_glaciation, advance_orbital_phase,

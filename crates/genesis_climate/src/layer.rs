@@ -178,6 +178,10 @@ impl SimulationLayer for ClimateLayer {
                     BranchId::ROOT,
                 );
                 crate::glaciation::write_glaciation_intensity(world, &state);
+                // Post-Formation CO2 cycle (Doc 07 §11): outgassing vs
+                // weathering moves co2_ppm and rederives greenhouse forcing
+                // before the temperature field reads it.
+                crate::carbon::update_carbon_cycle(world, &mut state, interval_years.max(0.0));
             } else {
                 world.glaciation_intensity = 0.0;
             }
