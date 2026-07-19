@@ -53,17 +53,22 @@ pub fn emit_boundary_events(
     event_granularity: Significance,
     branch_id: BranchId,
 ) {
-    let snapshot = state.elevation_at_tick_start.clone();
-    let registry = &state.registry;
+    // Temporarily take the snapshot so we can collect while later mutating
+    // `state` for event emission — buffer is restored for the next tick.
+    let snapshot = std::mem::take(&mut state.elevation_at_tick_start);
+    let previous_edge_class = std::mem::take(&mut state.previous_edge_class);
 
     let mut pending = Vec::new();
     pending.extend(collect_mountain_events(
-        data, registry, boundaries, &snapshot,
+        data,
+        &state.registry,
+        boundaries,
+        &snapshot,
     ));
     pending.extend(collect_ocean_basin_events(data, boundaries, &snapshot));
     pending.extend(collect_boundary_transitions(
         boundaries,
-        &state.previous_edge_class,
+        &previous_edge_class,
     ));
 
     for pending_event in pending {
@@ -83,6 +88,7 @@ pub fn emit_boundary_events(
     }
 
     state.previous_edge_class = current_edge_classes(boundaries);
+    state.elevation_at_tick_start = snapshot;
 }
 
 fn collect_mountain_events(
@@ -297,9 +303,8 @@ fn plate_pair_for_hex(
         return None;
     }
     let grid = &data.grid;
-    let mut neighbors: Vec<HexId> = grid.neighbors(hex).to_vec();
-    neighbors.sort_by_key(|h| h.0);
-    for neighbor_hex in neighbors {
+    let neighbors = grid.neighbors_sorted(hex);
+    for &neighbor_hex in neighbors {
         let j = neighbor_hex.0 as usize;
         let other = data.plate_id.get(j)?;
         if *other != PlateId::NONE && *other != *owner {

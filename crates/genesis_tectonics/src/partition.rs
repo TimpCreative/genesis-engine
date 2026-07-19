@@ -21,7 +21,7 @@ use genesis_core::data::{BedrockType, WorldData};
 use genesis_core::{HexId, PlateId};
 use glam::DVec3;
 
-use crate::frames::{birth_hex_to_current_world, current_world_to_birth_hex};
+use crate::frames::current_world_to_birth_hex;
 use crate::motion::{effective_position_direction, surface_velocity_m_per_year};
 use crate::plate::PlateRegistry;
 use crate::plate_surface::SurfaceFeature;
@@ -190,8 +190,10 @@ pub fn repartition_hexes(data: &mut WorldData, registry: &mut PlateRegistry) -> 
 
     {
         let grid = &data.grid;
+        let mut forward_hints: Vec<(PlateId, HexId, HexId)> = Vec::new();
         for (plate_id, plate) in registry.iter_sorted() {
             let plate_age_year = plate.age_year.value();
+            let q = crate::frames::plate_forward_quat(plate);
             for (birth_idx, slot) in plate.surface.features.iter().enumerate() {
                 let Some(feature) = slot else {
                     continue;
@@ -201,7 +203,10 @@ pub fn repartition_hexes(data: &mut WorldData, registry: &mut PlateRegistry) -> 
                 // any other oceanic crust.
                 let continental = feature.continental_crust;
                 let birth_hex = HexId(birth_idx as u32);
-                let current_world = birth_hex_to_current_world(grid, birth_hex, plate);
+                let hint = plate.forward_hint(birth_hex).unwrap_or(birth_hex);
+                let current_world =
+                    crate::frames::birth_hex_to_current_world_with_quat(grid, birth_hex, q, hint);
+                forward_hints.push((plate_id, birth_hex, current_world));
                 let w = current_world.0 as usize;
                 if w >= n {
                     continue;
@@ -274,6 +279,11 @@ pub fn repartition_hexes(data: &mut WorldData, registry: &mut PlateRegistry) -> 
                         // overridden and re-emerges if the plates separate.
                     }
                 }
+            }
+        }
+        for (plate_id, birth_hex, world_hex) in forward_hints {
+            if let Some(plate) = registry.plates_mut().get_mut(&plate_id) {
+                plate.set_forward_hint(birth_hex, world_hex);
             }
         }
     }
@@ -359,9 +369,8 @@ pub fn repartition_hexes(data: &mut WorldData, registry: &mut PlateRegistry) -> 
         let grid = &data.grid;
         while let Some(i) = queue.pop_front() {
             let hex = HexId(i as u32);
-            let mut neighbors: Vec<HexId> = grid.neighbors(hex).to_vec();
-            neighbors.sort_by_key(|h| h.0);
-            for neighbor in neighbors {
+            let neighbors = grid.neighbors_sorted(hex);
+            for &neighbor in neighbors {
                 let j = neighbor.0 as usize;
                 if j >= n || owner[j] != PlateId::NONE {
                     continue;
@@ -403,9 +412,8 @@ pub fn repartition_hexes(data: &mut WorldData, registry: &mut PlateRegistry) -> 
         let mut claim_plates: Vec<PlateId> = Vec::new();
         {
             let grid = &data.grid;
-            let mut neighbors: Vec<HexId> = grid.neighbors(hex).to_vec();
-            neighbors.sort_by_key(|h| h.0);
-            for neighbor in neighbors {
+            let neighbors = grid.neighbors_sorted(hex);
+            for &neighbor in neighbors {
                 let k = neighbor.0 as usize;
                 if k >= n {
                     continue;
@@ -485,6 +493,7 @@ mod tests {
             accumulated_rotation_rad: rotation,
             last_nonempty_year: WorldYear::FORMATION,
             surface: PlateSurface::new(10_000),
+            forward_world_hint: Vec::new(),
         }
     }
 

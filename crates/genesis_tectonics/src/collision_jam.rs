@@ -122,6 +122,7 @@ mod tests {
             accumulated_rotation_rad: 0.0,
             last_nonempty_year: genesis_core::time::WorldYear::FORMATION,
             surface: PlateSurface::new(cell_count),
+            forward_world_hint: Vec::new(),
         }
     }
 

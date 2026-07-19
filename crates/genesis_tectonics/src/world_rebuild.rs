@@ -23,51 +23,60 @@ pub fn rebuild_world_from_plate_surfaces_cached(
         return;
     }
 
-    let n = data.cell_count() as usize;
+    // Per-index writes into world field arrays (gather-parallel; see
+    // genesis_core::parallel). Ownership / registry / cache are read-only.
+    use rayon::prelude::*;
+    let plate_ids = &data.plate_id[..];
+    let elev = &mut data.elevation_mean[..];
+    let relief = &mut data.elevation_relief[..];
+    let bedrock = &mut data.bedrock_type[..];
+    let fertility = &mut data.fertility[..];
+    let crust = &mut data.continental_crust[..];
 
-    for i in 0..n {
-        let hex = HexId(i as u32);
-        let plate_id = data.plate_id[i];
-        let Some(plate) = registry.get(plate_id) else {
-            data.elevation_mean[i] = 0.0;
-            data.elevation_relief[i] = 0.0;
-            data.bedrock_type[i] = BedrockType::Unknown;
-            data.fertility[i] = 0.0;
-            continue;
-        };
-        // Resolve EVERY owned hex through the cache's birth mapping — claimed
-        // hexes via their forward display-winner, adopted quantization holes via
-        // their inverse-rotated birth hex (both recorded by repartition). A hole
-        // therefore shows the plate material actually under it, not a
-        // neighbor-average that dips below sea level next to any coast/ridge and
-        // riddles continents with phantom "lakes". If the birth slot is empty,
-        // fall back to the plate-type baseline (continental +800 m, above the
-        // risen sea) rather than a sub-sea mean. Display-only: no feature is
-        // ever minted here.
-        let feature = cache
-            .birth_hex_for(data, hex)
-            .and_then(|birth| plate.surface.get(birth));
-        match feature {
-            Some(feature) => {
-                data.elevation_mean[i] = feature.elevation_m;
-                data.elevation_relief[i] = feature.relief_m;
-                data.bedrock_type[i] = feature.bedrock;
-                data.fertility[i] = feature.fertility;
-            }
-            None => {
-                let (elev, bedrock) = type_baseline(plate.plate_type);
-                data.elevation_mean[i] = elev;
-                data.elevation_relief[i] = 0.0;
-                data.bedrock_type[i] = bedrock;
-                data.fertility[i] = 0.0;
-            }
-        }
-    }
+    elev.par_iter_mut()
+        .zip(relief.par_iter_mut())
+        .zip(bedrock.par_iter_mut())
+        .zip(fertility.par_iter_mut())
+        .zip(crust.par_iter_mut())
+        .enumerate()
+        .for_each(
+            |(i, ((((elev_i, relief_i), bedrock_i), fertility_i), crust_i))| {
+                let plate_id = plate_ids[i];
+                let Some(plate) = registry.get(plate_id) else {
+                    *elev_i = 0.0;
+                    *relief_i = 0.0;
+                    *bedrock_i = BedrockType::Unknown;
+                    *fertility_i = 0.0;
+                    *crust_i = false;
+                    return;
+                };
+                let feature = cache
+                    .birth_hex_at_covered(i)
+                    .and_then(|birth| plate.surface.get(birth));
+                match feature {
+                    Some(feature) => {
+                        *elev_i = feature.elevation_m;
+                        *relief_i = feature.relief_m;
+                        *bedrock_i = feature.bedrock;
+                        *fertility_i = feature.fertility;
+                        *crust_i = feature.continental_crust;
+                    }
+                    None => {
+                        let (e, b) = type_baseline(plate.plate_type);
+                        *elev_i = e;
+                        *relief_i = 0.0;
+                        *bedrock_i = b;
+                        *fertility_i = 0.0;
+                        *crust_i = plate.plate_type == crate::plate::PlateType::Continental;
+                    }
+                }
+            },
+        );
 }
 
-/// Rebuilds `elevation_mean`, `elevation_relief`, `bedrock_type`, and `fertility` from
-/// each plate's surface storage. Called after motion/repartition and again after surface
-/// mutations each Geological tick.
+/// Rebuilds `elevation_mean`, `elevation_relief`, `bedrock_type`, `fertility`,
+/// and `continental_crust` from each plate's surface storage. Called after
+/// motion/repartition and again after surface mutations each Geological tick.
 pub fn rebuild_world_from_plate_surfaces(data: &mut WorldData, registry: &PlateRegistry) {
     let n = data.cell_count() as usize;
     let grid = &data.grid;
@@ -81,12 +90,15 @@ pub fn rebuild_world_from_plate_surfaces(data: &mut WorldData, registry: &PlateR
                 data.elevation_relief[i] = 0.0;
                 data.bedrock_type[i] = bedrock;
                 data.fertility[i] = 0.0;
+                data.continental_crust[i] =
+                    plate.plate_type == crate::plate::PlateType::Continental;
             }
             None => {
                 data.elevation_mean[i] = 0.0;
                 data.elevation_relief[i] = 0.0;
                 data.bedrock_type[i] = BedrockType::Unknown;
                 data.fertility[i] = 0.0;
+                data.continental_crust[i] = false;
             }
         }
     }
@@ -126,6 +138,7 @@ pub fn rebuild_world_from_plate_surfaces(data: &mut WorldData, registry: &PlateR
                 data.elevation_relief[w] = feature.relief_m;
                 data.bedrock_type[w] = feature.bedrock;
                 data.fertility[w] = feature.fertility;
+                data.continental_crust[w] = feature.continental_crust;
                 written_priority[w] = Some(candidate_priority);
             }
         }
@@ -155,6 +168,7 @@ pub fn rebuild_world_from_plate_surfaces(data: &mut WorldData, registry: &PlateR
         data.elevation_relief[i] = feature.relief_m;
         data.bedrock_type[i] = feature.bedrock;
         data.fertility[i] = feature.fertility;
+        data.continental_crust[i] = feature.continental_crust;
     }
 }
 
@@ -184,6 +198,7 @@ mod tests {
             accumulated_rotation_rad: 0.0,
             last_nonempty_year: WorldYear::FORMATION,
             surface: PlateSurface::new(cell_count),
+            forward_world_hint: Vec::new(),
         });
         registry.insert(Plate {
             id: PlateId(1),
@@ -197,6 +212,7 @@ mod tests {
             accumulated_rotation_rad: 0.0,
             last_nonempty_year: WorldYear::FORMATION,
             surface: PlateSurface::new(cell_count),
+            forward_world_hint: Vec::new(),
         });
         registry
     }

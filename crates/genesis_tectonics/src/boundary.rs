@@ -102,13 +102,12 @@ pub fn detect_and_classify_boundaries(
             None => continue,
         };
 
-        let mut neighbor_ids: Vec<HexId> = grid.neighbors(hex).to_vec();
-        neighbor_ids.sort_by_key(|id| id.0);
+        let neighbor_ids = grid.neighbors_sorted(hex);
 
         let mut edges = Vec::new();
         let mut contacts = BTreeSet::new();
 
-        for neighbor_hex in neighbor_ids {
+        for &neighbor_hex in neighbor_ids {
             let neighbor_idx = neighbor_hex.0 as usize;
             if neighbor_idx >= n {
                 continue;
@@ -369,6 +368,7 @@ mod tests {
             accumulated_rotation_rad: 0.0,
             last_nonempty_year: WorldYear::FORMATION,
             surface: crate::plate_surface::PlateSurface::new(10_000),
+            forward_world_hint: Vec::new(),
         }
     }
 

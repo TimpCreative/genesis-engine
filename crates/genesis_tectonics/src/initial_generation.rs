@@ -55,6 +55,7 @@ pub fn generate_initial_plates_data(data: &mut WorldData, rng: &WorldRng) -> Pla
             accumulated_rotation_rad: 0.0,
             last_nonempty_year: WorldYear::FORMATION,
             surface: PlateSurface::new(total_cells),
+            forward_world_hint: Vec::new(),
         };
         registry.insert(plate);
     }
@@ -97,6 +98,7 @@ pub fn generate_initial_plates_data(data: &mut WorldData, rng: &WorldRng) -> Pla
             accumulated_rotation_rad: 0.0,
             last_nonempty_year: WorldYear::FORMATION,
             surface: PlateSurface::new(total_cells),
+            forward_world_hint: Vec::new(),
         };
         registry.insert(plate);
     }

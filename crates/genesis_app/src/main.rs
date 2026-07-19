@@ -1124,4 +1124,73 @@ mod tests {
             world_combined.data.plate_id
         );
     }
+
+    /// Subdiv-8 full-history wall-clock milestones (production pipeline).
+    ///
+    /// Baseline / after-stack bookend for the sim performance optimization plan.
+    /// Recording only — no wall-time assert.
+    ///
+    /// ```text
+    /// cargo test -p genesis_app --release -- --ignored --nocapture \
+    ///   --exact tests::perf_full_history_subdiv8_milestones
+    /// ```
+    #[test]
+    #[ignore = "manual subdiv-8 perf milestones (1B / 2.5B / 4.5B); multi-hour class"]
+    fn perf_full_history_subdiv8_milestones() {
+        use std::io::Write;
+
+        const SUBDIV: u8 = 8;
+        const MILESTONES: [i64; 3] = [1_000_000_000, 2_500_000_000, 4_500_000_000];
+
+        let rayon_threads =
+            std::env::var("RAYON_NUM_THREADS").unwrap_or_else(|_| "unset(default)".to_string());
+        let cores = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
+
+        let mut err = std::io::stderr().lock();
+        let _ = writeln!(err, "=== perf_full_history_subdiv8_milestones ===");
+        let _ = writeln!(err, "os={}", std::env::consts::OS);
+        let _ = writeln!(err, "arch={}", std::env::consts::ARCH);
+        let _ = writeln!(err, "available_parallelism={cores}");
+        let _ = writeln!(err, "RAYON_NUM_THREADS={rayon_threads}");
+        let _ = writeln!(err, "subdivision_level={SUBDIV}");
+        let _ = writeln!(err, "seed=42");
+        let _ = err.flush();
+
+        for &target_year in &MILESTONES {
+            let mut params = WorldParameters::default();
+            params.core.seed = WorldSeed::from_integer(42);
+            params.core.grid.subdivision_level = SUBDIV;
+
+            let mut world = create_world(params).expect("world");
+            let mut tectonics = TectonicsState::new();
+            let mut climate = ClimateState::new();
+            let mut hydrology = HydrologyState::new();
+
+            let start = std::time::Instant::now();
+            generate_full_history(
+                &mut world,
+                &mut tectonics,
+                &mut climate,
+                &mut hydrology,
+                WorldYear(target_year),
+                |_| {},
+            )
+            .expect("history");
+            let elapsed = start.elapsed();
+
+            let _ = writeln!(
+                err,
+                "milestone target_year={target_year} elapsed_secs={:.3} hex_count={} plate_count={}",
+                elapsed.as_secs_f64(),
+                world.data.grid.cell_count(),
+                tectonics.registry.count(),
+            );
+            let _ = err.flush();
+        }
+
+        let _ = writeln!(err, "=== end perf_full_history_subdiv8_milestones ===");
+        let _ = err.flush();
+    }
 }

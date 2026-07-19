@@ -8,6 +8,7 @@ publish.workspace = true
 genesis_core = { path = "../genesis_core" }
 glam = "0.30"
 rand = { version = "0.8", features = ["small_rng"] }
+rayon = { workspace = true }
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 tracing = "0.1"

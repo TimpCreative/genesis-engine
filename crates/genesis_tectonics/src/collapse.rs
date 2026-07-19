@@ -98,9 +98,8 @@ pub fn apply_gravitational_collapse(
     for i in 0..n {
         let hex = HexId(i as u32);
         let elev_i = data.elevation_mean[i];
-        let mut neighbors: Vec<HexId> = data.grid.neighbors(hex).to_vec();
-        neighbors.sort_by_key(|h| h.0);
-        for neighbor in neighbors {
+        let neighbors = data.grid.neighbors_sorted(hex);
+        for &neighbor in neighbors {
             let j = neighbor.0 as usize;
             if j <= i || j >= n {
                 continue; // each edge once
@@ -194,6 +193,7 @@ mod tests {
             accumulated_rotation_rad: 0.0,
             last_nonempty_year: WorldYear::FORMATION,
             surface: PlateSurface::new(n),
+            forward_world_hint: Vec::new(),
         };
         let feature = |elevation_m: f32| SurfaceFeature {
             elevation_m,

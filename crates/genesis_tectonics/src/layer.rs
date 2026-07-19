@@ -115,21 +115,27 @@ impl SimulationLayer for TectonicsLayer {
                 // last tick's tallies (a 1-tick lag is geologically nothing),
                 // then lock colliding continental pairs into a shared drift
                 // (§4.6), then advance rotation with the relaxed rates.
-                let geology = world.parameters.core.geology.clone();
-                let planet = world.parameters.core.planet.clone();
+                {
+                    let geology = &world.parameters.core.geology;
+                    let planet = &world.parameters.core.planet;
+                    let TectonicsState {
+                        registry,
+                        boundary_tallies,
+                        ..
+                    } = &mut *state;
+                    crate::motion::relax_motion_rates_toward_targets(
+                        registry,
+                        boundary_tallies,
+                        geology,
+                        planet,
+                        interval_years,
+                    );
+                }
                 let TectonicsState {
                     registry,
-                    boundary_tallies,
                     colliding_pairs,
                     ..
                 } = &mut *state;
-                crate::motion::relax_motion_rates_toward_targets(
-                    registry,
-                    boundary_tallies,
-                    &geology,
-                    &planet,
-                    interval_years,
-                );
                 crate::collision_jam::apply_collision_jam(
                     world,
                     registry,
@@ -165,7 +171,7 @@ impl SimulationLayer for TectonicsLayer {
                 );
             });
 
-            state.elevation_at_tick_start = world.elevation_mean.clone();
+            capture_elevation_at_tick_start(&mut state, &world.elevation_mean);
 
             // One water-realm labeling per tick, shared by the elevation pass
             // (trench enclosure) and the accretion pass (trapped basins):
@@ -299,7 +305,7 @@ impl SimulationLayer for TectonicsLayer {
                 });
             }
 
-            let boundaries = state.boundaries.clone();
+            let boundaries = std::mem::take(&mut state.boundaries);
             timed_tick_step("boundary_events", tick_year, || {
                 emit_boundary_events(
                     world,
@@ -326,6 +332,7 @@ impl SimulationLayer for TectonicsLayer {
                 );
                 rebuild_world_from_plate_surfaces_cached(world, &s.registry, &s.projection);
             });
+            state.boundaries = boundaries;
 
             timed_tick_step("clamp", tick_year, || {
                 clamp_terrain(world);
@@ -341,6 +348,17 @@ impl SimulationLayer for TectonicsLayer {
         }
 
         Vec::new()
+    }
+}
+
+/// Copy `elevation_mean` into the reusable tick-start buffer (no per-tick alloc).
+fn capture_elevation_at_tick_start(state: &mut TectonicsState, elevation_mean: &[f32]) {
+    if state.elevation_at_tick_start.len() != elevation_mean.len() {
+        state.elevation_at_tick_start = elevation_mean.to_vec();
+    } else {
+        state
+            .elevation_at_tick_start
+            .copy_from_slice(elevation_mean);
     }
 }
 

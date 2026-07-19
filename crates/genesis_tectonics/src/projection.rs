@@ -60,6 +60,13 @@ impl ProjectionCache {
         }
     }
 
+    /// Birth hex at `world_idx` when the cache is known to cover current ownership
+    /// (caller must have checked [`Self::covers`]).
+    pub(crate) fn birth_hex_at_covered(&self, world_idx: usize) -> Option<HexId> {
+        let birth = *self.birth_hex.get(world_idx)?;
+        (birth != NO_HEX).then_some(HexId(birth))
+    }
+
     /// Birth hex of the plate material at `world_hex`, or `None` when the
     /// cache has no entry or ownership has changed since it was built.
     pub fn birth_hex_for(&self, data: &WorldData, world_hex: HexId) -> Option<HexId> {
@@ -68,8 +75,7 @@ impl ProjectionCache {
         if data.plate_id.get(idx) != Some(&cached_owner) {
             return None;
         }
-        let birth = *self.birth_hex.get(idx)?;
-        (birth != NO_HEX).then_some(HexId(birth))
+        self.birth_hex_at_covered(idx)
     }
 
     /// Whether a stored feature projected onto `world_hex` (valid only when

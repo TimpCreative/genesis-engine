@@ -22,6 +22,7 @@ publish = false
 
 [workspace.dependencies]
 bevy = "0.18.1"
+rayon = "1.10"
 
 # Bevy dev-profile recommendations (https://bevy.org/learn/quick-start/getting-started/setup/)
 [profile.dev]
@@ -29,3 +30,8 @@ opt-level = 1
 
 [profile.dev.package."*"]
 opt-level = 3
+
+# Compute-bound release: LTO + single codegen unit typically yields 10–20%.
+[profile.release]
+lto = "fat"
+codegen-units = 1

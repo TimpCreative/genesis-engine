@@ -6,6 +6,7 @@ pub mod events;
 pub mod grid;
 pub mod interventions;
 pub mod lifecycle;
+pub mod parallel;
 pub mod parameters;
 pub mod persistence;
 pub mod rng;
@@ -30,13 +31,13 @@ pub use lifecycle::{
     CreateWorldError, GenerationError, GenerationProgress, ProgressCallback,
     advance_with_coordinator, create_world, generate_full_history,
 };
+pub use parallel::{par_for_each_hex, par_for_each_hex_mut};
 pub use parameters::{
     BiologyParameters, CivilizationParameters, ClimateInitialParameters, CoreParameters,
     GeologyParameters, GridParameters, HydrologyParameters, ModEntry, ModManifest,
     ParameterExtensions, ParameterValidationError, ParameterValue, ParameterValueData,
     PlanetParameters, TimeParameters, WorldParameters, WorldSeed,
 };
-pub use persistence::{LoadedWorld, PersistenceError, SaveMeta, load_world, save_world};
 pub use rng::{WorldRng, compute_effective_seed};
 pub use time::{Era, SimulationLayer, TickCoordinator, WorldTime};
 pub use world::World;

@@ -319,6 +319,7 @@ fn apply_split(
         accumulated_rotation_rad: 0.0,
         last_nonempty_year: tick_year,
         surface: child_surface,
+        forward_world_hint: Vec::new(),
     };
     registry.insert(child);
 
@@ -472,9 +473,8 @@ fn adjacent_plate_pairs(data: &WorldData) -> Vec<(PlateId, PlateId)> {
         if owner == PlateId::NONE {
             continue;
         }
-        let mut neighbors: Vec<HexId> = grid.neighbors(hex).to_vec();
-        neighbors.sort_by_key(|h| h.0);
-        for neighbor_hex in neighbors {
+        let neighbors = grid.neighbors_sorted(hex);
+        for &neighbor_hex in neighbors {
             let j = neighbor_hex.0 as usize;
             if j >= n {
                 continue;
@@ -525,9 +525,8 @@ fn apply_split_boundary_subsidence(
         }
         let hex = HexId(i as u32);
         let owner = data.plate_id[i];
-        let mut neighbors: Vec<HexId> = grid.neighbors(hex).to_vec();
-        neighbors.sort_by_key(|h| h.0);
-        for neighbor_hex in neighbors {
+        let neighbors = grid.neighbors_sorted(hex);
+        for &neighbor_hex in neighbors {
             let j = neighbor_hex.0 as usize;
             if j >= n {
                 continue;

@@ -204,9 +204,8 @@ where
         while let Some(i) = queue.pop_front() {
             size += 1;
             let hex = HexId(i as u32);
-            let mut neighbors: Vec<HexId> = grid.neighbors(hex).to_vec();
-            neighbors.sort_by_key(|h| h.0);
-            for neighbor_hex in neighbors {
+            let neighbors = grid.neighbors_sorted(hex);
+            for &neighbor_hex in neighbors {
                 let j = neighbor_hex.0 as usize;
                 if j >= n || visited[j] || !predicate(j) {
                     continue;

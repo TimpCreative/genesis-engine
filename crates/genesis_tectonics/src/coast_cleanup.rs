@@ -161,9 +161,8 @@ fn fill_artifact_inland_lakes(
                 all_continental = false;
             }
 
-            let mut neighbors: Vec<HexId> = grid.neighbors(hex).to_vec();
-            neighbors.sort_by_key(|h| h.0);
-            for neighbor in neighbors {
+            let neighbors = grid.neighbors_sorted(hex);
+            for &neighbor in neighbors {
                 let j = neighbor.0 as usize;
                 if j < n && is_ocean(data, j) {
                     fully_enclosed = false;
@@ -200,9 +199,8 @@ fn ocean_surrounded_land_component(
 ) -> bool {
     for &idx in component {
         let hex = HexId(idx as u32);
-        let mut neighbors: Vec<HexId> = grid.neighbors(hex).to_vec();
-        neighbors.sort_by_key(|h| h.0);
-        for neighbor in neighbors {
+        let neighbors = grid.neighbors_sorted(hex);
+        for &neighbor in neighbors {
             let j = neighbor.0 as usize;
             if j < n && is_land(data, j) && !component.contains(&j) {
                 return false;
@@ -224,9 +222,8 @@ fn collect_land_component(data: &WorldData, start: usize, visited: &mut [bool]) 
     while let Some(i) = queue.pop_front() {
         component.push(i);
         let hex = HexId(i as u32);
-        let mut neighbors: Vec<HexId> = grid.neighbors(hex).to_vec();
-        neighbors.sort_by_key(|h| h.0);
-        for neighbor in neighbors {
+        let neighbors = grid.neighbors_sorted(hex);
+        for &neighbor in neighbors {
             let j = neighbor.0 as usize;
             if j >= n || visited[j] || !is_land(data, j) {
                 continue;
@@ -251,9 +248,8 @@ fn collect_ocean_component(data: &WorldData, start: usize, visited: &mut [bool])
     while let Some(i) = queue.pop_front() {
         component.push(i);
         let hex = HexId(i as u32);
-        let mut neighbors: Vec<HexId> = grid.neighbors(hex).to_vec();
-        neighbors.sort_by_key(|h| h.0);
-        for neighbor in neighbors {
+        let neighbors = grid.neighbors_sorted(hex);
+        for &neighbor in neighbors {
             let j = neighbor.0 as usize;
             if j >= n || visited[j] || !is_ocean(data, j) {
                 continue;
@@ -292,6 +288,7 @@ mod tests {
             accumulated_rotation_rad: 0.0,
             last_nonempty_year: WorldYear::FORMATION,
             surface: PlateSurface::new(cell_count),
+            forward_world_hint: Vec::new(),
         });
         registry
     }
@@ -448,6 +445,7 @@ mod tests {
             accumulated_rotation_rad: 0.0,
             last_nonempty_year: WorldYear::FORMATION,
             surface: PlateSurface::new(n),
+            forward_world_hint: Vec::new(),
         });
 
         for i in 0..n {
@@ -526,6 +524,7 @@ mod tests {
             accumulated_rotation_rad: 0.0,
             last_nonempty_year: WorldYear::FORMATION,
             surface: PlateSurface::new(n),
+            forward_world_hint: Vec::new(),
         });
 
         for i in 0..n {

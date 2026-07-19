@@ -20,14 +20,36 @@ fn plate_rotation_axis(plate: &Plate) -> DVec3 {
     .normalize()
 }
 
+/// Forward rotation quaternion for a plate's current accumulated rotation.
+pub fn plate_forward_quat(plate: &Plate) -> DQuat {
+    DQuat::from_axis_angle(plate_rotation_axis(plate), plate.accumulated_rotation_rad)
+}
+
+/// Inverse of [`plate_forward_quat`].
+pub fn plate_inverse_quat(plate: &Plate) -> DQuat {
+    DQuat::from_axis_angle(plate_rotation_axis(plate), -plate.accumulated_rotation_rad)
+}
+
+/// Rotates a birth-frame world hex FORWARD to its current world position using a
+/// precomputed quaternion and hill-climb `hint`.
+pub fn birth_hex_to_current_world_with_quat(
+    grid: &HexGrid,
+    birth_hex: HexId,
+    q: DQuat,
+    hint: HexId,
+) -> HexId {
+    let birth_pos = grid.cell_center_direction(birth_hex);
+    let birth_v = DVec3::new(birth_pos[0], birth_pos[1], birth_pos[2]);
+    let current_v = (q * birth_v).normalize();
+    grid.nearest_hex_direction_from(hint, [current_v.x, current_v.y, current_v.z])
+}
+
 /// Rotates a birth-frame world hex FORWARD to its current world position, returns the
 /// current world HexId. This is the primary lookup used by world_rebuild.
 pub fn birth_hex_to_current_world(grid: &HexGrid, birth_hex: HexId, plate: &Plate) -> HexId {
-    let birth_pos = grid.cell_center_direction(birth_hex);
-    let birth_v = DVec3::new(birth_pos[0], birth_pos[1], birth_pos[2]);
-    let q = DQuat::from_axis_angle(plate_rotation_axis(plate), plate.accumulated_rotation_rad);
-    let current_v = (q * birth_v).normalize();
-    grid.nearest_hex_direction_from(birth_hex, [current_v.x, current_v.y, current_v.z])
+    let q = plate_forward_quat(plate);
+    let hint = plate.forward_hint(birth_hex).unwrap_or(birth_hex);
+    birth_hex_to_current_world_with_quat(grid, birth_hex, q, hint)
 }
 
 /// Inverse-rotates a CURRENT world hex back to its birth-frame world HexId. Used at WRITE
@@ -40,7 +62,7 @@ pub fn current_world_to_birth_hex(
 ) -> HexId {
     let world_pos = grid.cell_center_direction(current_world_hex);
     let world_v = DVec3::new(world_pos[0], world_pos[1], world_pos[2]);
-    let q_inv = DQuat::from_axis_angle(plate_rotation_axis(plate), -plate.accumulated_rotation_rad);
+    let q_inv = plate_inverse_quat(plate);
     let birth_v = (q_inv * world_v).normalize();
     grid.nearest_hex_direction_from(current_world_hex, [birth_v.x, birth_v.y, birth_v.z])
 }
@@ -56,13 +78,15 @@ pub fn current_world_to_birth_hex(
 pub fn rebase_birth_frame(grid: &HexGrid, plate: &mut Plate) {
     let n = plate.surface.features.len();
     let mut rebased: Vec<Option<crate::plate_surface::SurfaceFeature>> = vec![None; n];
+    let q = plate_forward_quat(plate);
 
     for (birth_idx, slot) in plate.surface.features.iter().enumerate() {
         let Some(feature) = slot else {
             continue;
         };
         let birth_hex = HexId(birth_idx as u32);
-        let current = birth_hex_to_current_world(grid, birth_hex, plate);
+        let hint = plate.forward_hint(birth_hex).unwrap_or(birth_hex);
+        let current = birth_hex_to_current_world_with_quat(grid, birth_hex, q, hint);
         let w = current.0 as usize;
         if w >= n {
             continue;
@@ -82,6 +106,7 @@ pub fn rebase_birth_frame(grid: &HexGrid, plate: &mut Plate) {
 
     plate.surface.features = rebased;
     plate.accumulated_rotation_rad = 0.0;
+    plate.clear_forward_hints();
 }
 
 #[cfg(test)]
@@ -109,6 +134,7 @@ mod tests {
             accumulated_rotation_rad: rotation_rad,
             last_nonempty_year: WorldYear::FORMATION,
             surface: PlateSurface::new(100),
+            forward_world_hint: Vec::new(),
         }
     }
 
@@ -212,5 +238,41 @@ mod tests {
             rotated_world, world_at_zero,
             "90° rotation should change current world position for birth hex {birth_hex:?}"
         );
+    }
+
+    #[test]
+    fn hoisted_quat_matches_direct_path() {
+        let grid = genesis_core::HexGrid::new(4, EARTH_RADIUS_KM).expect("grid");
+        let plate = test_plate(0.37);
+        let q = plate_forward_quat(&plate);
+
+        for hex in grid.iter().take(200) {
+            let direct = {
+                let birth_pos = grid.cell_center_direction(hex);
+                let birth_v = DVec3::new(birth_pos[0], birth_pos[1], birth_pos[2]);
+                let current_v = (q * birth_v).normalize();
+                grid.nearest_hex_direction_from(hex, [current_v.x, current_v.y, current_v.z])
+            };
+            let hoisted = birth_hex_to_current_world_with_quat(&grid, hex, q, hex);
+            assert_eq!(direct, hoisted, "mismatch at {hex:?}");
+        }
+    }
+
+    #[test]
+    fn forward_hint_does_not_change_result() {
+        let grid = genesis_core::HexGrid::new(4, EARTH_RADIUS_KM).expect("grid");
+        let mut plate = test_plate(0.5);
+        let q = plate_forward_quat(&plate);
+
+        for hex in grid.iter().take(100) {
+            let unhinted = birth_hex_to_current_world_with_quat(&grid, hex, q, hex);
+            // Hint from a far hex must still converge to the same target.
+            let far_hint = HexId((hex.0 + 50) % grid.cell_count());
+            let hinted = birth_hex_to_current_world_with_quat(&grid, hex, q, far_hint);
+            assert_eq!(unhinted, hinted, "hint changed result at {hex:?}");
+            plate.set_forward_hint(hex, unhinted);
+            let from_plate = birth_hex_to_current_world(&grid, hex, &plate);
+            assert_eq!(unhinted, from_plate);
+        }
     }
 }

@@ -38,7 +38,10 @@ pub struct HexGrid {
     #[allow(dead_code)]
     coord_to_id: BTreeMap<Isea3hCoord, HexId>,
     centers: Vec<Vec3>,
-    neighbors: Vec<Vec<HexId>>,
+    /// Neighbors in bearing order (for [`Direction`] / `neighbor_in_direction`).
+    neighbors: neighbors::NeighborCsr,
+    /// Same adjacency, HexId-ascending (for deterministic BFS / iteration).
+    neighbors_by_id: neighbors::NeighborCsr,
 }
 
 impl HexGrid {
@@ -64,7 +67,8 @@ impl HexGrid {
         }
 
         let cell_count = coords.len() as u32;
-        let neighbor_table = neighbors::build_neighbor_table(&coords, &centers, subdivision_level)?;
+        let neighbor_tables =
+            neighbors::build_neighbor_tables(&coords, &centers, subdivision_level)?;
         let uniform_hex_area_km2 = geography::uniform_hex_area_km2(planet_radius_km, cell_count);
 
         Ok(Self {
@@ -75,7 +79,8 @@ impl HexGrid {
             coords,
             coord_to_id,
             centers,
-            neighbors: neighbor_table,
+            neighbors: neighbor_tables.by_bearing,
+            neighbors_by_id: neighbor_tables.by_id,
         })
     }
 
@@ -99,9 +104,18 @@ impl HexGrid {
         hex.0 < 12
     }
 
-    /// Returns the neighbors of a hex. Slice has 5 entries for pentagons, 6 for hexes.
+    /// Returns the neighbors of a hex in bearing order (Direction indices).
+    /// Slice has 5 entries for pentagons, 6 for hexes.
     pub fn neighbors(&self, hex: HexId) -> &[HexId] {
-        &self.neighbors[hex.0 as usize]
+        self.neighbors.slice(hex)
+    }
+
+    /// Returns the neighbors of a hex sorted by ascending [`HexId`].
+    ///
+    /// Prefer this for deterministic BFS / component labeling — zero allocation,
+    /// already sorted at grid construction.
+    pub fn neighbors_sorted(&self, hex: HexId) -> &[HexId] {
+        self.neighbors_by_id.slice(hex)
     }
 
     /// Returns the neighbor in a specific direction, if one exists at that index for this hex.
@@ -209,6 +223,11 @@ impl HexGrid {
             current_dot = best_neighbor_dot;
         }
 
+        debug_assert!(
+            false,
+            "nearest_hex_direction_from hit iteration cap (hint={}, max={}); falling back to global search",
+            hint.0, max_iterations
+        );
         self.nearest_hex_direction(direction)
     }
 
@@ -227,8 +246,10 @@ impl HexGrid {
     #[cfg(test)]
     pub(crate) fn neighbors_canonical_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
-        for neighbor_row in &self.neighbors {
-            for neighbor in neighbor_row {
+        for i in 0..self.cell_count as usize {
+            let start = self.neighbors.offsets[i] as usize;
+            let end = self.neighbors.offsets[i + 1] as usize;
+            for neighbor in &self.neighbors.flat[start..end] {
                 bytes.extend_from_slice(&neighbor.0.to_le_bytes());
             }
         }
@@ -295,6 +316,20 @@ mod tests {
             let grid = HexGrid::new(level, EARTH_RADIUS_KM).unwrap();
             let count = grid.iter().filter(|id| grid.is_pentagon(*id)).count();
             assert_eq!(count, 12, "level {level}");
+        }
+    }
+
+    #[test]
+    fn neighbors_sorted_matches_sorted_bearing_neighbors() {
+        let grid = HexGrid::new(4, EARTH_RADIUS_KM).unwrap();
+        for hex in grid.iter() {
+            let mut expected = grid.neighbors(hex).to_vec();
+            expected.sort_by_key(|h| h.0);
+            assert_eq!(
+                grid.neighbors_sorted(hex),
+                expected.as_slice(),
+                "mismatch at {hex:?}"
+            );
         }
     }
 

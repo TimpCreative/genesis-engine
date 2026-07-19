@@ -58,6 +58,32 @@ pub struct Plate {
 
     /// Plate surface features indexed by birth world [`HexId`].
     pub surface: PlateSurface,
+
+    /// Last successful forward-projection world hex per birth index
+    /// (`u32::MAX` = unknown). Used only as a hill-climb hint; never affects
+    /// convergence target. Skipped in persistence — cold loads start unhinted.
+    #[serde(skip)]
+    pub(crate) forward_world_hint: Vec<u32>,
+}
+
+impl Plate {
+    pub(crate) fn forward_hint(&self, birth_hex: HexId) -> Option<HexId> {
+        let idx = birth_hex.0 as usize;
+        let raw = *self.forward_world_hint.get(idx)?;
+        (raw != u32::MAX).then_some(HexId(raw))
+    }
+
+    pub(crate) fn set_forward_hint(&mut self, birth_hex: HexId, world_hex: HexId) {
+        let idx = birth_hex.0 as usize;
+        if idx >= self.forward_world_hint.len() {
+            self.forward_world_hint.resize(idx + 1, u32::MAX);
+        }
+        self.forward_world_hint[idx] = world_hex.0;
+    }
+
+    pub(crate) fn clear_forward_hints(&mut self) {
+        self.forward_world_hint.clear();
+    }
 }
 
 /// All plates in a world, keyed by `PlateId`.
@@ -257,6 +283,7 @@ impl Plate {
             accumulated_rotation_rad: 0.0,
             last_nonempty_year: WorldYear::FORMATION,
             surface: PlateSurface::new(cell_count),
+            forward_world_hint: Vec::new(),
         }
     }
 }

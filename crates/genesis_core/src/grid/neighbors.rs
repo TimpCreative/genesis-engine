@@ -1,7 +1,9 @@
 //! Neighbor table construction for [`super::HexGrid`].
 //!
-//! Neighbors are derived entirely from topological [`isea3h::coord_neighbors`], then
-//! sorted by bearing on the tangent plane.
+//! Neighbors are derived entirely from topological [`isea3h::coord_neighbors`].
+//! Two orderings are stored:
+//! - **bearing order** — for [`Direction`] / `neighbor_in_direction`
+//! - **HexId ascending** — for deterministic BFS / iteration (zero-alloc)
 
 use std::collections::BTreeMap;
 
@@ -10,18 +12,52 @@ use crate::grid::geography;
 use crate::grid::ids::HexId;
 use crate::grid::isea3h::{self, Isea3hCoord, Vec3};
 
-pub(crate) fn build_neighbor_table(
+/// Flat CSR neighbor storage: one contiguous neighbor list plus per-hex offsets.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct NeighborCsr {
+    pub flat: Vec<HexId>,
+    /// Length `cell_count + 1`; neighbors of hex `i` are `flat[offsets[i]..offsets[i+1]]`.
+    pub offsets: Vec<u32>,
+}
+
+impl NeighborCsr {
+    pub(crate) fn slice(&self, hex: HexId) -> &[HexId] {
+        let i = hex.0 as usize;
+        let start = self.offsets[i] as usize;
+        let end = self.offsets[i + 1] as usize;
+        &self.flat[start..end]
+    }
+}
+
+pub(crate) struct NeighborTables {
+    pub by_bearing: NeighborCsr,
+    pub by_id: NeighborCsr,
+}
+
+fn flatten_rows(rows: Vec<Vec<HexId>>) -> NeighborCsr {
+    let mut offsets = Vec::with_capacity(rows.len() + 1);
+    let mut flat = Vec::new();
+    offsets.push(0);
+    for row in rows {
+        flat.extend(row);
+        offsets.push(flat.len() as u32);
+    }
+    NeighborCsr { flat, offsets }
+}
+
+pub(crate) fn build_neighbor_tables(
     coords: &[Isea3hCoord],
     centers: &[Vec3],
     subdivision_level: u8,
-) -> Result<Vec<Vec<HexId>>, GridError> {
+) -> Result<NeighborTables, GridError> {
     let coord_to_id: BTreeMap<Isea3hCoord, HexId> = coords
         .iter()
         .enumerate()
         .map(|(i, &coord)| (coord, HexId(i as u32)))
         .collect();
 
-    let mut neighbors = Vec::with_capacity(coords.len());
+    let mut by_bearing_rows = Vec::with_capacity(coords.len());
+    let mut by_id_rows = Vec::with_capacity(coords.len());
 
     for (index, &coord) in coords.iter().enumerate() {
         let expected = expected_neighbor_count(index as u32);
@@ -48,11 +84,15 @@ pub(crate) fn build_neighbor_table(
                 found,
             });
         }
+        by_id_rows.push(list.clone());
         geography::sort_neighbors_by_bearing(centers[index], centers, &mut list);
-        neighbors.push(list);
+        by_bearing_rows.push(list);
     }
 
-    Ok(neighbors)
+    Ok(NeighborTables {
+        by_bearing: flatten_rows(by_bearing_rows),
+        by_id: flatten_rows(by_id_rows),
+    })
 }
 
 fn expected_neighbor_count(hex: u32) -> u8 {
@@ -71,7 +111,7 @@ mod tests {
                 .iter()
                 .map(|&c| isea3h::cell_center_vec3(c, level))
                 .collect();
-            build_neighbor_table(&coords, &centers, level)
+            build_neighbor_tables(&coords, &centers, level)
                 .unwrap_or_else(|e| panic!("level {level}: {e:?}"));
         }
     }

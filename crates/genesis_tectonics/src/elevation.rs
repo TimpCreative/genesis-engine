@@ -189,10 +189,14 @@ pub fn apply_boundary_elevation_with_mask(
 
 /// Clamps elevation and relief to physically plausible ranges (§5.7).
 pub fn clamp_terrain(data: &mut WorldData) {
-    for i in 0..data.elevation_mean.len() {
-        data.elevation_mean[i] = data.elevation_mean[i].clamp(MIN_ELEVATION_M, MAX_ELEVATION_M);
-        data.elevation_relief[i] = data.elevation_relief[i].clamp(0.0, MAX_RELIEF_M);
-    }
+    use rayon::prelude::*;
+    data.elevation_mean
+        .par_iter_mut()
+        .zip(data.elevation_relief.par_iter_mut())
+        .for_each(|(elev, relief)| {
+            *elev = elev.clamp(MIN_ELEVATION_M, MAX_ELEVATION_M);
+            *relief = relief.clamp(0.0, MAX_RELIEF_M);
+        });
 }
 
 /// Oceanic–oceanic: faster plate subducts; tie → lower `PlateId`.
@@ -683,9 +687,8 @@ fn spread_coastal_shelf(
     let mut visited = BTreeMap::<HexId, u32>::new();
     let mut queue = VecDeque::new();
 
-    let mut neighbors: Vec<HexId> = grid.neighbors(boundary_hex).to_vec();
-    neighbors.sort_by_key(|h| h.0);
-    for neighbor in neighbors {
+    let neighbors = grid.neighbors_sorted(boundary_hex);
+    for &neighbor in neighbors {
         let idx = neighbor.0 as usize;
         if idx >= n || data.plate_id[idx] != oceanic_plate_id {
             continue;
@@ -720,9 +723,8 @@ fn spread_coastal_shelf(
             continue;
         }
 
-        let mut next_neighbors: Vec<HexId> = grid.neighbors(current).to_vec();
-        next_neighbors.sort_by_key(|h| h.0);
-        for next in next_neighbors {
+        let next_neighbors = grid.neighbors_sorted(current);
+        for &next in next_neighbors {
             let idx = next.0 as usize;
             if visited.contains_key(&next) || idx >= n || data.plate_id[idx] != oceanic_plate_id {
                 continue;
@@ -760,10 +762,9 @@ fn spread_inland(
             continue;
         }
 
-        let mut neighbors: Vec<HexId> = grid.neighbors(current).to_vec();
-        neighbors.sort_by_key(|h| h.0);
+        let neighbors = grid.neighbors_sorted(current);
 
-        for neighbor in neighbors {
+        for &neighbor in neighbors {
             if visited.contains_key(&neighbor) {
                 continue;
             }
@@ -858,6 +859,7 @@ mod tests {
             accumulated_rotation_rad: 0.0,
             last_nonempty_year: WorldYear::FORMATION,
             surface: PlateSurface::new(cell_count),
+            forward_world_hint: Vec::new(),
         }
     }
 
