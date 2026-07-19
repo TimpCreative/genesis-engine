@@ -49,7 +49,7 @@ Therefore: when you do something non-obvious, document it. This usually means ad
 
 When Brax opens a chat with you in Cursor, your first response should establish that you've read the docs. Something like:
 
-> Read the foundation docs. Working on Genesis Engine, currently in Phase 0 (Foundation). What's the task?
+> Read the foundation docs. Working on Genesis Engine, currently in Phase 2 (Climate & Hydrology; Doc 08 §15 exit gates still open). What's the task?
 
 This isn't ceremony — it's a verification that the rules are loading and your context includes the docs. If you can't access them, say so.
 
@@ -103,6 +103,7 @@ The most expensive bugs in this project will be determinism violations. They're 
 - Anywhere randomness is used, the RNG must come from the project's seed system, not a fresh `thread_rng()`.
 - Anywhere a collection is iterated, ask whether iteration order affects state. If yes, iterate in deterministic order (sort first, or use a `BTreeMap`).
 - Anywhere parallelism is used, results must be aggregated deterministically. Parallel computation is fine; non-deterministic aggregation is not.
+- Prefer [`genesis_core::par_for_each_hex`] for gather-parallel hex passes (index-local writes only). Do not scatter, reduce floats without a fixed order, or emit events inside the parallel body. Verify with `RAYON_NUM_THREADS=1` vs default.
 - Anywhere data is hashed (for content identifiers, mod manifests, etc.), use a deterministic hasher (not Rust's default `HashMap` hasher which is randomized).
 
 When in doubt, write a determinism test alongside the code.

@@ -302,6 +302,8 @@ Determinism is a design pillar. The engineering implications are extensive enoug
 
 **Ordering is explicit.** When operations could be reordered (parallel iteration over hex cells, for instance), results are aggregated in deterministic order before being applied. Parallel execution speeds up the work; the *result* is identical to serial execution.
 
+**Gather-parallel only.** Bulk hex passes may use [`genesis_core::par_for_each_hex`](crates/genesis_core/src/parallel.rs) (rayon) when each index writes only its own slots and performs no scatter, unordered float reductions, or event emission. See that module's contract; `RAYON_NUM_THREADS=1` must match default-thread outputs.
+
 **Floating-point math is bounded.** Calculations that compound over many iterations (positions drifting over millions of years) use fixed-point arithmetic. Floating-point is used for ephemeral calculations within a tick. Detailed rules are in the Determinism Specification.
 
 **Snapshot validation.** Test infrastructure includes "same seed produces same output" checks at multiple time points. Regression is caught immediately.
@@ -451,16 +453,17 @@ See Doc 06 for full specification.
 
 ### Phase 2: Climate and Hydrology
 
-**Goal:** A complete physical Layer 0.
+**Goal:** A complete physical Layer 0 — climate (Doc 07) and hydrology & soil (Doc 08).
 
 1. Solar incidence, atmospheric cells, prevailing winds
-2. Orographic precipitation
-3. Ocean currents (simplified)
-4. Temperature distribution
-5. River formation via erosion algorithms
-6. Soil composition derived from bedrock + climate + organic accumulation
+2. Orographic precipitation, ocean currents, temperature, glaciation
+3. Conserved planetary water budget; sea level derived by flooding the hypsometry (Doc 08 §3)
+4. Drainage networks, evaporation-balance lakes, groundwater/karst, seasonal regimes
+5. Hydrology-owned erosion/sediment routing; ice masses + GIA; glacial carving
+6. Soil depth/class/fertility (Cretaceous beach + loess); coastal tides/estuaries
+7. Water-aware rendering, river LOD, Soil mode, HistoryFrame water fields, water-inventory knob
 
-**Exit criteria:** A world has plausible climates, rivers form where they should, and the Cretaceous-beach mechanic produces fertile soil from ancient marine bedrock.
+**Exit criteria:** Doc 08 §15 validation gates pass (cheap CI + `--ignored` deep-time / perf / 3×3 calibration). A world has plausible climates, honest rivers and lakes, ice-driven sea-level excursions, and fertile soils from marine + glacial pathways. See Doc 08 for the authoritative physics and exit checklist.
 
 ### Phase 3: Rendering MVP
 

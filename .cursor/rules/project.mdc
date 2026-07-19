@@ -51,7 +51,7 @@ When you need a term that isn't in the glossary, ask the user to confirm a name 
 
 The Architecture Overview defines explicit build phases (§12). Do not implement features from a later phase before earlier phases are complete. If asked to skip ahead, ask the user to confirm — there may be a reason, but it's worth surfacing.
 
-Current phase: **Phase 0 — Foundation** (project not yet scaffolded).
+Current phase: **Phase 2 — Climate & Hydrology** (Docs 07–08; hydrology simulation largely landed, Doc 08 §15 / P2-34 exit gates still open). Phases 0–1 foundation and tectonics are complete.
 
 ### 4. Determinism Is Non-Negotiable
 
@@ -141,18 +141,23 @@ The project lives at the repository root. The structure (as it exists or as it w
 
 ```
 genesis-engine/
-├── Cargo.toml           # Workspace root (after Phase 0)
+├── Cargo.toml           # Workspace root
 ├── README.md
 ├── CONTRIBUTING-AI.md
-├── .cursorrules         # This file
-├── INITIAL-PROMPT.md    # First task description
+├── .cursorrules
+├── INITIAL-PROMPT.md
 ├── docs/                # Authoritative design docs
 │   ├── 01-vision-and-scope.md
 │   ├── 02-architecture-overview.md
-│   └── 03-glossary-and-naming.md
-└── crates/              # (created in Phase 0)
+│   ├── 03-glossary-and-naming.md
+│   └── 08-hydrology-module-specification.md
+└── crates/
     ├── genesis_core/
-    ├── genesis_mods/
+    ├── genesis_tectonics/
+    ├── genesis_climate/
+    ├── genesis_hydrology/
+    ├── genesis_render/
+    ├── genesis_ui/
     └── ...
 ```
 
