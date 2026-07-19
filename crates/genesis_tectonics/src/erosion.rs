@@ -301,7 +301,7 @@ pub fn erosion_noise_factors(data: &WorldData, rng: &WorldRng, tick_year: WorldY
 
 /// Geological-tick erosion, sediment routing, and fertility; ends with `clamp_terrain`.
 pub fn apply_erosion_tick(
-    data: &WorldData,
+    data: &mut WorldData,
     state: &mut TectonicsState,
     rng: &WorldRng,
     tick_year: WorldYear,
@@ -316,9 +316,33 @@ pub fn apply_erosion_tick(
     } = state;
 
     apply_isostasy(registry, data.sea_level_m, tick_interval_years);
+    apply_ice_load_isostasy(data, registry, projection, tick_interval_years, tick_year);
+
+    // Doc 08 §8.5: apply pending hydrology elevation deltas to plate surfaces
+    // before any tectonic denudation this tick.
+    apply_hydrology_elevation_deltas(
+        data,
+        registry,
+        projection,
+        cumulative_deposition_m,
+        tick_year,
+    );
 
     let base_rate = data.parameters.core.geology.base_erosion_rate_per_year;
     if base_rate <= 0.0 {
+        increment_shallow_tropical_fertility(data, registry, projection, tick_year);
+        return;
+    }
+
+    // When hydrology is active (standing water present), it owns land erosion
+    // and sediment routing (§8 / §17.1). Tectonics keeps isostasy + fertility
+    // and the dry-weathering path only while hydrology is dormant.
+    let hydrology_active = data
+        .water_bodies
+        .values()
+        .any(|b| b.kind == genesis_core::data::WaterBodyKind::Ocean)
+        || data.precipitation.iter().any(|&p| p > 0.0);
+    if hydrology_active {
         increment_shallow_tropical_fertility(data, registry, projection, tick_year);
         return;
     }
@@ -342,6 +366,47 @@ pub fn apply_erosion_tick(
         tick_year,
     );
     increment_shallow_tropical_fertility(data, registry, projection, tick_year);
+}
+
+/// Applies [`WorldData::hydro_elevation_delta_m`] to birth-frame plate surfaces
+/// (Doc 08 §8.5) and zeroes the pending buffer.
+fn apply_hydrology_elevation_deltas(
+    data: &mut WorldData,
+    registry: &mut PlateRegistry,
+    cache: &ProjectionCache,
+    cumulative_deposition_m: &mut [f32],
+    tick_year: WorldYear,
+) {
+    if data.hydro_elevation_delta_m.iter().all(|&d| d == 0.0) {
+        return;
+    }
+    let tick_value = tick_year.value();
+    let deltas = data.hydro_elevation_delta_m.clone();
+    for (i, &delta) in deltas.iter().enumerate() {
+        if delta == 0.0 {
+            continue;
+        }
+        let hex = HexId(i as u32);
+        modify_surface_at_world_hex(registry, data, cache, hex, tick_value, |feature| {
+            feature.elevation_m += delta;
+            if delta > 0.0 {
+                let prior = cumulative_deposition_m.get(i).copied().unwrap_or(0.0);
+                let next = prior + delta;
+                if i < cumulative_deposition_m.len() {
+                    cumulative_deposition_m[i] = next;
+                }
+                if next > DEPOSITION_THRESHOLD_M
+                    && matches!(
+                        feature.bedrock,
+                        BedrockType::Igneous | BedrockType::Metamorphic
+                    )
+                {
+                    feature.bedrock = BedrockType::Sedimentary;
+                }
+            }
+        });
+    }
+    data.hydro_elevation_delta_m.fill(0.0);
 }
 
 /// Thermal subsidence rate for submerged oceanic crust (fraction of the
@@ -395,6 +460,45 @@ pub fn apply_isostasy(registry: &mut PlateRegistry, sea_level_m: f32, tick_inter
                 feature.elevation_m += (baseline - feature.elevation_m) * sink_fraction;
             }
         }
+    }
+}
+
+/// GIA: depresses crust under ice load toward freeboard − load (Doc 08 §9.1).
+/// Deglaciated hexes rebound via [`apply_isostasy`]'s epeirogenic path.
+fn apply_ice_load_isostasy(
+    data: &mut WorldData,
+    registry: &mut PlateRegistry,
+    cache: &ProjectionCache,
+    tick_interval_years: f64,
+    tick_year: WorldYear,
+) {
+    if data.ice_load_m.iter().all(|&l| l == 0.0) {
+        return;
+    }
+    let fraction = (EPEIROGENIC_REBOUND_RATE_PER_YEAR * tick_interval_years).min(1.0) as f32;
+    if fraction <= 0.0 {
+        return;
+    }
+    let sea = data.sea_level_m;
+    let tick_value = tick_year.value();
+    let n = data.cell_count() as usize;
+    let loads: Vec<f32> = data.ice_load_m.clone();
+    let crust: Vec<bool> = data.continental_crust.clone();
+    for i in 0..n {
+        let load = loads[i];
+        if load <= 0.0 {
+            continue;
+        }
+        let freeboard = if crust[i] {
+            CONTINENTAL_FREEBOARD_M
+        } else {
+            0.0
+        };
+        let target = sea + freeboard - load;
+        let hex = HexId(i as u32);
+        modify_surface_at_world_hex(registry, data, cache, hex, tick_value, |feature| {
+            feature.elevation_m += (target - feature.elevation_m) * fraction;
+        });
     }
 }
 
@@ -460,6 +564,7 @@ mod tests {
             accumulated_rotation_rad: 0.0,
             last_nonempty_year: WorldYear::FORMATION,
             surface: crate::plate_surface::PlateSurface::new(4),
+            forward_world_hint: Vec::new(),
         };
         plate.surface.set(
             genesis_core::HexId(0),
@@ -507,6 +612,7 @@ mod tests {
             accumulated_rotation_rad: 0.0,
             last_nonempty_year: WorldYear::FORMATION,
             surface: crate::plate_surface::PlateSurface::new(4),
+            forward_world_hint: Vec::new(),
         };
         // A guyot: volcanic island already eroded just below sea level.
         plate.surface.set(
@@ -929,7 +1035,13 @@ mod tests {
         world.data.elevation_mean[hex.0 as usize] = 4000.0;
         seed_surfaces_from_world(&world.data, &mut state.registry);
 
-        apply_erosion_tick(&world.data, &mut state, &rng, WorldYear(500_000), 500_000.0);
+        apply_erosion_tick(
+            &mut world.data,
+            &mut state,
+            &rng,
+            WorldYear(500_000),
+            500_000.0,
+        );
         rebuild_world_from_plate_surfaces(&mut world.data, &state.registry);
 
         assert!(world.data.elevation_mean[hex.0 as usize] < 4000.0);

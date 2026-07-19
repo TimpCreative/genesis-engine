@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::data::{HotSpotId, PlateId};
+use crate::data::{HotSpotId, PlateId, WaterBodyId};
 use crate::grid::HexId;
 
 /// Serializable boundary classification for events (Doc 06 §6.1).
@@ -92,4 +92,28 @@ pub enum EventKind {
     GlaciationBegan { global_temperature_c: f32 },
     /// A glacial ended and an interglacial returned (Doc 07 §12.4).
     GlaciationEnded { duration_years: i64 },
+    /// An endorheic salt lake first appears (Doc 08 §13).
+    SaltLakeFormed { hex: HexId, salinity: f32 },
+    /// A salt flat first appears (Doc 08 §13).
+    SaltFlatFormed { region: Vec<HexId> },
+    /// A fjord is first flagged after glacial retreat (Doc 08 §13).
+    FjordsCarved { region: Vec<HexId> },
+    /// Sea-level milestone crossed (Doc 08 §13).
+    SeaLevelMilestone { level_m: f32, delta_m: f32 },
+    /// A lake body appears in the registry (Doc 08 §13).
+    LakeFormed { body: WaterBodyId },
+    /// A lake body disappears from the registry (Doc 08 §13).
+    LakeDried { body: WaterBodyId },
+    /// An inland sea loses ocean connectivity (Doc 08 §13).
+    InlandSeaIsolated { body: WaterBodyId },
+    /// An inland sea reconnects to the ocean (Doc 08 §13).
+    InlandSeaReconnected { body: WaterBodyId },
+    /// A Major river path shifts by many hexes (Doc 08 §13).
+    RiverCourseShifted { region: Vec<HexId> },
+    /// Ice volume peaks (Doc 08 §13).
+    GlacialMaximum { sea_level_drop_m: f32 },
+    /// An oasis flag appears (Doc 08 §13).
+    OasisFormed { hex: HexId },
+    /// A karst spring exceeds the discharge threshold (Doc 08 §13).
+    GreatSpringEmerges { hex: HexId },
 }

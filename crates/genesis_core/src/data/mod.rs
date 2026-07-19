@@ -13,7 +13,10 @@ mod ids;
 pub use crate::grid::Direction;
 pub use climate_placeholder::ClimateRegimePlaceholder;
 pub use enums::BedrockType;
-pub use hydrology::{HydroFlags, SoilClass, WATER_NONE, WaterBody, WaterBodyKind};
+pub use hydrology::{
+    HydroFlags, MAJOR_CLASS_MIN_M3_YR, RIVER_CLASS_MIN_M3_YR, RiverClass, STREAM_CLASS_MIN_M3_YR,
+    SoilClass, WATER_NONE, WaterBody, WaterBodyKind, river_class,
+};
 pub use ids::{
     BasinId, BiomeId, HotSpotId, NationId, PlateId, SettlementId, SpeciesId, WaterBodyId,
 };
@@ -96,6 +99,14 @@ pub struct WorldData {
     pub soil_fertility: Vec<f32>,
     /// Soil class (§10.1).
     pub soil_class: Vec<SoilClass>,
+    /// Pending elevation change from hydrology erosion (§8), meters.
+    /// Consumed by tectonics via the plate-surface write API (§8.5).
+    pub hydro_elevation_delta_m: Vec<f32>,
+    /// Whether each hex is continental crust (tectonics rebuild; Doc 08 §8.1).
+    pub continental_crust: Vec<bool>,
+    /// Ice-load depression target for GIA, meters (Doc 08 §9.1). Written by
+    /// hydrology; consumed by tectonics isostasy.
+    pub ice_load_m: Vec<f32>,
     /// Standing-water body registry, rebuilt each hydrology tick (§2.4).
     pub water_bodies: BTreeMap<WaterBodyId, WaterBody>,
 
@@ -104,6 +115,9 @@ pub struct WorldData {
     pub sea_level_m: f32,
     /// Mean global surface temperature in degrees Celsius.
     pub global_temperature_c: f32,
+    /// Continuous glaciation intensity 0..=1 (Doc 08 §9.1 / §17.2). Written by
+    /// climate each tick; consumed by hydrology ice-volume budgeting.
+    pub glaciation_intensity: f32,
 
     // ---- Biological Layer (Layer 1) ----
     /// Biome assignment per hex.
@@ -160,9 +174,13 @@ impl WorldData {
             soil_depth_m: vec![0.0; n],
             soil_fertility: vec![0.0; n],
             soil_class: vec![SoilClass::None; n],
+            hydro_elevation_delta_m: vec![0.0; n],
+            continental_crust: vec![false; n],
+            ice_load_m: vec![0.0; n],
             water_bodies: BTreeMap::new(),
             sea_level_m: 0.0,
             global_temperature_c: 15.0,
+            glaciation_intensity: 0.0,
             biome: vec![BiomeId::NONE; n],
             biomass: vec![0.0; n],
             fertility: vec![0.0; n],
@@ -250,6 +268,9 @@ mod tests {
         assert_eq!(world.soil_depth_m.len(), n);
         assert_eq!(world.soil_fertility.len(), n);
         assert_eq!(world.soil_class.len(), n);
+        assert_eq!(world.hydro_elevation_delta_m.len(), n);
+        assert_eq!(world.continental_crust.len(), n);
+        assert_eq!(world.ice_load_m.len(), n);
         assert_eq!(world.biome.len(), n);
         assert_eq!(world.biomass.len(), n);
         assert_eq!(world.fertility.len(), n);

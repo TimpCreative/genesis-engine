@@ -3,17 +3,28 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use genesis_core::data::WorldData;
+use genesis_core::data::{HydroFlags, WorldData};
 use genesis_core::parameters::WorldParameters;
 use genesis_core::rng::WorldRng;
 use genesis_core::time::{Era, SimulationLayer, WorldYear};
 
 use crate::budget::{
-    FORMATION_END_YEAR, WaterBudget, condensed_fraction_at_year, groundwater_capacity_m3,
-    inventory_volume_m3, relax_groundwater,
+    FORMATION_END_YEAR, WaterBudget, condensed_fraction_at_year, inventory_volume_m3,
 };
-use crate::events::maybe_emit_formation_ocean_events;
-use crate::solve::solve_flooding;
+use crate::coastal::update_coastal;
+use crate::erosion::apply_erosion;
+use crate::events::{
+    maybe_emit_flag_events, maybe_emit_formation_ocean_events, maybe_emit_glacial_maximum,
+    maybe_emit_registry_events, maybe_emit_river_course_shift, maybe_emit_sea_level_milestone,
+};
+use crate::groundwater::{recharge_and_baseflow, total_groundwater_storage_m3, water_tables};
+use crate::ice::update_ice;
+use crate::lakes::{adjudicate_lakes, apply_returned_surplus, registry_lake_volume_m3};
+use crate::partition::partition_land;
+use crate::regime::classify_regimes;
+use crate::routing::{FlowAccumulation, RoutingSurface, hex_area_m2};
+use crate::soil::update_soil;
+use crate::solve::{global_mean_temperature_c, solve_flooding, thermosteric_effective_volume_m3};
 use crate::state::HydrologyState;
 
 /// Default Geological-era hydrology tick interval (Doc 08 §2.1 — matches climate).
@@ -60,6 +71,26 @@ fn formation_period_active(year: i64, params: &WorldParameters) -> bool {
     !params.core.climate.skip_planetary_formation && year <= FORMATION_END_YEAR
 }
 
+impl HydrologyLayer {
+    /// Zeroes the drainage-network derivations for an inactive tick (§2.1:
+    /// full activation requires standing water and nonzero precipitation;
+    /// gate §15 #4 — zero rivers before oceans).
+    fn clear_drainage_fields(world: &mut WorldData) {
+        let n = world.cell_count() as usize;
+        for i in 0..n {
+            world.flow_direction[i] = None;
+            world.river_discharge_m3_yr[i] = 0.0;
+            world.discharge_seasonality[i] = 1.0;
+            world.hydro_flags[i] = HydroFlags::NONE;
+            if world.water_body_id[i] == genesis_core::WaterBodyId::NONE {
+                world.water_table_depth_m[i] = crate::groundwater::WATER_TABLE_ARID_OFFSET_M as f32;
+            } else {
+                world.water_table_depth_m[i] = 0.0;
+            }
+        }
+    }
+}
+
 impl SimulationLayer for HydrologyLayer {
     fn name(&self) -> &str {
         "hydrology"
@@ -81,27 +112,17 @@ impl SimulationLayer for HydrologyLayer {
     }
 
     fn advance(&mut self, world: &mut WorldData, _rng: &WorldRng) -> Vec<()> {
+        let tick_start = std::time::Instant::now();
         let mut state = self.state.borrow_mut();
         let year = world.current_year;
         let interval_years = (year - self.last_tick_year.get()) as f64;
         let skip_formation = world.parameters.core.climate.skip_planetary_formation;
         let event_granularity = world.parameters.core.climate.event_granularity;
 
-        // §3.3 Formation condensation: piecewise-constant per stage.
+        // §2.2 step 1 — inventory update: condensation fraction (§3.3) and
+        // the budget partition (§3.2); the ocean term is the remainder, so
+        // the accounting identity holds by construction.
         let condensed_fraction = condensed_fraction_at_year(year.value(), skip_formation);
-
-        // §3.3 groundwater: simple relaxation toward capacity once condensed
-        // water exists (aridity-equilibrium refinement is Slice 2's §6).
-        if condensed_fraction > 0.0 {
-            state.groundwater_storage_m3 = relax_groundwater(
-                state.groundwater_storage_m3,
-                groundwater_capacity_m3(&world.parameters),
-                interval_years,
-            );
-        }
-
-        // §3.2 partition: the ocean term is the remainder, so the accounting
-        // identity holds by construction.
         let budget = WaterBudget::partition(
             inventory_volume_m3(&world.parameters),
             condensed_fraction,
@@ -111,8 +132,8 @@ impl SimulationLayer for HydrologyLayer {
         );
         state.atmosphere_reserve_m3 = budget.atmosphere_reserve_m3;
 
-        // §3.4 flooding solve: writes sea_level_m, water_level_m,
-        // water_body_id, and the water_bodies registry.
+        // §2.2 step 2 — flooding solve (§3.4): sea level, the ocean mask,
+        // and the candidate-sea list (written by §5.2, not here).
         let outcome = solve_flooding(world, budget.ocean_volume_m3);
 
         debug_assert!(
@@ -138,9 +159,194 @@ impl SimulationLayer for HydrologyLayer {
             year,
             event_granularity,
         );
+        maybe_emit_sea_level_milestone(
+            &mut state,
+            outcome.sea_level_m as f32,
+            year,
+            event_granularity,
+        );
+
+        // §2.1: full activation requires standing water and precipitation.
+        let active = outcome.wet_cell_count > 0 && world.precipitation.iter().any(|&p| p > 0.0);
+        if !active {
+            Self::clear_drainage_fields(world);
+            state.prev_lake_volume_m3 = registry_lake_volume_m3(world);
+            state.groundwater_storage_m3 =
+                total_groundwater_storage_m3(world, &state.aquifer_storage_m);
+            self.last_tick_year.set(year);
+            log_slow_hydrology_tick(year, tick_start);
+            return Vec::new();
+        }
+
+        // §2.2 step 3 — drainage network (§4): routing surface (with the
+        // depression tree), flow directions, and the water partition.
+        // Preserve persistent glacial landform flags across the per-tick clear.
+        let n_cells = world.cell_count() as usize;
+        let mut persistent = vec![HydroFlags::NONE; n_cells];
+        for (i, slot) in persistent.iter_mut().enumerate() {
+            let f = world.hydro_flags[i];
+            if f.contains(HydroFlags::CARVED_TROUGH) {
+                *slot |= HydroFlags::CARVED_TROUGH;
+            }
+            if f.contains(HydroFlags::FJORD) {
+                *slot |= HydroFlags::FJORD;
+            }
+            if f.contains(HydroFlags::DELTA) {
+                *slot |= HydroFlags::DELTA;
+            }
+        }
+        world.hydro_flags.copy_from_slice(&persistent);
+        let surface = RoutingSurface::build(world, &outcome.candidates);
+        surface.write_flow_directions(world);
+        let mut partition = partition_land(world, &surface);
+
+        // §2.2 step 4 — groundwater (§6): recharge into the per-hex aquifer,
+        // baseflow release, and the karst diversion (flags KARST from the
+        // partition, SPRING at resurgences).
+        let mut candidate_karst_inflow = vec![0.0; outcome.candidates.len()];
+        let baseflow = recharge_and_baseflow(
+            world,
+            &surface,
+            &mut state.aquifer_storage_m,
+            &mut partition.runoff_m3_yr,
+            &partition.recharge_m3_yr,
+            interval_years,
+            &mut candidate_karst_inflow,
+        );
+
+        // §4.3 accumulation: runoff + baseflow, descending filled order.
+        let mut acc = FlowAccumulation::accumulate(
+            world,
+            &surface,
+            &partition.runoff_m3_yr,
+            &baseflow.baseflow_m3_yr,
+            &partition.recharge_m3_yr,
+        );
+        for (extra, slot) in candidate_karst_inflow
+            .iter()
+            .zip(acc.candidate_inflow_m3_yr.iter_mut())
+        {
+            *slot += extra;
+        }
+
+        // §2.2 step 5 — lake balance (§5): depression adjudication bottom-up,
+        // candidate seas, salt; surplus returns as the closed-form ΔL.
+        let lake_outcome = adjudicate_lakes(
+            world,
+            &surface,
+            &mut acc,
+            &outcome.candidates,
+            interval_years,
+        );
+        apply_returned_surplus(world, lake_outcome.returned_to_ocean_m3);
+
+        // Standing-water partition check: the solve's effective ocean volume
+        // is exactly the ocean component plus the candidate bathtub volumes
+        // (§3.4); after adjudication the ocean holds the returned surplus
+        // and the candidates hold what they kept.
+        debug_assert!(
+            {
+                let effective = thermosteric_effective_volume_m3(
+                    budget.ocean_volume_m3,
+                    global_mean_temperature_c(world),
+                );
+                let accounted = world
+                    .water_bodies
+                    .values()
+                    .filter(|b| b.kind == genesis_core::data::WaterBodyKind::Ocean)
+                    .map(|b| b.volume_km3 * 1.0e9)
+                    .sum::<f64>()
+                    + lake_outcome.candidate_kept_m3;
+                effective <= 0.0
+                    || (accounted - effective).abs()
+                        <= crate::budget::CONSERVATION_TOLERANCE_REL * effective
+            },
+            "Doc 08 §3.4 standing-water partition violated"
+        );
+
+        // Write total annual discharge (§4.3: surface runoff + baseflow).
+        for i in 0..world.cell_count() as usize {
+            world.river_discharge_m3_yr[i] = if surface.is_water(world, i as u32) {
+                0.0
+            } else {
+                acc.discharge_m3_yr[i] as f32
+            };
+        }
+
+        // §6.4 water tables, springs, oases (needs perennial channels, which
+        // need the accumulation); then §7 regimes, seasonality, ephemeral
+        // and permafrost flags.
+        water_tables(world, &surface, &acc.baseflow_m3_yr, &acc.recharge_m3_yr);
+        classify_regimes(world, &surface, &acc);
+
+        // §2.2 steps 7–10 — ice/carving, erosion, soil, coastal.
+        let n = world.cell_count() as usize;
+        if state.alluvium_depth_m.len() != n {
+            state.alluvium_depth_m = vec![0.0; n];
+        }
+        if state.prev_ice_mask.len() != n {
+            state.prev_ice_mask = vec![false; n];
+        }
+        world.hydro_elevation_delta_m.fill(0.0);
+        let base_rate = world.parameters.core.geology.base_erosion_rate_per_year;
+        let (ice_volume, glacial_load) = update_ice(
+            world,
+            &surface,
+            &mut state.prev_ice_mask,
+            base_rate,
+            interval_years,
+        );
+        state.ice_volume_m3 = ice_volume;
+        let _erosion = apply_erosion(
+            world,
+            &surface,
+            &mut state.alluvium_depth_m,
+            &glacial_load,
+            interval_years,
+        );
+        update_soil(world, &surface, &state.alluvium_depth_m, interval_years);
+        update_coastal(world, &surface, &state.alluvium_depth_m);
+
+        // §2.2 step 11 — events (§13).
+        maybe_emit_registry_events(&mut state, world, year, event_granularity);
+        maybe_emit_flag_events(&mut state, world, year, event_granularity);
+        maybe_emit_river_course_shift(&mut state, world, year, event_granularity);
+        let planet_area = hex_area_m2(&world.grid) * n as f64;
+        maybe_emit_glacial_maximum(&mut state, ice_volume, planet_area, year, event_granularity);
+
+        // Close-out: the budget terms the next tick's solve debits (§3.4).
+        state.prev_lake_volume_m3 = registry_lake_volume_m3(world);
+        state.groundwater_storage_m3 =
+            total_groundwater_storage_m3(world, &state.aquifer_storage_m);
 
         self.last_tick_year.set(year);
+        log_slow_hydrology_tick(year, tick_start);
         Vec::new()
+    }
+}
+
+/// Slow-step log threshold in ms; `GENESIS_SLOW_TICK_STEP_MS` overrides it
+/// (Doc 08 §14 — same env var as tectonics).
+fn slow_tick_threshold_ms() -> u128 {
+    static THRESHOLD: std::sync::OnceLock<u128> = std::sync::OnceLock::new();
+    *THRESHOLD.get_or_init(|| {
+        std::env::var("GENESIS_SLOW_TICK_STEP_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(50)
+    })
+}
+
+fn log_slow_hydrology_tick(year: WorldYear, tick_start: std::time::Instant) {
+    let elapsed = tick_start.elapsed();
+    let threshold_ms = slow_tick_threshold_ms();
+    if elapsed.as_millis() >= threshold_ms {
+        eprintln!(
+            "[hydrology] slow tick at year {} took {}ms (threshold {}ms)",
+            year.value(),
+            elapsed.as_millis(),
+            threshold_ms
+        );
     }
 }
 
@@ -217,6 +423,8 @@ mod tests {
         for (i, &in_basin) in basin.iter().enumerate() {
             world.data.elevation_mean[i] = if in_basin { -2000.0 } else { 1000.0 };
         }
+        world.data.precipitation.fill(1200.0);
+        world.data.temperature_mean.fill(10.0);
         world.data.current_year = WorldYear(300_000_000);
 
         let mut hydrology = HydrologyState::new();
@@ -225,8 +433,8 @@ mod tests {
         drop(layer);
         let hydrology = HydrologyLayer::detach_state(shared);
 
-        // Condensation stage: 90% of the 1000 GEL inventory minus groundwater
-        // stands in the basin; basin cells wet, plateau cells dry.
+        // Condensation stage: 90% of the 1000 GEL inventory stands in the
+        // basin minus groundwater recharge; basin cells wet, plateau dry.
         assert!(world.data.sea_level_m > -2000.0 && world.data.sea_level_m < 1000.0);
         assert_eq!(
             world.data.water_bodies.len(),
@@ -242,7 +450,10 @@ mod tests {
                 assert_eq!(world.data.water_body_id[i], genesis_core::WaterBodyId::NONE);
             }
         }
+        // §6.1: recharge banks per-hex aquifer storage; the global term is
+        // its deterministic sum.
         assert!(hydrology.groundwater_storage_m3 > 0.0);
+        assert_eq!(hydrology.aquifer_storage_m.len(), n);
         assert!(hydrology.oceans_begin_emitted);
         assert!(!hydrology.oceans_stabilized_emitted);
     }
@@ -313,5 +524,102 @@ mod tests {
                 .iter()
                 .all(|&b| b != genesis_core::WaterBodyId::NONE)
         );
+    }
+
+    /// Gate §15 #4 (cheap form): zero rivers before oceans — a Molten-era
+    /// world with precipitation set must still derive no drainage at all.
+    #[test]
+    fn no_rivers_before_oceans_form() {
+        let mut params = WorldParameters::default();
+        params.core.grid.subdivision_level = 4;
+        let grid = HexGrid::new(4, EARTH_RADIUS_KM).expect("grid");
+        let mut data = WorldData::new(grid, params);
+        let n = data.cell_count() as usize;
+        data.elevation_mean[0] = -500.0;
+        for i in 1..n {
+            data.elevation_mean[i] = 100.0 + (i % 50) as f32;
+        }
+        data.precipitation.fill(2000.0);
+        data.temperature_mean.fill(15.0);
+        data.current_year = WorldYear(10_000_000); // Molten: fraction 0.
+        let rng = genesis_core::rng::WorldRng::from_effective_seed(1);
+
+        let mut hydrology = HydrologyState::new();
+        let (mut layer, shared) = HydrologyLayer::attach(&mut hydrology);
+        layer.advance(&mut data, &rng);
+        drop(layer);
+        let _ = HydrologyLayer::detach_state(shared);
+
+        assert!(data.water_bodies.is_empty(), "no standing water in Molten");
+        assert!(data.flow_direction.iter().all(Option::is_none));
+        assert!(data.river_discharge_m3_yr.iter().all(|&d| d == 0.0));
+        assert!(data.hydro_flags.iter().all(|f| f.is_empty()));
+    }
+
+    /// Gate §15 #4 (cheap form): on an active world, every channel hex
+    /// continues strictly downstream on the filled surface or terminates in
+    /// water/a retained sink, and discharge never decreases along an edge.
+    #[test]
+    fn rivers_flow_downhill_and_discharge_grows() {
+        let mut params = WorldParameters::default();
+        params.core.hydrology.water_inventory_gel_m = 1000.0;
+        let mut world = create_world(params).expect("world");
+        let n = world.data.cell_count() as usize;
+        let basin = connected_basin(&world.data, n / 2);
+        for (i, &in_basin) in basin.iter().enumerate() {
+            // Small-relief plateau (< BASIN_MIN_DEPTH_M pits): the fill
+            // routes every pit through and no lakes form, so the surface
+            // rebuilt below matches the tick's exactly.
+            world.data.elevation_mean[i] = if in_basin {
+                -2000.0
+            } else {
+                500.0 + (i % 13) as f32 * 5.0
+            };
+        }
+        world.data.precipitation.fill(2000.0);
+        world.data.temperature_mean.fill(5.0);
+        world.data.current_year = WorldYear(1_000_000_000);
+
+        let mut hydrology = HydrologyState::new();
+        let (mut layer, shared) = HydrologyLayer::attach(&mut hydrology);
+        layer.advance(&mut world.data, &world.rng);
+        drop(layer);
+        let _ = HydrologyLayer::detach_state(shared);
+
+        let surface = RoutingSurface::build(&world.data, &[]);
+        for i in 0..n {
+            if world.data.water_body_id[i] != genesis_core::WaterBodyId::NONE {
+                continue;
+            }
+            match world.data.flow_direction[i] {
+                None => {
+                    // Terminal sinks only: a retained basin bottom, or a
+                    // dried candidate-sea floor below sea level (§5.2 — it
+                    // re-floods as a candidate next solve).
+                    assert!(
+                        surface.depression_of[i] != crate::routing::NONE
+                            || world.data.elevation_mean[i] < world.data.sea_level_m,
+                        "hex {i}: no flow direction and no water and no depression"
+                    );
+                }
+                Some(direction) => {
+                    let target = world.data.grid.neighbors(HexId(i as u32))[direction.index()];
+                    let j = target.0 as usize;
+                    if world.data.water_body_id[j] == genesis_core::WaterBodyId::NONE {
+                        assert!(
+                            surface.filled_m[j] < surface.filled_m[i],
+                            "hex {i}: flow must descend the filled surface"
+                        );
+                        assert!(
+                            world.data.river_discharge_m3_yr[j]
+                                >= world.data.river_discharge_m3_yr[i] * 0.999,
+                            "hex {i} -> {j}: discharge must not drop ({} -> {})",
+                            world.data.river_discharge_m3_yr[i],
+                            world.data.river_discharge_m3_yr[j]
+                        );
+                    }
+                }
+            }
+        }
     }
 }

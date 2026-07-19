@@ -65,7 +65,7 @@ pub struct WaterBody {
     Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Default, Serialize, Deserialize,
 )]
 #[serde(transparent)]
-pub struct HydroFlags(pub u8);
+pub struct HydroFlags(pub u16);
 
 impl HydroFlags {
     /// No features.
@@ -86,6 +86,10 @@ impl HydroFlags {
     pub const WETLAND: Self = Self(1 << 6);
     /// Sea ice cover (§9).
     pub const SEA_ICE: Self = Self(1 << 7);
+    /// Persistent glacial trough scar (§9.2) — survives ice retreat.
+    pub const CARVED_TROUGH: Self = Self(1 << 8);
+    /// Prograding Major river mouth (§8.3 / §11.2).
+    pub const DELTA: Self = Self(1 << 9);
 
     /// True when no flags are set.
     pub const fn is_empty(self) -> bool {
@@ -95,6 +99,11 @@ impl HydroFlags {
     /// True when all bits of `other` are set in `self`.
     pub const fn contains(self, other: Self) -> bool {
         self.0 & other.0 == other.0
+    }
+
+    /// Clears all bits of `other` from `self`.
+    pub fn remove(&mut self, other: Self) {
+        self.0 &= !other.0;
     }
 }
 
@@ -141,4 +150,37 @@ pub enum SoilClass {
     Saline,
     /// Temperate default.
     Loamy,
+}
+
+/// Stream/River/Major class boundaries, m³/yr (Doc 08 §4.4 / §12.2).
+pub const STREAM_CLASS_MIN_M3_YR: f64 = 1.0e9;
+/// See [`STREAM_CLASS_MIN_M3_YR`].
+pub const RIVER_CLASS_MIN_M3_YR: f64 = 1.0e10;
+/// See [`STREAM_CLASS_MIN_M3_YR`].
+pub const MAJOR_CLASS_MIN_M3_YR: f64 = 1.0e11;
+
+/// §4.4 river classes by annual discharge (shared by sim + render).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub enum RiverClass {
+    /// < 1e9 m³/yr — sub-hex only (§12.3).
+    Creek,
+    /// 1e9–1e10 m³/yr.
+    Stream,
+    /// 1e10–1e11 m³/yr.
+    River,
+    /// > 1e11 m³/yr.
+    Major,
+}
+
+/// §4.4 classification of a discharge (m³/yr).
+pub fn river_class(discharge_m3_yr: f64) -> RiverClass {
+    if discharge_m3_yr >= MAJOR_CLASS_MIN_M3_YR {
+        RiverClass::Major
+    } else if discharge_m3_yr >= RIVER_CLASS_MIN_M3_YR {
+        RiverClass::River
+    } else if discharge_m3_yr >= STREAM_CLASS_MIN_M3_YR {
+        RiverClass::Stream
+    } else {
+        RiverClass::Creek
+    }
 }

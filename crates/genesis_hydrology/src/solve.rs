@@ -16,14 +16,34 @@ pub const THERMOSTERIC_BETA_PER_C: f64 = 1.9e-4;
 pub const THERMOSTERIC_REFERENCE_C: f64 = 15.0;
 
 /// Outcome of one tick's flooding solve.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct FloodOutcome {
     /// Derived bathtub level in meters. Always finite: with no standing water
     /// it sits at the lowest cell's elevation (zero wet cells), so one-tick-
     /// lagged readers (tectonics freeboard, coast logic) see a sane value.
     pub sea_level_m: f64,
-    /// Number of cells below the derived level this tick.
+    /// Number of ocean cells below the derived level this tick (candidate
+    /// seas are not counted until §5 adjudicates them).
     pub wet_cell_count: u32,
+    /// Non-ocean below-`L` components, handed to §5.2 adjudication with their
+    /// bathtub volumes as seed. Ordered by descending volume (tie: ascending
+    /// lowest `HexId`); not yet written to any derived field.
+    pub candidates: Vec<CandidateSea>,
+}
+
+/// A non-ocean below-sea-level component (§3.4 step 2): either an ocean-fed
+/// sea or a doomed endorheic basin, decided by the §5.2 evaporation balance.
+#[derive(Clone, Debug)]
+pub struct CandidateSea {
+    /// Lowest `HexId` in the component — the body's stable `WaterBodyId`.
+    pub lowest_hex: u32,
+    /// Member cells in ascending order.
+    pub cells: Vec<u32>,
+    /// Component water volume in m³ standing at this tick's sea level — the
+    /// seed volume for the §5.2 balance.
+    pub bathtub_volume_m3: f64,
+    /// Lowest cell elevation in the component (bisection floor).
+    pub bottom_elevation_m: f64,
 }
 
 /// Global mean of `data.temperature_mean` (°C), summed in ascending-`HexId`
@@ -91,35 +111,28 @@ struct BasinComponent {
     cells: Vec<u32>,
     /// Component water volume in m³ at the solved level.
     volume_m3: f64,
-    /// Assigned by [`adjudicate_candidate_seas`].
-    kind: WaterBodyKind,
+    /// Lowest cell elevation in the component.
+    bottom_elevation_m: f64,
 }
 
-/// §3.4 step 2 seam: the largest-volume component is **the ocean**; every
-/// other below-`L` component is a *candidate sea* — ocean-fed or a doomed
-/// endorheic basin by its climate. The §5 adjudication (evaporation balance,
-/// registry upgrade, and the closed-form `ΔL = returned / ocean_area`
-/// correction) is Slice 2; Slice 1 treats every candidate as ocean-fed, so it
-/// becomes a [`WaterBodyKind::Sea`] standing at the shared sea level.
-fn adjudicate_candidate_seas(components: &mut [BasinComponent]) {
+/// §3.4 step 2: the largest-volume component is **the ocean**; every other
+/// below-`L` component is a *candidate sea* handed to §5.2 — ocean-fed or a
+/// doomed endorheic basin by its climate. The solve writes only the ocean;
+/// candidates are recorded (descending volume, tie: ascending lowest `HexId`)
+/// and adjudicated after the drainage network exists to feed them.
+fn split_ocean_and_candidates(components: &mut [BasinComponent]) {
     components.sort_by(|a, b| {
         b.volume_m3
             .total_cmp(&a.volume_m3)
             .then_with(|| a.lowest_hex.cmp(&b.lowest_hex))
     });
-    for (rank, component) in components.iter_mut().enumerate() {
-        component.kind = if rank == 0 {
-            WaterBodyKind::Ocean
-        } else {
-            WaterBodyKind::Sea
-        };
-    }
 }
 
 /// Runs the §3.4 flooding solve for one tick and writes the derived fields:
-/// `sea_level_m`, `water_level_m`, `water_body_id`, and the `water_bodies`
-/// registry. Never writes `elevation_mean` (§3.5: water coverage is derived,
-/// terrain is tectonics').
+/// `sea_level_m`, plus `water_level_m`/`water_body_id` and the registry entry
+/// for the ocean component only. Candidate seas are returned in the outcome
+/// for §5.2 adjudication. Never writes `elevation_mean` (§3.5: water coverage
+/// is derived, terrain is tectonics').
 pub fn solve_flooding(data: &mut WorldData, ocean_volume_m3: f64) -> FloodOutcome {
     let n = data.cell_count() as usize;
     let hex_area_m2 = data.grid.hex_area_km2(HexId(0)) * 1.0e6;
@@ -158,13 +171,14 @@ pub fn solve_flooding(data: &mut WorldData, ocean_volume_m3: f64) -> FloodOutcom
         queue.push_back(start as u32);
         let mut cells: Vec<u32> = Vec::new();
         let mut volume_m3 = 0.0_f64;
+        let mut bottom_elevation_m = f64::INFINITY;
         while let Some(cell) = queue.pop_front() {
             cells.push(cell);
-            volume_m3 +=
-                hex_area_m2 * (sea_level_m - f64::from(data.elevation_mean[cell as usize]));
-            let mut neighbors: Vec<HexId> = data.grid.neighbors(HexId(cell)).to_vec();
-            neighbors.sort_unstable();
-            for neighbor in neighbors {
+            let elevation = f64::from(data.elevation_mean[cell as usize]);
+            volume_m3 += hex_area_m2 * (sea_level_m - elevation);
+            bottom_elevation_m = bottom_elevation_m.min(elevation);
+            let neighbors = data.grid.neighbors_sorted(HexId(cell));
+            for &neighbor in neighbors {
                 let j = neighbor.0 as usize;
                 if j < n
                     && component_of[j] == u32::MAX
@@ -180,25 +194,36 @@ pub fn solve_flooding(data: &mut WorldData, ocean_volume_m3: f64) -> FloodOutcom
             lowest_hex,
             cells,
             volume_m3,
-            kind: WaterBodyKind::Ocean,
+            bottom_elevation_m,
         });
     }
 
-    adjudicate_candidate_seas(&mut components);
+    split_ocean_and_candidates(&mut components);
 
-    // §3.4 step 3: write the derived level and the ocean mask.
+    // §3.4 step 3: write the derived level, the ocean mask, and the ocean's
+    // registry entry. Everything else carries the dry sentinel until §5.
     let sea_level_f32 = sea_level_m as f32;
     data.sea_level_m = sea_level_f32;
     data.water_bodies = BTreeMap::new();
     let hex_area_km2 = data.grid.hex_area_km2(HexId(0));
     let mut wet_cell_count = 0_u32;
-    for component in &components {
+    let mut candidates: Vec<CandidateSea> = Vec::new();
+    for (rank, component) in components.into_iter().enumerate() {
+        if rank > 0 {
+            candidates.push(CandidateSea {
+                lowest_hex: component.lowest_hex,
+                cells: component.cells,
+                bathtub_volume_m3: component.volume_m3,
+                bottom_elevation_m: component.bottom_elevation_m,
+            });
+            continue;
+        }
         let id = WaterBodyId(component.lowest_hex);
         data.water_bodies.insert(
             id,
             WaterBody {
                 id,
-                kind: component.kind,
+                kind: WaterBodyKind::Ocean,
                 surface_m: sea_level_f32,
                 area_km2: component.cells.len() as f64 * hex_area_km2,
                 volume_km3: component.volume_m3 / 1.0e9,
@@ -213,17 +238,22 @@ pub fn solve_flooding(data: &mut WorldData, ocean_volume_m3: f64) -> FloodOutcom
         wet_cell_count += component.cells.len() as u32;
     }
 
-    // Dry cells carry the sentinel; flow/drainage fields are Slice 2's.
-    for (i, &component) in component_of.iter().enumerate() {
-        if component == u32::MAX {
-            data.water_level_m[i] = WATER_NONE;
+    // Dry cells (land and unadjudicated candidates alike) carry the sentinel.
+    // Note `component_of` holds pre-sort indices; only `u32::MAX` is matched.
+    #[allow(clippy::needless_range_loop)]
+    for i in 0..n {
+        if component_of[i] == u32::MAX {
             data.water_body_id[i] = WaterBodyId::NONE;
+        }
+        if data.water_body_id[i] == WaterBodyId::NONE {
+            data.water_level_m[i] = WATER_NONE;
         }
     }
 
     FloodOutcome {
         sea_level_m,
         wet_cell_count,
+        candidates,
     }
 }
 
@@ -367,7 +397,7 @@ mod tests {
     }
 
     #[test]
-    fn solve_floods_below_level_components_as_ocean_and_sea() {
+    fn solve_floods_ocean_and_records_candidate_seas() {
         let mut world = world_at_level(4);
         let n = world.cell_count() as usize;
         // One world-spanning low region (the ocean) plus hex 100 walled off by
@@ -393,31 +423,32 @@ mod tests {
         );
         assert_eq!(
             outcome.wet_cell_count as usize,
-            n - wall.len(),
-            "every cell but the wall is wet"
+            n - wall.len() - 1,
+            "only the ocean component is written"
         );
-        assert_eq!(world.water_bodies.len(), 2, "ocean + one candidate sea");
+        assert_eq!(world.water_bodies.len(), 1, "only the ocean is registered");
+        assert_eq!(outcome.candidates.len(), 1, "one candidate sea recorded");
 
-        // Ocean = largest-volume component; ids are each basin's lowest hex.
-        let ocean = world
-            .water_bodies
-            .values()
-            .find(|b| b.kind == WaterBodyKind::Ocean)
-            .expect("an ocean exists");
-        let sea = world
-            .water_bodies
-            .values()
-            .find(|b| b.kind == WaterBodyKind::Sea)
-            .expect("a candidate sea exists");
-        assert_eq!(sea.id, WaterBodyId(100), "sea id is its basin's lowest hex");
+        // Ocean = largest-volume component; its id is its basin's lowest hex.
+        let ocean = world.water_bodies.values().next().expect("an ocean exists");
+        assert_eq!(ocean.kind, WaterBodyKind::Ocean);
         let expected_ocean_lowest = (0..n as u32)
             .filter(|&i| i != 100 && !wall.contains(&HexId(i)))
             .min()
             .expect("ocean cells exist");
         assert_eq!(ocean.id, WaterBodyId(expected_ocean_lowest));
-        assert!(ocean.volume_km3 > sea.volume_km3);
-        assert_eq!(world.water_body_id[100], WaterBodyId(100));
-        assert_eq!(world.water_level_m[100], world.sea_level_m);
+
+        // The candidate carries its bathtub volume as seed, cells ascending.
+        let candidate = &outcome.candidates[0];
+        assert_eq!(candidate.lowest_hex, 100);
+        assert_eq!(candidate.cells, vec![100]);
+        assert_eq!(candidate.bottom_elevation_m, -50.0);
+        assert!(candidate.bathtub_volume_m3 > 0.0);
+        assert!(ocean.volume_km3 * 1.0e9 > candidate.bathtub_volume_m3);
+
+        // Candidate cells stay dry-sentinel until §5 adjudication.
+        assert_eq!(world.water_body_id[100], WaterBodyId::NONE);
+        assert_eq!(world.water_level_m[100], WATER_NONE);
         for &w in &wall {
             let i = w.0 as usize;
             assert_eq!(world.water_body_id[i], WaterBodyId::NONE);

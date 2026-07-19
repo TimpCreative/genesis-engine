@@ -22,10 +22,6 @@ pub const COOLING_CONDENSED_FRACTION: f64 = 0.35;
 /// Condensed inventory fraction during Condensation (§3.3).
 pub const CONDENSATION_CONDENSED_FRACTION: f64 = 0.90;
 
-/// Groundwater relaxation time constant in years (§3.3 Slice-1 simple
-/// relaxation; the aridity-equilibrium target is Slice 2's §6).
-pub const GROUNDWATER_RELAXATION_TAU_YEARS: f64 = 50_000_000.0;
-
 /// Relative tolerance for the per-tick conservation assert (§3.2).
 pub const CONSERVATION_TOLERANCE_REL: f64 = 1e-6;
 
@@ -60,21 +56,6 @@ pub fn planet_surface_area_m2(params: &WorldParameters) -> f64 {
 /// Total water inventory volume in m³ (GEL meters over the whole sphere).
 pub fn inventory_volume_m3(params: &WorldParameters) -> f64 {
     f64::from(params.core.hydrology.water_inventory_gel_m) * planet_surface_area_m2(params)
-}
-
-/// GEL-equivalent aquifer capacity as a volume in m³.
-pub fn groundwater_capacity_m3(params: &WorldParameters) -> f64 {
-    f64::from(params.core.hydrology.groundwater_capacity_m) * planet_surface_area_m2(params)
-}
-
-/// Relaxes groundwater storage toward capacity (§3.3). Exact-exponential
-/// approach, deterministic in f64.
-pub fn relax_groundwater(storage_m3: f64, capacity_m3: f64, interval_years: f64) -> f64 {
-    if interval_years <= 0.0 {
-        return storage_m3;
-    }
-    let step = 1.0 - (-interval_years / GROUNDWATER_RELAXATION_TAU_YEARS).exp();
-    storage_m3 + (capacity_m3 - storage_m3) * step
 }
 
 /// The §3.2 accounting identity: every reservoir exactly once, f64.
@@ -293,27 +274,5 @@ mod tests {
         assert_eq!(budget.atmosphere_reserve_m3, 100.0);
         assert_eq!(budget.ocean_volume_m3, 840.0);
         assert!(budget.is_conserved());
-    }
-
-    #[test]
-    fn relax_groundwater_approaches_capacity_monotonically() {
-        let capacity = 1.0e15;
-        let mut storage = 0.0;
-        let mut prev = -1.0;
-        for _ in 0..100 {
-            storage = relax_groundwater(storage, capacity, 5_000_000.0);
-            assert!(storage > prev, "storage must rise every tick");
-            assert!(storage <= capacity, "storage must not overshoot capacity");
-            prev = storage;
-        }
-        assert!(
-            storage > 0.99 * capacity,
-            "after 500 My storage should be near capacity; got {storage}"
-        );
-    }
-
-    #[test]
-    fn relax_groundwater_noop_without_elapsed_time() {
-        assert_eq!(relax_groundwater(42.0, 100.0, 0.0), 42.0);
     }
 }
