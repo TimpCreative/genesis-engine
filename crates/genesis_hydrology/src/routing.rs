@@ -90,8 +90,9 @@ pub struct Depression {
 /// The per-tick routing surface and everything derived from the fill.
 #[derive(Clone, Debug)]
 pub struct RoutingSurface {
-    /// Depression-filled scratch elevation (m). Retained depressions keep
-    /// their true elevation so water pools at the bottom.
+    /// Depression-filled scratch elevation (m). Plain cells carry the outer
+    /// ocean-seeded fill; cells of a retained depression carry the basin-
+    /// confined fill that grades strictly down to the basin bottom (§4.1/§5).
     pub filled_m: Vec<f32>,
     /// Downstream hex per land cell (steepest descent over the filled
     /// surface); `None` for water cells and retained basin bottoms.
@@ -137,9 +138,9 @@ impl RoutingSurface {
 
         // §4.1 priority flood (Barnes 2014, +epsilon): ocean + candidates are
         // the spill boundary. Seed the heap with every wet cell at its true
-        // elevation; land cells are (re)visited whenever a lower fill path
-        // is discovered — first-visit-only locking leaves epsilon pits on
-        // chaotic terrain (gate §15 #4).
+        // elevation. Pops are non-decreasing in level, so the first candidate
+        // a cell receives is its minimum (standard Dijkstra argument); the
+        // stale-entry skip covers decrease-key repushes.
         let mut filled = elev.clone();
         let mut closed = vec![false; n];
         let mut heap: BinaryHeap<FillNode> = BinaryHeap::new();
@@ -151,6 +152,25 @@ impl RoutingSurface {
                     hex: i as u32,
                 });
             }
+        }
+        // No standing water anywhere (unit-test worlds; production only calls
+        // build once standing water exists): drain the whole landmass to its
+        // lowest cell, which then plays the role of a depression bottom.
+        let mut sump: Option<u32> = None;
+        if heap.is_empty() {
+            let min_cell = (0..n as u32)
+                .min_by(|&a, &b| {
+                    elev[a as usize]
+                        .total_cmp(&elev[b as usize])
+                        .then_with(|| a.cmp(&b))
+                })
+                .expect("grid is non-empty");
+            closed[min_cell as usize] = true;
+            heap.push(FillNode {
+                level: filled[min_cell as usize],
+                hex: min_cell,
+            });
+            sump = Some(min_cell);
         }
         while let Some(FillNode { level, hex }) = heap.pop() {
             let i = hex as usize;
@@ -220,10 +240,9 @@ impl RoutingSurface {
                 continue; // filled and routed through — not a real basin.
             }
 
-            // Retained basin: find the spill on the filled surface first, then
-            // revert to true elevation so water pools at the bottom. If there
-            // is no land outlet, leave the fill in place and route through
-            // (do not leave unreverted-looking pits with no depression id).
+            // Retained basin: find the spill on the filled surface. If there
+            // is no land outlet, leave the outer fill in place and route
+            // through (no depression id is assigned).
             let mut spill: Option<(f32, u32)> = None;
             for &cell in &component {
                 for neighbor in grid.neighbors(HexId(cell)) {
@@ -244,9 +263,6 @@ impl RoutingSurface {
             let Some((spill_level_m, spill_hex)) = spill else {
                 continue; // no land outlet: keep fill, route through.
             };
-            for &cell in &component {
-                filled[cell as usize] = elev[cell as usize];
-            }
             let index = depressions.len() as u32;
             for &cell in &component {
                 depression_of[cell as usize] = index;
@@ -260,82 +276,96 @@ impl RoutingSurface {
             });
         }
 
+        // Endorheic closure (§4.1/§5): within each retained depression, re-flood
+        // from the basin bottom at its true elevation, so every cell drains
+        // strictly downhill toward the bottom. The outer fill grades toward the
+        // spill — left in place it would leak a closed basin out its own outlet.
+        // One confined flood per basin, O(cells log cells) total; this replaces
+        // the old revert-and-repair-sinks passes.
+        for (index, depression) in depressions.iter().enumerate() {
+            for &cell in &depression.cells {
+                filled[cell as usize] = f32::INFINITY;
+            }
+            let bottom = depression.bottom as usize;
+            filled[bottom] = elev[bottom];
+            let mut heap = BinaryHeap::new();
+            heap.push(FillNode {
+                level: elev[bottom],
+                hex: depression.bottom,
+            });
+            while let Some(FillNode { level, hex }) = heap.pop() {
+                let i = hex as usize;
+                if level > filled[i] {
+                    continue; // stale entry: a lower path already won.
+                }
+                for &neighbor in grid.neighbors_sorted(HexId(hex)) {
+                    let j = neighbor.0 as usize;
+                    if j >= n || depression_of[j] != index as u32 {
+                        continue;
+                    }
+                    let new_level = elev[j].max(level + FILL_EPSILON_M);
+                    if new_level < filled[j] {
+                        filled[j] = new_level;
+                        heap.push(FillNode {
+                            level: new_level,
+                            hex: neighbor.0,
+                        });
+                    }
+                }
+            }
+        }
+
         // Depression bottoms (only) may remain sinks; every other land cell
-        // must drain. Track bottoms explicitly — side cells of a retained
-        // basin still need downhill targets on the reverted surface.
+        // must drain. Track bottoms explicitly — basin side cells drain toward
+        // the bottom on the confined fill. A boundary-less world drains to
+        // its sump instead.
         let mut is_depression_bottom = vec![false; n];
         for depression in &depressions {
             is_depression_bottom[depression.bottom as usize] = true;
         }
+        if let Some(s) = sump {
+            is_depression_bottom[s as usize] = true;
+        }
 
         // §4.3 flow directions: steepest descent over the filled surface,
         // ties to the lowest neighbor HexId. Water cells and depression
-        // bottoms get None.
+        // bottoms get None. Depression cells may only target cells of their
+        // own basin — a closed basin must not leak through its outlet.
         let mut flow_target: Vec<Option<u32>> = vec![None; n];
-        let assign_flow_targets = |filled: &[f32], flow_target: &mut [Option<u32>]| {
-            for i in 0..n {
-                if closed_is_water(i, &candidate_of, data) || is_depression_bottom[i] {
-                    flow_target[i] = None;
-                    continue;
-                }
-                let own = filled[i];
-                let mut best: Option<(f32, u32)> = None;
-                for neighbor in grid.neighbors(HexId(i as u32)) {
-                    let j = neighbor.0 as usize;
-                    if j >= n || filled[j] >= own {
-                        continue;
-                    }
-                    let candidate = (filled[j], neighbor.0);
-                    if best.is_none_or(|b| candidate < b) {
-                        best = Some(candidate);
-                    }
-                }
-                flow_target[i] = best.map(|(_, target)| target);
+        for i in 0..n {
+            if closed_is_water(i, &candidate_of, data) || is_depression_bottom[i] {
+                continue;
             }
-        };
-        assign_flow_targets(&filled, &mut flow_target);
-
-        // Orphan-sink resolution (gate §15 #4): raise each land cell with no
-        // downhill neighbor to min_neighbor_filled + ε and reassign. Repeat
-        // until every non-bottom drains. Uses next-after semantics so f32
-        // plateaus cannot stall the raise.
-        for _ in 0..n {
-            let mut raised = false;
-            for i in 0..n {
-                if closed_is_water(i, &candidate_of, data)
-                    || is_depression_bottom[i]
-                    || flow_target[i].is_some()
+            let own = filled[i];
+            let own_depression = depression_of[i];
+            let mut best: Option<(f32, u32)> = None;
+            for neighbor in grid.neighbors(HexId(i as u32)) {
+                let j = neighbor.0 as usize;
+                if j >= n
+                    || filled[j] >= own
+                    || (own_depression != NONE && depression_of[j] != own_depression)
                 {
                     continue;
                 }
-                let mut best: Option<(f32, u32)> = None;
-                for neighbor in grid.neighbors(HexId(i as u32)) {
-                    let j = neighbor.0 as usize;
-                    if j >= n {
-                        continue;
-                    }
-                    let candidate = (filled[j], neighbor.0);
-                    if best.is_none_or(|b| candidate < b) {
-                        best = Some(candidate);
-                    }
+                let candidate = (filled[j], neighbor.0);
+                if best.is_none_or(|b| candidate < b) {
+                    best = Some(candidate);
                 }
-                let Some((min_filled, target)) = best else {
-                    continue;
-                };
-                // Raise strictly above the chosen outlet (ε, or one ulp).
-                let raised_level = (min_filled + FILL_EPSILON_M)
-                    .max(f32::from_bits(min_filled.to_bits().saturating_add(1)));
-                filled[i] = raised_level;
-                flow_target[i] = Some(target);
-                raised = true;
             }
-            if !raised {
-                break;
-            }
-            // Neighbors that pointed into a newly raised cell may now be
-            // uphill — recompute steepest-descent targets.
-            assign_flow_targets(&filled, &mut flow_target);
+            flow_target[i] = best.map(|(_, target)| target);
         }
+
+        // By construction every non-water, non-bottom land cell now drains:
+        // the outer flood leaves a strictly-lower neighbor for every plain
+        // cell, and each confined flood does the same within its basin.
+        debug_assert!(
+            (0..n).all(|i| {
+                closed_is_water(i, &candidate_of, data)
+                    || is_depression_bottom[i]
+                    || flow_target[i].is_some()
+            }),
+            "§4.1 routing surface left an orphan sink"
+        );
 
         // Accumulation order: descending filled elevation, ascending HexId.
         let mut order_desc: Vec<u32> = (0..n as u32)
