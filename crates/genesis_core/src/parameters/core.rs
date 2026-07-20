@@ -215,6 +215,72 @@ impl Default for HydrologyParameters {
     }
 }
 
+/// Terrain calibration targets (Doc 10 — the solve-to-target layer).
+///
+/// The calibration layer maps the tectonic **structure** field onto these
+/// targets each tick, so headline terrain properties are settings we *solve
+/// for*, not chaotic emergent outputs. Every field is a menu knob; because
+/// targets are solved (not emergent), moving one knob moves only its own axis.
+///
+/// `Copy` so the tick loop can lift a snapshot out of `world.parameters` before
+/// mutating `world` (avoids an aliasing borrow).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TerrainTargets {
+    /// Master switch. `true` runs the calibrated (Doc 10) terrain; `false`
+    /// falls back to the legacy emergent bathtub path.
+    pub enabled: bool,
+    /// Fraction of the sphere above sea level (the pinned datum, 0 m). The land
+    /// coverage dial. Default 0.29 (Earth ≈ 0.29). Band 0.05–0.95.
+    pub land_fraction: f32,
+    /// Allowed ± per-year excursion of land fraction around the setpoint
+    /// (Doc 10 §7 temporal controller). Default 0.08. Band 0.0–0.20.
+    pub land_fraction_wander: f32,
+    /// Modal land elevation above sea (m). Default 300. Band 0–1500.
+    pub continental_modal_height_m: f32,
+    /// Fatness/height of the mountain (upper) tail → mountain count & height.
+    /// Default 1.0. Band 0–3.
+    pub orogeny_intensity: f32,
+    /// Ocean modal depth (m, negative). Default −4000. Band −6000…−2000.
+    pub abyssal_depth_m: f32,
+    /// Deep-ocean tail floor / trench depth (m, negative). Default −9000.
+    pub trench_depth_m: f32,
+    /// Share of area in the shallow continental-shelf band (fixes "abyss at the
+    /// beach"). Default 0.06. Band 0–0.20.
+    pub shelf_fraction: f32,
+    /// Shelf-break depth (m, negative). Default −140. Band −500…0.
+    pub shelf_depth_m: f32,
+    /// Continental-slope band width as a fraction of area. Default 0.03.
+    pub slope_width_frac: f32,
+    /// Sharpness of the land/ocean split. Default 1.0. Band 0.3–2.0.
+    pub hypsometric_bimodality: f32,
+    /// Oceanic high-spot (island/arc) seeding rate (Doc 10 §8, Phase 1).
+    /// Default 1.0. Band 0–3.
+    pub island_density: f32,
+    /// Number of major fertile river valleys, as a discharge-percentile cut
+    /// (Doc 10 §8, Phase 1). Default 1.0. Band 0–3.
+    pub river_density: f32,
+}
+
+impl Default for TerrainTargets {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            land_fraction: 0.29,
+            land_fraction_wander: 0.08,
+            continental_modal_height_m: 300.0,
+            orogeny_intensity: 1.0,
+            abyssal_depth_m: -4000.0,
+            trench_depth_m: -9000.0,
+            shelf_fraction: 0.06,
+            shelf_depth_m: -140.0,
+            slope_width_frac: 0.03,
+            hypsometric_bimodality: 1.0,
+            island_density: 1.0,
+            river_density: 1.0,
+        }
+    }
+}
+
 /// Initial climate boundary conditions.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ClimateInitialParameters {
@@ -261,6 +327,7 @@ pub struct CoreParameters {
     pub grid: GridParameters,
     pub time: TimeParameters,
     pub geology: GeologyParameters,
+    pub terrain: TerrainTargets,
     pub climate_initial: ClimateInitialParameters,
     pub climate: ClimateParameters,
     pub hydrology: HydrologyParameters,

@@ -26,7 +26,10 @@ use crate::partition::partition_land;
 use crate::regime::classify_regimes;
 use crate::routing::{FlowAccumulation, RoutingSurface, hex_area_m2};
 use crate::soil::update_soil;
-use crate::solve::{global_mean_temperature_c, solve_flooding, thermosteric_effective_volume_m3};
+use crate::solve::{
+    global_mean_temperature_c, sea_level_for_land_fraction, solve_flooding,
+    thermosteric_effective_volume_m3, volume_to_fill_to_level_m3,
+};
 use crate::state::HydrologyState;
 
 /// Default Geological-era hydrology tick interval (Doc 08 §2.1 — matches climate).
@@ -136,7 +139,37 @@ impl SimulationLayer for HydrologyLayer {
 
         // §2.2 step 2 — flooding solve (§3.4): sea level, the ocean mask,
         // and the candidate-sea list (written by §5.2, not here).
-        let outcome = solve_flooding(world, budget.ocean_volume_m3);
+        //
+        // Doc 10 datum pin: when the calibration layer is active the land/ocean
+        // line is the calibrated terrain's sea level = 0, not the GEL budget, so
+        // flood to the volume that fills everything below 0. GEL still drives the
+        // budget partition (ice / groundwater / atmosphere) above.
+        let ocean_volume_m3 = if world.parameters.core.terrain.enabled {
+            // Datum pin (Doc 10): solve sea level as the (1 − land_fraction)
+            // elevation quantile, so the land fraction is exactly the target,
+            // independent of the GEL budget, thermosteric drift, or which era
+            // last calibrated the terrain. During condensation the level rises
+            // from the deepest cell up to that quantile, so oceans form on a
+            // timeline. Fed to the bathtub solve as the equivalent volume, with
+            // thermosteric expansion divided out so the solved level is exact
+            // (GEL still drives the ice/groundwater/atmosphere partition;
+            // deliberate bounded eustasy returns in Phase 2).
+            let land = f64::from(world.parameters.core.terrain.land_fraction);
+            let target_level = sea_level_for_land_fraction(world, land);
+            let deepest = world
+                .elevation_mean
+                .iter()
+                .copied()
+                .fold(f32::INFINITY, f32::min);
+            let level =
+                f64::from(deepest) + (target_level - f64::from(deepest)) * condensed_fraction;
+            let vol = volume_to_fill_to_level_m3(world, level);
+            let thermo = thermosteric_effective_volume_m3(1.0, global_mean_temperature_c(world));
+            if thermo > 0.0 { vol / thermo } else { vol }
+        } else {
+            budget.ocean_volume_m3
+        };
+        let outcome = solve_flooding(world, ocean_volume_m3);
 
         debug_assert!(
             budget.is_conserved(),
@@ -249,8 +282,12 @@ impl SimulationLayer for HydrologyLayer {
         // and the candidates hold what they kept.
         debug_assert!(
             {
+                // Check against the volume we actually flooded with: under the
+                // Doc 10 datum pin this is the volume-below-0, not the GEL budget
+                // term; the invariant (accounted standing water == flooded
+                // volume) holds either way.
                 let effective = thermosteric_effective_volume_m3(
-                    budget.ocean_volume_m3,
+                    ocean_volume_m3,
                     global_mean_temperature_c(world),
                 );
                 let accounted = world
@@ -556,6 +593,10 @@ mod tests {
     fn skip_formation_suppresses_ocean_events() {
         let mut params = WorldParameters::default();
         params.core.climate.skip_planetary_formation = true;
+        // Legacy GEL-flood test on a uniform synthetic field: a flat −100 m
+        // world has no land-fraction quantile to solve, so exercise the legacy
+        // budget flood rather than the Doc 10 datum solve.
+        params.core.terrain.enabled = false;
         params.core.grid.subdivision_level = 4;
         let grid = HexGrid::new(4, EARTH_RADIUS_KM).expect("grid");
         let mut data = WorldData::new(grid, params);

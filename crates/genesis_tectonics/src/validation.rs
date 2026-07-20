@@ -136,7 +136,22 @@ pub fn validation_parameters() -> WorldParameters {
 pub fn run_validation_world(
     target_year: WorldYear,
 ) -> Result<(World, TectonicsState), GenerationError> {
-    let mut world = create_world(validation_parameters()).expect("validation parameters valid");
+    run_validation_world_with(target_year, |_| {})
+}
+
+/// [`run_validation_world`] with a hook to tweak the parameters first.
+///
+/// Doc 06 §11 structure gates and projection round-trip tests validate the
+/// **structure engine**, so they disable the Doc 10 calibration
+/// (`p.core.terrain.enabled = false`) to read the raw tectonic field; the
+/// calibrated output is validated separately (land fraction, shelf, no-pit).
+pub fn run_validation_world_with(
+    target_year: WorldYear,
+    configure: impl FnOnce(&mut genesis_core::parameters::WorldParameters),
+) -> Result<(World, TectonicsState), GenerationError> {
+    let mut params = validation_parameters();
+    configure(&mut params);
+    let mut world = create_world(params).expect("validation parameters valid");
     let mut state = TectonicsState::new();
     generate_full_history_with_tectonics(&mut world, &mut state, target_year, |_| {})?;
     Ok((world, state))

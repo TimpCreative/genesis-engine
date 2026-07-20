@@ -102,6 +102,44 @@ pub fn bathtub_level_m(
     (effective_volume_m3 / hex_area_m2 + prefix_sum) / n as f64
 }
 
+/// Ocean volume (m³) that fills every cell below `level_m` up to `level_m`.
+///
+/// Feeding this to [`solve_flooding`] pins the solved sea level to `level_m`:
+/// `bathtub_level_m` inverts volume→level, so the level it returns is exactly
+/// `level_m`. Used by the Doc 10 datum pin so the land/ocean line follows the
+/// calibrated terrain (sea level = 0) instead of the GEL water budget.
+pub fn volume_to_fill_to_level_m3(data: &WorldData, level_m: f64) -> f64 {
+    let hex_area_m2 = data.grid.hex_area_km2(HexId(0)) * 1.0e6;
+    let mut volume_m3 = 0.0_f64;
+    for &elev in &data.elevation_mean {
+        let gap = level_m - f64::from(elev);
+        if gap > 0.0 {
+            volume_m3 += hex_area_m2 * gap;
+        }
+    }
+    volume_m3
+}
+
+/// Sea level (m) that puts exactly `land_fraction` of cells above it: the
+/// `(1 − land_fraction)` elevation quantile.
+///
+/// The direct solve-to-target datum (Doc 10) — land fraction is exact by
+/// construction, independent of the water budget, thermosteric drift, or which
+/// era last calibrated the terrain.
+pub fn sea_level_for_land_fraction(data: &WorldData, land_fraction: f64) -> f64 {
+    let n = data.cell_count() as usize;
+    if n == 0 {
+        return 0.0;
+    }
+    let mut elevs: Vec<f32> = data.elevation_mean.clone();
+    elevs.sort_by(|a, b| a.total_cmp(b));
+    let ocean_frac = (1.0 - land_fraction).clamp(0.0, 1.0);
+    // Cells [0, k) are ocean; the level sits at the k-th cell so exactly
+    // `land_fraction·n` cells stand above it.
+    let k = ((ocean_frac * n as f64).round() as usize).min(n - 1);
+    f64::from(elevs[k])
+}
+
 /// One connected component of `{elev < L}` cells.
 #[derive(Debug)]
 struct BasinComponent {

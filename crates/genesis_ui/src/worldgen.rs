@@ -221,15 +221,18 @@ pub fn generate_full_history(
     flush_climate_events(world, climate);
     flush_hydrology_events(world, hydrology);
 
-    // Final reconciliation: the last hydrology tick can dry a deep endorheic
-    // basin to a salt flat at its tectonically-deepened bottom with no following
-    // tectonic tick to fill it. The running sim clears these next tick; do the
-    // same once here so the final snapshot matches the steady state.
-    genesis_tectonics::basin_infill::finalize_dry_basins(
-        &mut world.data,
-        &mut tectonics.registry,
-        &tectonics.projection,
-    );
+    // Final reconciliation (legacy path only): the last hydrology tick can dry a
+    // deep endorheic basin to a salt flat at its tectonically-deepened bottom
+    // with no following tectonic tick to fill it. Under the Doc 10 calibration
+    // this raw rebuild would overwrite the calibrated terrain with the raw
+    // structure, so skip it — the last calibrated tick is authoritative.
+    if !world.data.parameters.core.terrain.enabled {
+        genesis_tectonics::basin_infill::finalize_dry_basins(
+            &mut world.data,
+            &mut tectonics.registry,
+            &tectonics.projection,
+        );
+    }
 
     Ok(())
 }
@@ -446,7 +449,7 @@ mod tests {
 
         let n = world.data.cell_count() as usize;
         let mut wet = 0u32;
-        let mut blue = 0u32;
+        let mut water_colored = 0u32;
         for i in 0..n {
             let elev = world.data.elevation_mean[i];
             let water = world.data.water_level_m[i];
@@ -458,14 +461,18 @@ mod tests {
                 let c = hex_color_for_mode(&world.data, i, RenderMode::Elevation, false);
                 c.to_srgba().to_f32_array_no_alpha()
             };
-            if rgb[2] > rgb[0] + 0.05 && rgb[2] > rgb[1] {
-                blue += 1;
+            // The scrub bug rendered wet hexes as tan dry land (red-dominant).
+            // Water reads blue or, on the calibrated shallow shelf, cyan
+            // (blue ≈ green) — either way blue clearly beats red. Guard against
+            // the tan bug, not against shallow-water cyan.
+            if rgb[2] > rgb[0] + 0.05 && rgb[2] >= rgb[1] - 0.02 {
+                water_colored += 1;
             }
         }
         assert!(wet > 0, "expected standing water at 300M");
         assert_eq!(
-            blue, wet,
-            "every wet hex must render blue after scrub (wet={wet} blue={blue})"
+            water_colored, wet,
+            "every wet hex must render as water (blue/cyan), not tan, after scrub (wet={wet} water_colored={water_colored})"
         );
     }
 

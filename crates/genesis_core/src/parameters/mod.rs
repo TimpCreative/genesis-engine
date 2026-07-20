@@ -8,7 +8,7 @@ mod validation;
 pub use core::{
     BiologyParameters, CivilizationParameters, ClimateInitialParameters, ClimateParameters,
     CoreParameters, GeologyParameters, GridParameters, HydrologyParameters, ModEntry, ModManifest,
-    PlanetParameters, TimeParameters, WorldSeed,
+    PlanetParameters, TerrainTargets, TimeParameters, WorldSeed,
 };
 pub use extensions::{ParameterExtensions, ParameterValue, ParameterValueData};
 pub use validation::ParameterValidationError;
@@ -76,6 +76,7 @@ impl Default for WorldParameters {
                     max_artifact_lake_hexes: 80,
                     min_geologic_lake_depth_m: 400.0,
                 },
+                terrain: TerrainTargets::default(),
                 climate_initial: ClimateInitialParameters {
                     initial_mean_temperature_c: 15.0,
                     initial_sea_level_m: 0.0,

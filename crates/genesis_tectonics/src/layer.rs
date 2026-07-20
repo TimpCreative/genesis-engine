@@ -98,6 +98,13 @@ impl SimulationLayer for TectonicsLayer {
                 event_granularity,
             );
 
+            // Calibrate the formation world so downstream layers see the target
+            // hypsometry and pinned datum from year 0 (Doc 10).
+            {
+                let targets = world.parameters.core.terrain;
+                crate::calibration::apply_hypsometry_transfer(world, &targets);
+            }
+
             state.formation_complete = true;
             self.last_tick_year.set(world.current_year);
             return Vec::new();
@@ -361,6 +368,15 @@ impl SimulationLayer for TectonicsLayer {
 
             timed_tick_step("clamp", tick_year, || {
                 clamp_terrain(world);
+            });
+
+            // Solve-to-target calibration (Doc 10): map the structure field onto
+            // the target hypsometric curve and pin the datum to 0. Final word on
+            // absolute height; the raw structure is rebuilt from plate surfaces
+            // next tick, so this never feeds back into the sim.
+            timed_tick_step("calibration", tick_year, || {
+                let targets = world.parameters.core.terrain;
+                crate::calibration::apply_hypsometry_transfer(world, &targets);
             });
 
             let (min_elev, max_elev) = elevation_min_max(world);
