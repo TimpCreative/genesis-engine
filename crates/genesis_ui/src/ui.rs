@@ -621,7 +621,7 @@ fn spawn_setup_screen(
             }
             {
                 let hint =
-                    "Seed: type 0-9 a-f  ·  Backspace  ·  Cmd/Ctrl+C/V copy-paste  ·  Random";
+                    "Seed: type any letters/numbers  ·  Backspace  ·  Cmd/Ctrl+C/V copy-paste  ·  Random";
                 parent.spawn((
                     label(hint, 14.0).0,
                     label(hint, 14.0).1,
@@ -782,28 +782,54 @@ fn update_tab_visibility(active: Res<ActiveSetupTab>, mut rows: Query<(&TabRow, 
     }
 }
 
-/// Hex keys accepted in the seed field, mapped to their character.
-const SEED_HEX_KEYS: [(KeyCode, char); 16] = [
-    (KeyCode::Digit0, '0'),
-    (KeyCode::Digit1, '1'),
-    (KeyCode::Digit2, '2'),
-    (KeyCode::Digit3, '3'),
-    (KeyCode::Digit4, '4'),
-    (KeyCode::Digit5, '5'),
-    (KeyCode::Digit6, '6'),
-    (KeyCode::Digit7, '7'),
-    (KeyCode::Digit8, '8'),
-    (KeyCode::Digit9, '9'),
-    (KeyCode::KeyA, 'a'),
-    (KeyCode::KeyB, 'b'),
-    (KeyCode::KeyC, 'c'),
-    (KeyCode::KeyD, 'd'),
-    (KeyCode::KeyE, 'e'),
-    (KeyCode::KeyF, 'f'),
-];
+/// Maps a key to the character it types in the seed field. Alphanumeric
+/// (`0-9 a-z`) so any word or hex string is a valid seed — every distinct string
+/// hashes to a distinct world via `WorldSeed::from_string`.
+fn keycode_to_seed_char(code: KeyCode) -> Option<char> {
+    use KeyCode::*;
+    Some(match code {
+        Digit0 | Numpad0 => '0',
+        Digit1 | Numpad1 => '1',
+        Digit2 | Numpad2 => '2',
+        Digit3 | Numpad3 => '3',
+        Digit4 | Numpad4 => '4',
+        Digit5 | Numpad5 => '5',
+        Digit6 | Numpad6 => '6',
+        Digit7 | Numpad7 => '7',
+        Digit8 | Numpad8 => '8',
+        Digit9 | Numpad9 => '9',
+        KeyA => 'a',
+        KeyB => 'b',
+        KeyC => 'c',
+        KeyD => 'd',
+        KeyE => 'e',
+        KeyF => 'f',
+        KeyG => 'g',
+        KeyH => 'h',
+        KeyI => 'i',
+        KeyJ => 'j',
+        KeyK => 'k',
+        KeyL => 'l',
+        KeyM => 'm',
+        KeyN => 'n',
+        KeyO => 'o',
+        KeyP => 'p',
+        KeyQ => 'q',
+        KeyR => 'r',
+        KeyS => 's',
+        KeyT => 't',
+        KeyU => 'u',
+        KeyV => 'v',
+        KeyW => 'w',
+        KeyX => 'x',
+        KeyY => 'y',
+        KeyZ => 'z',
+        _ => return None,
+    })
+}
 
-/// Maximum seed-string length (plenty of entropy; keeps the field tidy).
-const SEED_MAX_LEN: usize = 16;
+/// Maximum seed-string length (long enough for a memorable word or full hex).
+const SEED_MAX_LEN: usize = 24;
 
 /// Types hex characters into the seed field on the setup screen (validated
 /// charset only; Backspace deletes). Only mutates the config when a relevant key
@@ -819,10 +845,9 @@ fn seed_text_input(
         return;
     }
     let backspace = keys.just_pressed(KeyCode::Backspace);
-    let typed = SEED_HEX_KEYS
-        .iter()
-        .find(|(code, _)| keys.just_pressed(*code))
-        .map(|(_, ch)| *ch);
+    let typed = keys
+        .get_just_pressed()
+        .find_map(|code| keycode_to_seed_char(*code));
     if !backspace && typed.is_none() {
         return;
     }
@@ -868,14 +893,14 @@ fn seed_clipboard(
     } else if keys.just_pressed(KeyCode::KeyV) {
         if let Ok(mut clipboard) = arboard::Clipboard::new() {
             if let Ok(text) = clipboard.get_text() {
-                let hex: String = text
+                let pasted: String = text
                     .chars()
-                    .filter(char::is_ascii_hexdigit)
+                    .filter(char::is_ascii_alphanumeric)
                     .map(|c| c.to_ascii_lowercase())
                     .take(SEED_MAX_LEN)
                     .collect();
-                if !hex.is_empty() {
-                    config.0.seed_text = hex;
+                if !pasted.is_empty() {
+                    config.0.seed_text = pasted;
                     fresh.0 = false;
                 }
             }

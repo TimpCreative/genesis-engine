@@ -7,6 +7,7 @@ use crate::render_mode::CurrentRenderMode;
 use crate::resources::{
     CameraState, ColorsDirty, HexEntityCache, HexMeshIndex, RiversDirty, WorldDirty,
 };
+use crate::WorldResource;
 use crate::rivers::update_river_overlay;
 use crate::systems::{
     CameraDragState, cycle_render_mode_on_keypress, handle_camera_input, render_world_if_dirty,
@@ -31,8 +32,11 @@ impl Plugin for GenesisRenderPlugin {
             .add_systems(
                 Update,
                 (
-                    handle_camera_input,
-                    cycle_render_mode_on_keypress,
+                    // Map input (M-cycle, mouse pan/zoom) only when a world is
+                    // loaded — so keys don't fire in the menus (e.g. while typing
+                    // a seed). Menus never hold a WorldResource.
+                    (handle_camera_input, cycle_render_mode_on_keypress)
+                        .run_if(resource_exists::<WorldResource>),
                     update_window_title,
                     sync_camera,
                     render_world_if_dirty,
