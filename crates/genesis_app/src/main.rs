@@ -357,7 +357,8 @@ fn run_interactive() {
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
         primary_window: Some(Window {
             title: "Genesis Engine".to_string(),
-            resolution: (1280, 720).into(),
+            resolution: (1600, 900).into(),
+            resizable: true,
             ..default()
         }),
         ..default()

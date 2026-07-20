@@ -358,8 +358,22 @@ pub fn hex_color_for_mode(
                 .unwrap_or(0.0);
             heatmap_color(v)
         }
-        // Civilization placeholder (Doc 10) — flat neutral for now.
-        RenderMode::Society => Color::srgb(0.30, 0.30, 0.34),
+        // Civilization placeholder (Doc 10). Oceans still render as water so
+        // land/sea stays legible (and rivers overlay for future city sites);
+        // land is a flat neutral until civ is simulated.
+        RenderMode::Society => {
+            let elev = data.elevation_mean[hex_idx];
+            let water = data
+                .water_level_m
+                .get(hex_idx)
+                .copied()
+                .unwrap_or(WATER_NONE);
+            if water.is_finite() && water > elev {
+                water_depth_color(water - elev)
+            } else {
+                Color::srgb(0.32, 0.32, 0.36)
+            }
+        }
     }
 }
 

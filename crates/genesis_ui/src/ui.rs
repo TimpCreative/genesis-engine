@@ -209,13 +209,17 @@ pub struct ProgressText;
 #[derive(Component)]
 pub struct HudText;
 
-/// Marks the timeline position bar fill node.
+/// Bright playhead line at the current year (over the era bands).
 #[derive(Component)]
-pub struct TimelineBarFill;
+pub struct TimelinePlayhead;
 
-/// Marks the timeline buffered-region fill node (dim, behind the position).
+/// Dim scrim over the buffered-but-not-yet-played span (faded era color).
 #[derive(Component)]
-pub struct TimelineBufferedFill;
+pub struct TimelineFadedScrim;
+
+/// Dark scrim over the not-yet-buffered future (era color barely shows).
+#[derive(Component)]
+pub struct TimelineFutureScrim;
 
 /// Container for the geological era bands (behind the timeline fills).
 #[derive(Component)]
@@ -1345,31 +1349,45 @@ fn spawn_viewing_hud(
                                     },
                                     EraBandStrip,
                                 ));
-                                // Dim buffered region (grows as frames stream in)...
+                                // Scrims over the era bands: buffered-but-unplayed
+                                // faded, un-buffered future dark; the played span
+                                // shows full era color underneath.
                                 bar.spawn((
                                     Node {
                                         position_type: PositionType::Absolute,
-                                        left: Val::Px(0.0),
+                                        left: Val::Percent(0.0),
                                         top: Val::Px(0.0),
                                         width: Val::Percent(0.0),
                                         height: Val::Percent(100.0),
                                         ..default()
                                     },
-                                    BackgroundColor(Color::srgb(0.24, 0.34, 0.48)),
-                                    TimelineBufferedFill,
+                                    BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.35)),
+                                    TimelineFadedScrim,
                                 ));
-                                // ...under the bright playhead position.
                                 bar.spawn((
                                     Node {
                                         position_type: PositionType::Absolute,
-                                        left: Val::Px(0.0),
+                                        left: Val::Percent(0.0),
                                         top: Val::Px(0.0),
-                                        width: Val::Percent(0.0),
+                                        width: Val::Percent(100.0),
                                         height: Val::Percent(100.0),
                                         ..default()
                                     },
-                                    BackgroundColor(ACCENT),
-                                    TimelineBarFill,
+                                    BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.72)),
+                                    TimelineFutureScrim,
+                                ));
+                                // Bright playhead line at the current year.
+                                bar.spawn((
+                                    Node {
+                                        position_type: PositionType::Absolute,
+                                        left: Val::Percent(0.0),
+                                        top: Val::Px(-2.0),
+                                        width: Val::Px(2.0),
+                                        height: Val::Percent(140.0),
+                                        ..default()
+                                    },
+                                    BackgroundColor(Color::WHITE),
+                                    TimelinePlayhead,
                                 ));
                                 // Event pips (on top; filled by build_timeline_marks).
                                 bar.spawn((
@@ -1504,8 +1522,9 @@ fn refresh_hud(
     mode: Res<CurrentRenderMode>,
     mut hud: Query<&mut Text, With<HudText>>,
     mut bars: ParamSet<(
-        Query<&mut Node, With<TimelineBarFill>>,
-        Query<&mut Node, With<TimelineBufferedFill>>,
+        Query<&mut Node, With<TimelinePlayhead>>,
+        Query<&mut Node, With<TimelineFadedScrim>>,
+        Query<&mut Node, With<TimelineFutureScrim>>,
     )>,
 ) {
     let Some(timeline) = timeline else {
@@ -1533,13 +1552,21 @@ fn refresh_hud(
             mode.0.label(),
         );
     }
-    // Both widths are year-based so the playhead sits correctly inside the
-    // buffered region even with uneven frame strides.
+    // Year-based positions so everything lines up with the era bands even with
+    // uneven frame strides. Played span (0..playhead) shows full era color;
+    // buffered-ahead (playhead..buffered) is faded; future (buffered..100) dark.
+    let playhead = (frame.year as f32 / target * 100.0).clamp(0.0, 100.0);
+    let buffered = (buffered_year as f32 / target * 100.0).clamp(0.0, 100.0);
     if let Ok(mut node) = bars.p0().single_mut() {
-        node.width = Val::Percent((frame.year as f32 / target * 100.0).clamp(0.0, 100.0));
+        node.left = Val::Percent(playhead);
     }
     if let Ok(mut node) = bars.p1().single_mut() {
-        node.width = Val::Percent((buffered_year as f32 / target * 100.0).clamp(0.0, 100.0));
+        node.left = Val::Percent(playhead);
+        node.width = Val::Percent((buffered - playhead).max(0.0));
+    }
+    if let Ok(mut node) = bars.p2().single_mut() {
+        node.left = Val::Percent(buffered);
+        node.width = Val::Percent((100.0 - buffered).max(0.0));
     }
 }
 

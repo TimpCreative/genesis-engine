@@ -34,13 +34,19 @@ const CAMERA_Z: f32 = 999.0;
 pub(crate) struct MainCamera;
 
 /// Visible world size in radians for the current window aspect and zoom.
+///
+/// At `zoom = 1.0` the **whole** map is visible (contain, not fill): the
+/// limiting axis fits exactly and the other gets margin, so the map's edges are
+/// always on screen regardless of window aspect. Zoom > 1 crops in.
 pub(crate) fn viewport_world_size(window_aspect: f32, zoom: f32) -> (f32, f32) {
     if window_aspect > WORLD_ASPECT {
-        let width = WORLD_WIDTH / zoom;
-        (width, width / window_aspect)
-    } else {
+        // Window wider than the map: height is the limiting axis.
         let height = WORLD_HEIGHT / zoom;
         (height * window_aspect, height)
+    } else {
+        // Window narrower than the map: width is the limiting axis.
+        let width = WORLD_WIDTH / zoom;
+        (width, width / window_aspect)
     }
 }
 
