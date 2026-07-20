@@ -75,7 +75,7 @@ fn drive_smoke(
             // the first and last frames when scrubbing.
             config.0.subdivision_level = 5;
             config.0.target_year = 1_000_000_000;
-            config.0.seed = 42;
+            config.0.seed_text = "42".to_string();
             snapshot(&mut commands, &mut driver, "2_setup");
             start_generation(&mut commands, config.0.clone());
             next_screen.set(AppScreen::Generating);

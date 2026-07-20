@@ -48,7 +48,39 @@ pub enum UiAction {
     Adjust(Param, i8),
     TimelineStep(i64),
     PlayPause,
+    SelectTab(SetupTab),
+    RandomizeSeed,
 }
+
+/// Setup-screen parameter groups, so the world recipe stays organized as knobs
+/// grow. Ordered left-to-right in the tab bar.
+#[derive(Component, Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum SetupTab {
+    #[default]
+    World,
+    Terrain,
+    Climate,
+}
+
+impl SetupTab {
+    pub const ALL: [SetupTab; 3] = [SetupTab::World, SetupTab::Terrain, SetupTab::Climate];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SetupTab::World => "World",
+            SetupTab::Terrain => "Terrain",
+            SetupTab::Climate => "Climate",
+        }
+    }
+}
+
+/// Active setup tab; drives which parameter rows are visible.
+#[derive(Resource, Default)]
+pub struct ActiveSetupTab(pub SetupTab);
+
+/// Tags a setup-screen parameter row with the tab it belongs to.
+#[derive(Component)]
+pub struct TabRow(pub SetupTab);
 
 /// User-adjustable world parameters shown on the setup screen.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -144,6 +176,7 @@ impl Plugin for GenesisUiPlugin {
     fn build(&self, app: &mut App) {
         app.init_state::<AppScreen>()
             .init_resource::<ActiveConfig>()
+            .init_resource::<ActiveSetupTab>()
             .init_resource::<ScrubRepeat>()
             .init_resource::<HoveredHex>()
             .init_resource::<InspectorTab>()
@@ -172,7 +205,12 @@ impl Plugin for GenesisUiPlugin {
                 (
                     button_hover_feedback,
                     handle_actions,
-                    refresh_param_values.run_if(in_state(AppScreen::Setup)),
+                    (
+                        refresh_param_values,
+                        update_tab_visibility,
+                        seed_text_input,
+                    )
+                        .run_if(in_state(AppScreen::Setup)),
                     poll_generation.run_if(resource_exists::<GenerationTask>),
                     (
                         update_hovered_hex,
@@ -318,31 +356,70 @@ fn spawn_main_menu(mut commands: Commands) {
 // Setup screen
 // ---------------------------------------------------------------------------
 
-const SETUP_PARAMS: [(Param, &str); 10] = [
-    (Param::Seed, "Seed"),
-    (Param::SubdivisionLevel, "Detail (subdivision level)"),
-    (Param::TargetYear, "Simulate to year"),
-    (Param::LandFraction, "Land coverage %"),
-    (Param::Mountains, "Mountains"),
-    (Param::Islands, "Islands"),
-    (Param::MajorPlates, "Major plates"),
-    (Param::MinorPlates, "Minor plates"),
-    (Param::ContinentalFraction, "Continental crust seed %"),
-    (Param::WaterInventory, "Total water (m deep if spread flat)"),
+const SETUP_PARAMS: [(Param, &str, SetupTab); 10] = [
+    (Param::Seed, "Seed", SetupTab::World),
+    (
+        Param::SubdivisionLevel,
+        "Detail (subdivision level)",
+        SetupTab::World,
+    ),
+    (Param::TargetYear, "Simulate to year", SetupTab::World),
+    (Param::LandFraction, "Land coverage %", SetupTab::Terrain),
+    (Param::Mountains, "Mountains", SetupTab::Terrain),
+    (Param::Islands, "Islands", SetupTab::Terrain),
+    (Param::MajorPlates, "Major plates", SetupTab::Terrain),
+    (Param::MinorPlates, "Minor plates", SetupTab::Terrain),
+    (
+        Param::ContinentalFraction,
+        "Continental crust seed %",
+        SetupTab::Terrain,
+    ),
+    (
+        Param::WaterInventory,
+        "Total water (m deep if spread flat)",
+        SetupTab::Climate,
+    ),
 ];
 
-fn spawn_setup_screen(mut commands: Commands) {
+fn spawn_setup_screen(mut commands: Commands, active_tab: Res<ActiveSetupTab>) {
+    let current_tab = active_tab.0;
     commands
         .spawn(full_screen_root(AppScreen::Setup))
         .with_children(|parent| {
             parent.spawn(label("New World", 36.0));
-            for (param, name) in SETUP_PARAMS {
+
+            // Tab bar — one button per group; rows below toggle visibility.
+            parent
+                .spawn(Node {
+                    column_gap: Val::Px(8.0),
+                    margin: UiRect::vertical(Val::Px(12.0)),
+                    ..default()
+                })
+                .with_children(|bar| {
+                    for tab in SetupTab::ALL {
+                        bar.spawn(button(UiAction::SelectTab(tab)))
+                            .with_children(|b| {
+                                b.spawn(label(tab.label(), 18.0));
+                            });
+                    }
+                });
+
+            for (param, name, tab) in SETUP_PARAMS {
+                let visibility = if tab == current_tab {
+                    Visibility::Visible
+                } else {
+                    Visibility::Hidden
+                };
                 parent
-                    .spawn(Node {
-                        column_gap: Val::Px(10.0),
-                        align_items: AlignItems::Center,
-                        ..default()
-                    })
+                    .spawn((
+                        Node {
+                            column_gap: Val::Px(10.0),
+                            align_items: AlignItems::Center,
+                            ..default()
+                        },
+                        TabRow(tab),
+                        visibility,
+                    ))
                     .with_children(|row| {
                         row.spawn((
                             label(name, 18.0).0,
@@ -353,27 +430,51 @@ fn spawn_setup_screen(mut commands: Commands) {
                                 ..default()
                             },
                         ));
-                        row.spawn(button(UiAction::Adjust(param, -1)))
-                            .with_children(|b| {
-                                b.spawn(label("-", 18.0));
-                            });
-                        row.spawn((
-                            label("", 18.0).0,
-                            label("", 18.0).1,
-                            TextColor(ACCENT),
-                            ParamValueText(param),
-                            Node {
-                                width: Val::Px(140.0),
-                                justify_content: JustifyContent::Center,
-                                ..default()
-                            },
-                        ));
-                        row.spawn(button(UiAction::Adjust(param, 1)))
-                            .with_children(|b| {
-                                b.spawn(label("+", 18.0));
-                            });
+                        if param == Param::Seed {
+                            // Typed hex value + Random button (no +/- counter).
+                            row.spawn((
+                                label("", 18.0).0,
+                                label("", 18.0).1,
+                                TextColor(ACCENT),
+                                ParamValueText(param),
+                                Node {
+                                    width: Val::Px(180.0),
+                                    justify_content: JustifyContent::Center,
+                                    ..default()
+                                },
+                            ));
+                            row.spawn(button(UiAction::RandomizeSeed))
+                                .with_children(|b| {
+                                    b.spawn(label("Random", 16.0));
+                                });
+                        } else {
+                            row.spawn(button(UiAction::Adjust(param, -1)))
+                                .with_children(|b| {
+                                    b.spawn(label("-", 18.0));
+                                });
+                            row.spawn((
+                                label("", 18.0).0,
+                                label("", 18.0).1,
+                                TextColor(ACCENT),
+                                ParamValueText(param),
+                                Node {
+                                    width: Val::Px(140.0),
+                                    justify_content: JustifyContent::Center,
+                                    ..default()
+                                },
+                            ));
+                            row.spawn(button(UiAction::Adjust(param, 1)))
+                                .with_children(|b| {
+                                    b.spawn(label("+", 18.0));
+                                });
+                        }
                     });
             }
+            parent.spawn((
+                label("Type hex (0-9 a-f) to edit the seed.", 14.0).0,
+                label("Type hex (0-9 a-f) to edit the seed.", 14.0).1,
+                TextColor(Color::srgb(0.6, 0.6, 0.65)),
+            ));
             parent.spawn(Node {
                 height: Val::Px(16.0),
                 ..default()
@@ -396,7 +497,13 @@ fn spawn_setup_screen(mut commands: Commands) {
 
 fn format_param(config: &WorldGenConfig, param: Param) -> String {
     match param {
-        Param::Seed => config.seed.to_string(),
+        Param::Seed => {
+            if config.seed_text.is_empty() {
+                "(type or Random)".to_string()
+            } else {
+                config.seed_text.clone()
+            }
+        }
         Param::SubdivisionLevel => format!("{}", config.subdivision_level),
         Param::TargetYear => format_year(config.target_year),
         Param::MajorPlates => config.major_plates.to_string(),
@@ -420,15 +527,10 @@ pub fn format_year(year: i64) -> String {
 }
 
 fn adjust_param(config: &mut WorldGenConfig, param: Param, direction: i8) {
-    let up = direction > 0;
     match param {
-        Param::Seed => {
-            config.seed = if up {
-                config.seed.wrapping_add(1)
-            } else {
-                config.seed.wrapping_sub(1)
-            };
-        }
+        // Seed is a typed hex field with a Random button, not a +/- counter
+        // (see `seed_text_input` / `UiAction::RandomizeSeed`).
+        Param::Seed => {}
         Param::SubdivisionLevel => {
             let level = config.subdivision_level as i16 + direction as i16;
             config.subdivision_level = level.clamp(5, 8) as u8;
@@ -486,6 +588,78 @@ fn refresh_param_values(
     for (param_text, mut text) in &mut labels {
         text.0 = format_param(&config.0, param_text.0);
     }
+}
+
+/// Shows only the rows belonging to the active setup tab.
+fn update_tab_visibility(active: Res<ActiveSetupTab>, mut rows: Query<(&TabRow, &mut Visibility)>) {
+    if !active.is_changed() {
+        return;
+    }
+    for (row, mut vis) in &mut rows {
+        *vis = if row.0 == active.0 {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
+    }
+}
+
+/// Hex keys accepted in the seed field, mapped to their character.
+const SEED_HEX_KEYS: [(KeyCode, char); 16] = [
+    (KeyCode::Digit0, '0'),
+    (KeyCode::Digit1, '1'),
+    (KeyCode::Digit2, '2'),
+    (KeyCode::Digit3, '3'),
+    (KeyCode::Digit4, '4'),
+    (KeyCode::Digit5, '5'),
+    (KeyCode::Digit6, '6'),
+    (KeyCode::Digit7, '7'),
+    (KeyCode::Digit8, '8'),
+    (KeyCode::Digit9, '9'),
+    (KeyCode::KeyA, 'a'),
+    (KeyCode::KeyB, 'b'),
+    (KeyCode::KeyC, 'c'),
+    (KeyCode::KeyD, 'd'),
+    (KeyCode::KeyE, 'e'),
+    (KeyCode::KeyF, 'f'),
+];
+
+/// Maximum seed-string length (plenty of entropy; keeps the field tidy).
+const SEED_MAX_LEN: usize = 16;
+
+/// Types hex characters into the seed field on the setup screen (validated
+/// charset only; Backspace deletes). Only mutates the config when a relevant key
+/// fired, so change detection stays quiet otherwise.
+fn seed_text_input(keys: Res<ButtonInput<KeyCode>>, mut config: ResMut<ActiveConfig>) {
+    let backspace = keys.just_pressed(KeyCode::Backspace);
+    let typed = SEED_HEX_KEYS
+        .iter()
+        .find(|(code, _)| keys.just_pressed(*code))
+        .map(|(_, ch)| *ch);
+    if !backspace && typed.is_none() {
+        return;
+    }
+    let seed = &mut config.0.seed_text;
+    if backspace {
+        seed.pop();
+    } else if let Some(ch) = typed {
+        if seed.len() < SEED_MAX_LEN {
+            seed.push(ch);
+        }
+    }
+}
+
+/// A fresh random hex seed string (time-seeded xorshift — variety, not crypto).
+fn random_seed_string() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    let mut x = nanos ^ 0x9E37_79B9_7F4A_7C15;
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    format!("{x:016x}")
 }
 
 // ---------------------------------------------------------------------------
@@ -910,6 +1084,7 @@ fn handle_actions(
     mut commands: Commands,
     interactions: ChangedButtons<&'static UiAction>,
     mut config: ResMut<ActiveConfig>,
+    mut active_tab: ResMut<ActiveSetupTab>,
     mut next_screen: ResMut<NextState<AppScreen>>,
     screen: Res<State<AppScreen>>,
     mut exit: MessageWriter<AppExit>,
@@ -942,6 +1117,12 @@ fn handle_actions(
             }
             UiAction::Adjust(param, direction) => {
                 adjust_param(&mut config.0, param, direction);
+            }
+            UiAction::SelectTab(tab) => {
+                active_tab.0 = tab;
+            }
+            UiAction::RandomizeSeed => {
+                config.0.seed_text = random_seed_string();
             }
             UiAction::TimelineStep(step) => {
                 if let (Some(timeline), Some(world_res), Some(colors_dirty), Some(rivers_dirty)) = (

@@ -43,7 +43,10 @@ pub fn max_history_frames(cell_count: u32) -> usize {
 /// User-adjustable world configuration (the "recipe" surface of the setup menu).
 #[derive(Clone, Debug)]
 pub struct WorldGenConfig {
-    pub seed: u64,
+    /// Free-text world seed (hex/string); hashed to the engine seed via
+    /// [`WorldSeed::from_string`], so any two distinct strings give distinct
+    /// worlds.
+    pub seed_text: String,
     pub subdivision_level: u8,
     pub target_year: i64,
     pub major_plates: u8,
@@ -68,7 +71,7 @@ impl Default for WorldGenConfig {
     fn default() -> Self {
         let defaults = WorldParameters::default();
         Self {
-            seed: defaults.core.seed.value,
+            seed_text: "1a2b3c4d".to_string(),
             // The game runs at subdivision 8 (production resolution, Doc 04 §3.1).
             subdivision_level: 8,
             target_year: 1_000_000_000,
@@ -87,7 +90,7 @@ impl WorldGenConfig {
     /// Builds validated engine parameters from the menu configuration.
     pub fn to_parameters(&self) -> WorldParameters {
         let mut params = WorldParameters::default();
-        params.core.seed = WorldSeed::from_integer(self.seed);
+        params.core.seed = WorldSeed::from_string(&self.seed_text);
         params.core.grid.subdivision_level = self.subdivision_level;
         params.core.geology.initial_major_plate_count = self.major_plates;
         params.core.geology.initial_minor_plate_count = self.minor_plates;
@@ -368,7 +371,7 @@ mod tests {
     #[test]
     fn buffered_generation_produces_bounded_ordered_frames() {
         let config = WorldGenConfig {
-            seed: 42,
+            seed_text: "42".to_string(),
             subdivision_level: 5,
             target_year: 50_000_000,
             ..WorldGenConfig::default()
@@ -419,7 +422,7 @@ mod tests {
     #[test]
     fn frame_apply_round_trips_render_fields() {
         let config = WorldGenConfig {
-            seed: 7,
+            seed_text: "7".to_string(),
             subdivision_level: 5,
             target_year: 2_000_000,
             ..WorldGenConfig::default()
@@ -447,7 +450,7 @@ mod tests {
         use genesis_render::{RenderMode, hex_color_for_mode};
 
         let config = WorldGenConfig {
-            seed: 0,
+            seed_text: "0".to_string(),
             subdivision_level: 5,
             // Past condensation onset (~215 My); oceans must be present for the scrub check.
             target_year: 300_000_000,
@@ -496,7 +499,7 @@ mod tests {
     #[ignore = "manual ocean-tan HistoryFrame wetting diagnostic"]
     fn diagnose_history_frame_wetting() {
         let config = WorldGenConfig {
-            seed: 0,
+            seed_text: "0".to_string(),
             subdivision_level: 5,
             target_year: 1_000_000_000,
             ..WorldGenConfig::default()
@@ -537,13 +540,13 @@ mod tests {
     #[test]
     fn config_respects_seed() {
         let a = WorldGenConfig {
-            seed: 1,
+            seed_text: "1".to_string(),
             subdivision_level: 5,
             target_year: 1_000_000,
             ..WorldGenConfig::default()
         };
         let b = WorldGenConfig {
-            seed: 2,
+            seed_text: "2".to_string(),
             ..a.clone()
         };
         let (world_a, _) = generate_world_with_history(&a, |_, _| {}).expect("a");

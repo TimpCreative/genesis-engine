@@ -88,7 +88,7 @@ pub fn full_stack_config(
     gel_m: f32,
 ) -> WorldGenConfig {
     WorldGenConfig {
-        seed,
+        seed_text: format!("{seed:x}"),
         subdivision_level: subdivision,
         target_year,
         water_inventory_gel_m: gel_m,
