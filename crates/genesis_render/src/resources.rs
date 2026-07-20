@@ -11,6 +11,21 @@ pub struct WorldResource(pub World);
 /// The active biology read-view (Prep-09 §2). Holds a `StubBiologyView` now; a
 /// `genesis_biology` adapter at Doc 09. Lives here (not `genesis_ui`) so the
 /// recolor systems can read it; inserted by `genesis_ui` at world load.
+///
+/// **Doc 09 integration checklist** (Prep-09 §13 — the entire shell goes live by
+/// doing only this, no screen/overlay/inspector rework):
+/// 1. Implement `BiologyView` in a `genesis_biology` adapter over the real
+///    ledger + `WorldData` biology arrays.
+/// 2. Register it here instead of `StubBiologyView` (the single
+///    `ActiveBiologyView(Box::new(StubBiologyView::new(seed)))` line in
+///    `genesis_ui::ui` on `GenEvent::InitialWorld`).
+/// 3. Fill `HistoryFrame::{biome,biomass,biotic_richness}` from real data so the
+///    Biome/Biomass/Diversity layers become scrub-accurate.
+/// 4. Emit real biology `EventKind`s so the timeline pips switch from stub
+///    `life_events` to real.
+/// 5. Map `TraitSet` → the Doc 09 creature renderer's inputs and drop an
+///    `ImageNode` into the existing text species cards / tree nodes.
+/// 6. Delete the stub and its `// STUB` markers.
 #[derive(Resource)]
 pub struct ActiveBiologyView(pub Box<dyn BiologyView>);
 

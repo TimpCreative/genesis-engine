@@ -294,26 +294,10 @@ pub fn inspector_hotkeys(
 
 /// Esc clears selection first; only a second Esc returns to the menu.
 /// Set when the user asks to leave the viewer; drives the confirm dialog so an
-/// accidental Esc doesn't discard a generated world.
+/// accidental Esc doesn't discard a generated world. The Esc ladder itself lives
+/// in `ui::escape_ladder` (it also needs the overlay state).
 #[derive(Resource, Default)]
 pub struct PendingMenuQuit(pub bool);
-
-pub fn viewer_escape(
-    keys: Res<ButtonInput<KeyCode>>,
-    mut selected: ResMut<SelectedHex>,
-    mut pending: ResMut<PendingMenuQuit>,
-) {
-    if !keys.just_pressed(KeyCode::Escape) {
-        return;
-    }
-    if selected.0.is_some() {
-        selected.0 = None;
-    } else {
-        // First Esc opens the "return to menu?" confirm; a second Esc dismisses
-        // it. Leaving is an explicit button press, so nothing is lost by accident.
-        pending.0 = !pending.0;
-    }
-}
 
 pub fn handle_inspector_tabs(
     mut interactions: TabButtonInteraction<'_, '_>,

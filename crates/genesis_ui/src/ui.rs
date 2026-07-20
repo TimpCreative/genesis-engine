@@ -23,7 +23,7 @@ use crate::hex_inspect::{
     BlocksMapPick, HoveredHex, InspectorTab, InspectorVisible, PendingMenuQuit,
     clear_inspect_on_exit, despawn_hex_inspect_ui, handle_inspector_tabs, handle_map_hex_click,
     inspector_hotkeys, refresh_tab_colors, spawn_hex_inspect_ui, update_hex_inspector,
-    update_hex_tooltip, update_hovered_hex, viewer_escape,
+    update_hex_tooltip, update_hovered_hex,
 };
 use crate::worldgen::{GenEvent, HistoryFrame, WorldGenConfig, generate_world_streaming};
 
@@ -341,7 +341,7 @@ impl Plugin for GenesisUiPlugin {
                         update_hovered_hex,
                         handle_map_hex_click,
                         inspector_hotkeys,
-                        viewer_escape,
+                        escape_ladder,
                         handle_inspector_tabs,
                         refresh_tab_colors,
                         update_hex_tooltip,
@@ -1772,6 +1772,27 @@ fn build_timeline_marks(
         });
     }
     built.0 = true;
+}
+
+/// The Viewing-screen Esc ladder (Prep-09 §3): a full-screen overlay closes
+/// first, then a hex selection clears, then the "return to menu?" confirm opens
+/// (a second Esc dismisses it) — so nothing is ever discarded by a single Esc.
+fn escape_ladder(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut open: ResMut<OpenOverlay>,
+    mut selected: ResMut<SelectedHex>,
+    mut pending: ResMut<PendingMenuQuit>,
+) {
+    if !keys.just_pressed(KeyCode::Escape) {
+        return;
+    }
+    if *open != OpenOverlay::None {
+        *open = OpenOverlay::None;
+    } else if selected.0.is_some() {
+        selected.0 = None;
+    } else {
+        pending.0 = !pending.0;
+    }
 }
 
 /// [B]/[T] toggle the Bestiary / Tree overlays.

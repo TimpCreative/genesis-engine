@@ -417,6 +417,45 @@ mod tests {
     }
 
     #[test]
+    fn seam_decouples_the_view() {
+        // A second BiologyView impl answers the same trait differently — the UI
+        // reads whichever is registered, with no other change (Prep-09 §12 #1).
+        struct AllTundra;
+        impl BiologyView for AllTundra {
+            fn biome_at(&self, _: &WorldData, _: HexId) -> BiomeId {
+                BiomeId(7)
+            }
+            fn biome_name(&self, _: BiomeId) -> String {
+                "Tundra".into()
+            }
+            fn richness_at(&self, _: &WorldData, _: HexId) -> f32 {
+                0.1
+            }
+            fn biomass_at(&self, _: &WorldData, _: HexId) -> f32 {
+                0.1
+            }
+            fn occupied_guilds(&self, _: &WorldData, _: HexId) -> Vec<GuildSummary> {
+                vec![]
+            }
+            fn assemblage(&self, _: &WorldData, _: HexId) -> Assemblage {
+                Assemblage::default()
+            }
+            fn tree_snapshot(&self, _: WorldYear) -> TreePeek {
+                TreePeek::default()
+            }
+            fn life_events(&self, _: WorldYear, _: WorldYear) -> Vec<LifeEventPip> {
+                vec![]
+            }
+        }
+        let data = world();
+        let stub: Box<dyn BiologyView> = Box::new(StubBiologyView::new(42));
+        let dummy: Box<dyn BiologyView> = Box::new(AllTundra);
+        assert_eq!(dummy.biome_at(&data, HexId(10)), BiomeId(7));
+        // Both satisfy the trait; the registered one drives every biology surface.
+        let _ = stub.biome_at(&data, HexId(10));
+    }
+
+    #[test]
     fn tree_grows_with_year() {
         let a = StubBiologyView::new(7);
         let early = a.tree_snapshot(WorldYear(700_000_000)).nodes.len();

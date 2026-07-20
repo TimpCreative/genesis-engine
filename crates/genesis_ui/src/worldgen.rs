@@ -8,7 +8,7 @@
 use genesis_climate::{ClimateLayer, ClimateState, flush_events_to_branch as flush_climate_events};
 use genesis_core::World;
 use genesis_core::data::{
-    ClimateRegimePlaceholder, Direction, HydroFlags, SoilClass, WaterBodyId, WorldData,
+    BiomeId, ClimateRegimePlaceholder, Direction, HydroFlags, SoilClass, WaterBodyId, WorldData,
 };
 use genesis_core::lifecycle::{GenerationError, advance_with_coordinator_observed};
 use genesis_core::parameters::{WorldParameters, WorldSeed};
@@ -122,6 +122,12 @@ pub struct HistoryFrame {
     pub soil_class: Vec<SoilClass>,
     pub flow_direction: Vec<Option<Direction>>,
     pub salt_accumulated: Vec<f32>,
+    /// Prep-09 §10: biology render fields — kept **empty** (`len 0`) until Doc 09
+    /// fills them, so the frame schema is Doc-09-ready without the memory cost of
+    /// full zeroed vectors. `apply` is length-guarded like the water fields.
+    pub biome: Vec<BiomeId>,
+    pub biomass: Vec<f32>,
+    pub biotic_richness: Vec<f32>,
 }
 
 impl HistoryFrame {
@@ -153,6 +159,10 @@ impl HistoryFrame {
             soil_class: data.soil_class.clone(),
             flow_direction: data.flow_direction.clone(),
             salt_accumulated: data.salt_accumulated.clone(),
+            // Empty until Doc 09 produces biology (Prep-09 §10).
+            biome: Vec::new(),
+            biomass: Vec::new(),
+            biotic_richness: Vec::new(),
         }
     }
 
@@ -180,6 +190,13 @@ impl HistoryFrame {
             data.flow_direction.copy_from_slice(&self.flow_direction);
             data.salt_accumulated
                 .copy_from_slice(&self.salt_accumulated);
+            // Biology fields are length-guarded (empty until Doc 09 fills them).
+            if data.biome.len() == self.biome.len() {
+                data.biome.copy_from_slice(&self.biome);
+            }
+            if data.biomass.len() == self.biomass.len() {
+                data.biomass.copy_from_slice(&self.biomass);
+            }
         }
     }
 }
@@ -476,7 +493,7 @@ mod tests {
             }
             wet += 1;
             let rgb = {
-                let c = hex_color_for_mode(&world.data, i, RenderMode::Elevation, false);
+                let c = hex_color_for_mode(&world.data, i, RenderMode::Elevation, false, None);
                 c.to_srgba().to_f32_array_no_alpha()
             };
             // The scrub bug rendered wet hexes as tan dry land (red-dominant).
