@@ -18,10 +18,10 @@ use genesis_render::{
 };
 
 use crate::hex_inspect::{
-    BlocksMapPick, HoveredHex, InspectorTab, InspectorVisible, clear_inspect_on_exit,
-    despawn_hex_inspect_ui, handle_inspector_tabs, handle_map_hex_click, inspector_hotkeys,
-    refresh_tab_colors, spawn_hex_inspect_ui, update_hex_inspector, update_hex_tooltip,
-    update_hovered_hex, viewer_escape,
+    BlocksMapPick, HoveredHex, InspectorTab, InspectorVisible, PendingMenuQuit,
+    clear_inspect_on_exit, despawn_hex_inspect_ui, handle_inspector_tabs, handle_map_hex_click,
+    inspector_hotkeys, refresh_tab_colors, spawn_hex_inspect_ui, update_hex_inspector,
+    update_hex_tooltip, update_hovered_hex, viewer_escape,
 };
 use crate::worldgen::{GenEvent, HistoryFrame, WorldGenConfig, generate_world_streaming};
 
@@ -51,6 +51,8 @@ pub enum UiAction {
     PlayPause,
     SelectTab(SetupTab),
     RandomizeSeed,
+    ConfirmQuit,
+    CancelQuit,
 }
 
 /// Setup-screen parameter groups, so the world recipe stays organized as knobs
@@ -108,6 +110,10 @@ impl Default for LegendVisible {
         Self(true)
     }
 }
+
+/// Root of the "return to menu?" confirm overlay (toggled by `PendingMenuQuit`).
+#[derive(Component)]
+pub struct QuitConfirmOverlay;
 
 /// Viewing-screen legend markers — rows are pre-spawned and updated per mode.
 #[derive(Component)]
@@ -218,6 +224,7 @@ impl Plugin for GenesisUiPlugin {
             .init_resource::<ActiveSetupTab>()
             .init_resource::<SeedInputFresh>()
             .init_resource::<LegendVisible>()
+            .init_resource::<PendingMenuQuit>()
             .init_resource::<ScrubRepeat>()
             .init_resource::<HoveredHex>()
             .init_resource::<InspectorTab>()
@@ -248,8 +255,10 @@ impl Plugin for GenesisUiPlugin {
                     handle_actions,
                     (
                         refresh_param_values,
+                        update_seed_display,
                         update_tab_visibility,
                         seed_text_input,
+                        seed_clipboard,
                     )
                         .run_if(in_state(AppScreen::Setup)),
                     poll_generation.run_if(resource_exists::<GenerationTask>),
@@ -267,6 +276,7 @@ impl Plugin for GenesisUiPlugin {
                         refresh_hud,
                         refresh_legend,
                         toggle_legend,
+                        update_quit_overlay,
                     )
                         .chain()
                         .run_if(in_state(AppScreen::Viewing)),
@@ -522,7 +532,8 @@ fn spawn_setup_screen(
                     });
             }
             {
-                let hint = "Seed: type 0-9 a-f  ·  Backspace to delete  ·  Random for a surprise";
+                let hint =
+                    "Seed: type 0-9 a-f  ·  Backspace  ·  Cmd/Ctrl+C/V copy-paste  ·  Random";
                 parent.spawn((
                     label(hint, 14.0).0,
                     label(hint, 14.0).1,
@@ -640,7 +651,31 @@ fn refresh_param_values(
         return;
     }
     for (param_text, mut text) in &mut labels {
+        // The Seed field is owned by `update_seed_display` (blinking cursor).
+        if param_text.0 == Param::Seed {
+            continue;
+        }
         text.0 = format_param(&config.0, param_text.0);
+    }
+}
+
+/// Renders the seed value with a blinking text cursor so it reads as an editable
+/// field (and is clearly receiving input).
+fn update_seed_display(
+    time: Res<Time>,
+    config: Res<ActiveConfig>,
+    mut labels: Query<(&ParamValueText, &mut Text)>,
+) {
+    let cursor = if time.elapsed_secs().fract() < 0.5 {
+        "|"
+    } else {
+        " "
+    };
+    let shown = format!("{}{}", config.0.seed_text, cursor);
+    for (param_text, mut text) in &mut labels {
+        if param_text.0 == Param::Seed {
+            text.0 = shown.clone();
+        }
     }
 }
 
@@ -690,6 +725,11 @@ fn seed_text_input(
     mut config: ResMut<ActiveConfig>,
     mut fresh: ResMut<SeedInputFresh>,
 ) {
+    // Cmd/Ctrl combos (copy/paste) are handled by `seed_clipboard`; don't also
+    // type their letter (e.g. Cmd+C would otherwise insert a hex 'c').
+    if seed_modifier_held(&keys) {
+        return;
+    }
     let backspace = keys.just_pressed(KeyCode::Backspace);
     let typed = SEED_HEX_KEYS
         .iter()
@@ -712,6 +752,46 @@ fn seed_text_input(
     } else if backspace {
         fresh.0 = false;
         seed.pop();
+    }
+}
+
+/// Whether a copy/paste modifier (Cmd on macOS, Ctrl elsewhere) is held.
+fn seed_modifier_held(keys: &ButtonInput<KeyCode>) -> bool {
+    keys.pressed(KeyCode::SuperLeft)
+        || keys.pressed(KeyCode::SuperRight)
+        || keys.pressed(KeyCode::ControlLeft)
+        || keys.pressed(KeyCode::ControlRight)
+}
+
+/// Copy (Cmd/Ctrl+C) the seed to the clipboard and paste (Cmd/Ctrl+V) a seed
+/// from it (hex-filtered), so worlds can be shared by seed.
+fn seed_clipboard(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut config: ResMut<ActiveConfig>,
+    mut fresh: ResMut<SeedInputFresh>,
+) {
+    if !seed_modifier_held(&keys) {
+        return;
+    }
+    if keys.just_pressed(KeyCode::KeyC) {
+        if let Ok(mut clipboard) = arboard::Clipboard::new() {
+            let _ = clipboard.set_text(config.0.seed_text.clone());
+        }
+    } else if keys.just_pressed(KeyCode::KeyV) {
+        if let Ok(mut clipboard) = arboard::Clipboard::new() {
+            if let Ok(text) = clipboard.get_text() {
+                let hex: String = text
+                    .chars()
+                    .filter(char::is_ascii_hexdigit)
+                    .map(|c| c.to_ascii_lowercase())
+                    .take(SEED_MAX_LEN)
+                    .collect();
+                if !hex.is_empty() {
+                    config.0.seed_text = hex;
+                    fresh.0 = false;
+                }
+            }
+        }
     }
 }
 
@@ -893,7 +973,8 @@ fn poll_generation(
 // Viewing screen (HUD + timeline)
 // ---------------------------------------------------------------------------
 
-fn spawn_viewing_hud(mut commands: Commands) {
+fn spawn_viewing_hud(mut commands: Commands, mut pending_quit: ResMut<PendingMenuQuit>) {
+    pending_quit.0 = false;
     commands
         .spawn((
             ScreenRoot(AppScreen::Viewing),
@@ -907,6 +988,49 @@ fn spawn_viewing_hud(mut commands: Commands) {
             },
         ))
         .with_children(|parent| {
+            // "Return to menu?" confirm overlay — hidden until Esc; blocks the
+            // map so an accidental Esc can't discard the world.
+            parent
+                .spawn((
+                    QuitConfirmOverlay,
+                    BlocksMapPick,
+                    FocusPolicy::Block,
+                    Interaction::default(),
+                    Node {
+                        position_type: PositionType::Absolute,
+                        width: Val::Percent(100.0),
+                        height: Val::Percent(100.0),
+                        display: Display::None,
+                        flex_direction: FlexDirection::Column,
+                        justify_content: JustifyContent::Center,
+                        align_items: AlignItems::Center,
+                        row_gap: Val::Px(16.0),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.7)),
+                ))
+                .with_children(|modal| {
+                    modal.spawn(label("Return to main menu?", 28.0));
+                    modal.spawn((
+                        label("This world will be discarded.", 16.0).0,
+                        label("This world will be discarded.", 16.0).1,
+                        TextColor(Color::srgb(0.82, 0.82, 0.88)),
+                    ));
+                    modal
+                        .spawn(Node {
+                            column_gap: Val::Px(12.0),
+                            ..default()
+                        })
+                        .with_children(|row| {
+                            row.spawn(button(UiAction::ConfirmQuit)).with_children(|b| {
+                                b.spawn(label("Return to menu", 20.0));
+                            });
+                            row.spawn(button(UiAction::CancelQuit)).with_children(|b| {
+                                b.spawn(label("Keep exploring", 20.0));
+                            });
+                        });
+                });
+
             // Color legend for the active render mode (top-right overlay, [L] toggles).
             parent
                 .spawn((
@@ -915,6 +1039,9 @@ fn spawn_viewing_hud(mut commands: Commands) {
                         position_type: PositionType::Absolute,
                         top: Val::Px(12.0),
                         right: Val::Px(12.0),
+                        // Fixed width so the panel is the same size in every mode
+                        // (Soil has the most/longest labels).
+                        width: Val::Px(230.0),
                         flex_direction: FlexDirection::Column,
                         padding: UiRect::all(Val::Px(10.0)),
                         row_gap: Val::Px(4.0),
@@ -1265,7 +1392,7 @@ fn refresh_legend(
     // frame after entering the viewer without special-casing initialization.
     let entries = legend_entries(mode.0);
     if let Ok(mut text) = title.single_mut() {
-        text.0 = format!("{} key", mode.0.label());
+        text.0 = format!("{} key   [L] hide", mode.0.label());
     }
     for (row, mut vis) in &mut rows {
         *vis = if row.0 < entries.len() {
@@ -1283,6 +1410,23 @@ fn refresh_legend(
         if let Some((_, name)) = entries.get(lbl.0) {
             text.0 = (*name).to_string();
         }
+    }
+}
+
+/// Shows/hides the "return to menu?" confirm overlay from `PendingMenuQuit`.
+fn update_quit_overlay(
+    pending: Res<PendingMenuQuit>,
+    mut overlay: Query<&mut Node, With<QuitConfirmOverlay>>,
+) {
+    if !pending.is_changed() {
+        return;
+    }
+    if let Ok(mut node) = overlay.single_mut() {
+        node.display = if pending.0 {
+            Display::Flex
+        } else {
+            Display::None
+        };
     }
 }
 
@@ -1317,6 +1461,7 @@ fn handle_actions(
     mut config: ResMut<ActiveConfig>,
     mut active_tab: ResMut<ActiveSetupTab>,
     mut seed_fresh: ResMut<SeedInputFresh>,
+    mut pending_quit: ResMut<PendingMenuQuit>,
     mut next_screen: ResMut<NextState<AppScreen>>,
     screen: Res<State<AppScreen>>,
     mut exit: MessageWriter<AppExit>,
@@ -1357,6 +1502,13 @@ fn handle_actions(
                 config.0.seed_text = random_seed_string();
                 // Next keystroke starts fresh rather than appending to the roll.
                 seed_fresh.0 = true;
+            }
+            UiAction::ConfirmQuit => {
+                pending_quit.0 = false;
+                next_screen.set(AppScreen::MainMenu);
+            }
+            UiAction::CancelQuit => {
+                pending_quit.0 = false;
             }
             UiAction::TimelineStep(step) => {
                 if let (Some(timeline), Some(world_res), Some(colors_dirty), Some(rivers_dirty)) = (

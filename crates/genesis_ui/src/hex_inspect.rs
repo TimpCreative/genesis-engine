@@ -11,8 +11,6 @@ use genesis_render::{
     CameraDragState, CameraState, SelectedHex, WorldResource, cursor_hex, screen_to_hex,
 };
 
-use crate::ui::AppScreen;
-
 /// Hex under the cursor (tooltip only).
 #[derive(Resource, Default, Clone, Copy)]
 pub struct HoveredHex(pub Option<HexId>);
@@ -293,10 +291,15 @@ pub fn inspector_hotkeys(
 }
 
 /// Esc clears selection first; only a second Esc returns to the menu.
+/// Set when the user asks to leave the viewer; drives the confirm dialog so an
+/// accidental Esc doesn't discard a generated world.
+#[derive(Resource, Default)]
+pub struct PendingMenuQuit(pub bool);
+
 pub fn viewer_escape(
     keys: Res<ButtonInput<KeyCode>>,
     mut selected: ResMut<SelectedHex>,
-    mut next_screen: ResMut<NextState<AppScreen>>,
+    mut pending: ResMut<PendingMenuQuit>,
 ) {
     if !keys.just_pressed(KeyCode::Escape) {
         return;
@@ -304,7 +307,9 @@ pub fn viewer_escape(
     if selected.0.is_some() {
         selected.0 = None;
     } else {
-        next_screen.set(AppScreen::MainMenu);
+        // First Esc opens the "return to menu?" confirm; a second Esc dismisses
+        // it. Leaving is an explicit button press, so nothing is lost by accident.
+        pending.0 = !pending.0;
     }
 }
 
