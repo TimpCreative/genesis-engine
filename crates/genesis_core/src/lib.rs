@@ -1,5 +1,6 @@
 //! Core infrastructure for Genesis Engine: hex grid, world data, time, RNG, persistence.
 
+pub mod biology_view;
 pub mod branches;
 pub mod data;
 pub mod events;
@@ -13,6 +14,10 @@ pub mod rng;
 pub mod time;
 pub mod world;
 
+pub use biology_view::{
+    Assemblage, BiologyView, GuildSummary, LifeEventCategory, LifeEventPip, SpeciesPeek, TreeNodePeek,
+    TreePeek,
+};
 pub use branches::{Branch, BranchError, BranchId, BranchTree};
 pub use data::{
     BasinId, BedrockType, BiomeId, HotSpotId, HydroFlags, NationId, PlateId, SettlementId,

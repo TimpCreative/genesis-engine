@@ -17,6 +17,7 @@ use genesis_render::{
     temperature_to_color,
 };
 
+use crate::biology_view::{ActiveBiologyView, StubBiologyView};
 use crate::hex_inspect::{
     BlocksMapPick, HoveredHex, InspectorTab, InspectorVisible, PendingMenuQuit,
     clear_inspect_on_exit, despawn_hex_inspect_ui, handle_inspector_tabs, handle_map_hex_click,
@@ -913,6 +914,10 @@ fn poll_generation(
                 }
             }
             GenEvent::InitialWorld(world) => {
+                // Prep-09 seam: register the stub biology view for this world.
+                // Doc 09 swaps this line for the real `genesis_biology` adapter.
+                let seed = world.data.parameters.core.seed.value;
+                commands.insert_resource(ActiveBiologyView(Box::new(StubBiologyView::new(seed))));
                 commands.insert_resource(WorldResource(*world));
                 world_res = None; // stale handle; re-fetched next frame
                 commands.insert_resource(WorldTimeline {

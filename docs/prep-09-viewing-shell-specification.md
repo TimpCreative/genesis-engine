@@ -1,7 +1,7 @@
 # Prep-09 — Viewing Shell & Biology Presentation Prep
 
 **Document Type:** Tier 2 — Prep / UI Specification
-**Status:** Draft v0.1
+**Status:** Draft v0.2
 **Last Updated:** July 2026
 **Owner:** Brax Johnson
 **Implementing Phase:** 3.5 — between Phase 3 (Rendering MVP) and Phase 4 (Biology)

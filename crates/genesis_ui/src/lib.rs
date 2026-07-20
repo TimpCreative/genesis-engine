@@ -5,6 +5,7 @@
 //! layer registration order and history-frame buffering; the headless
 //! screenshot path in `genesis_app` reuses it directly.
 
+pub mod biology_view;
 pub mod hex_inspect;
 pub mod hydro_validation;
 pub mod smoke;
