@@ -14,8 +14,8 @@ use bevy::ui::FocusPolicy;
 use genesis_core::data::BiomeId;
 use genesis_render::{
     ActiveBiologyView, ColorsDirty, CurrentRenderMode, HexEntityCache, HexMeshIndex, RenderMode,
-    RiversDirty, WorldDirty, WorldResource, biome_color, heatmap_color, precipitation_to_color,
-    regime_to_color, soil_class_color, temperature_to_color,
+    RiversDirty, SelectedHex, WorldDirty, WorldResource, biome_color, heatmap_color,
+    precipitation_to_color, regime_to_color, soil_class_color, temperature_to_color,
 };
 
 use crate::biology_view::StubBiologyView;
@@ -57,7 +57,32 @@ pub enum UiAction {
     CancelQuit,
     SetRenderMode(RenderMode),
     JumpToYear(i64),
+    ToggleBestiary,
+    ToggleTree,
 }
+
+/// Which full-screen overlay is open over the map (Prep-09 §7–§8).
+#[derive(Resource, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OpenOverlay {
+    #[default]
+    None,
+    Bestiary,
+    Tree,
+}
+
+/// Root of the Bestiary overlay; its content is rebuilt on open.
+#[derive(Component)]
+pub struct BestiaryOverlay;
+#[derive(Component)]
+pub struct BestiaryContent;
+/// Root of the Tree-of-Life overlay; content rebuilt on open.
+#[derive(Component)]
+pub struct TreeOverlay;
+#[derive(Component)]
+pub struct TreeContent;
+/// True while an overlay's content matches the current world/hex/year.
+#[derive(Resource, Default)]
+pub struct OverlayBuilt(pub bool);
 
 /// Marks a top-bar layer-selector tab for its render mode (active highlight).
 #[derive(Component)]
@@ -273,6 +298,8 @@ impl Plugin for GenesisUiPlugin {
             .init_resource::<LegendVisible>()
             .init_resource::<PendingMenuQuit>()
             .init_resource::<TimelineMarksBuilt>()
+            .init_resource::<OpenOverlay>()
+            .init_resource::<OverlayBuilt>()
             .init_resource::<ScrubRepeat>()
             .init_resource::<HoveredHex>()
             .init_resource::<InspectorTab>()
@@ -327,6 +354,8 @@ impl Plugin for GenesisUiPlugin {
                         update_quit_overlay,
                         refresh_mode_tabs,
                         build_timeline_marks,
+                        overlay_hotkeys,
+                        update_overlays,
                     )
                         .chain()
                         .run_if(in_state(AppScreen::Viewing)),
@@ -1031,9 +1060,11 @@ fn spawn_viewing_hud(
     mut commands: Commands,
     mut pending_quit: ResMut<PendingMenuQuit>,
     mut marks_built: ResMut<TimelineMarksBuilt>,
+    mut open_overlay: ResMut<OpenOverlay>,
 ) {
     pending_quit.0 = false;
     marks_built.0 = false; // rebuild era bands + pips for this world
+    *open_overlay = OpenOverlay::None;
     commands
         .spawn((
             ScreenRoot(AppScreen::Viewing),
@@ -1073,7 +1104,7 @@ fn spawn_viewing_hud(
                                 b.spawn(label(mode.label(), 15.0));
                             });
                     }
-                    // Spacer pushes the status readout to the right.
+                    // Spacer pushes the readout + overlay buttons to the right.
                     bar.spawn(Node {
                         flex_grow: 1.0,
                         ..default()
@@ -1083,8 +1114,78 @@ fn spawn_viewing_hud(
                         label("", 15.0).1,
                         TextColor(Color::srgb(0.85, 0.85, 0.9)),
                         TopBarStatusText,
+                        Node {
+                            margin: UiRect::right(Val::Px(10.0)),
+                            ..default()
+                        },
                     ));
+                    bar.spawn(button(UiAction::ToggleTree)).with_children(|b| {
+                        b.spawn(label("Tree of Life", 14.0));
+                    });
+                    bar.spawn(button(UiAction::ToggleBestiary))
+                        .with_children(|b| {
+                            b.spawn(label("Bestiary", 14.0));
+                        });
                 });
+
+            // Full-screen Bestiary + Tree overlays (hidden; filled on open).
+            for (is_bestiary, title) in [(true, "Bestiary"), (false, "Tree of Life")] {
+                let mut overlay = parent.spawn((
+                    BlocksMapPick,
+                    FocusPolicy::Block,
+                    Interaction::default(),
+                    Node {
+                        position_type: PositionType::Absolute,
+                        width: Val::Percent(100.0),
+                        height: Val::Percent(100.0),
+                        display: Display::None,
+                        flex_direction: FlexDirection::Column,
+                        padding: UiRect::all(Val::Px(20.0)),
+                        row_gap: Val::Px(12.0),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgba(0.04, 0.05, 0.07, 0.97)),
+                ));
+                if is_bestiary {
+                    overlay.insert(BestiaryOverlay);
+                } else {
+                    overlay.insert(TreeOverlay);
+                }
+                overlay.with_children(|o| {
+                    o.spawn(Node {
+                        flex_direction: FlexDirection::Row,
+                        justify_content: JustifyContent::SpaceBetween,
+                        align_items: AlignItems::Center,
+                        ..default()
+                    })
+                    .with_children(|h| {
+                        h.spawn(label(title, 28.0));
+                        let close = if is_bestiary {
+                            UiAction::ToggleBestiary
+                        } else {
+                            UiAction::ToggleTree
+                        };
+                        h.spawn(button(close)).with_children(|b| {
+                            b.spawn(label("Close [Esc]", 16.0));
+                        });
+                    });
+                    let mut content = o.spawn(Node {
+                        flex_direction: FlexDirection::Row,
+                        flex_wrap: FlexWrap::Wrap,
+                        align_content: AlignContent::FlexStart,
+                        column_gap: Val::Px(10.0),
+                        row_gap: Val::Px(10.0),
+                        flex_grow: 1.0,
+                        overflow: Overflow::clip(),
+                        ..default()
+                    });
+                    if is_bestiary {
+                        content.insert(BestiaryContent);
+                    } else {
+                        content.insert(TreeContent);
+                    }
+                });
+            }
 
             // "Return to menu?" confirm overlay — hidden until Esc; blocks the
             // map so an accidental Esc can't discard the world.
@@ -1673,6 +1774,210 @@ fn build_timeline_marks(
     built.0 = true;
 }
 
+/// [B]/[T] toggle the Bestiary / Tree overlays.
+fn overlay_hotkeys(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut open: ResMut<OpenOverlay>,
+    mut built: ResMut<OverlayBuilt>,
+) {
+    if keys.just_pressed(KeyCode::KeyB) {
+        *open = if *open == OpenOverlay::Bestiary {
+            OpenOverlay::None
+        } else {
+            OpenOverlay::Bestiary
+        };
+        built.0 = false;
+    }
+    if keys.just_pressed(KeyCode::KeyT) {
+        *open = if *open == OpenOverlay::Tree {
+            OpenOverlay::None
+        } else {
+            OpenOverlay::Tree
+        };
+        built.0 = false;
+    }
+}
+
+/// Shows/hides the Bestiary + Tree overlays and (re)builds their content from
+/// the active `BiologyView` when opened (Prep-09 §7–§8).
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
+fn update_overlays(
+    open: Res<OpenOverlay>,
+    selected: Res<SelectedHex>,
+    mut built: ResMut<OverlayBuilt>,
+    mut commands: Commands,
+    world_res: Option<Res<WorldResource>>,
+    biology: Option<Res<ActiveBiologyView>>,
+    timeline: Option<Res<WorldTimeline>>,
+    children: Query<&Children>,
+    mut bestiary: Query<&mut Node, (With<BestiaryOverlay>, Without<TreeOverlay>)>,
+    mut tree: Query<&mut Node, (With<TreeOverlay>, Without<BestiaryOverlay>)>,
+    bestiary_content: Query<Entity, With<BestiaryContent>>,
+    tree_content: Query<Entity, With<TreeContent>>,
+) {
+    if open.is_changed() {
+        if let Ok(mut n) = bestiary.single_mut() {
+            n.display = if *open == OpenOverlay::Bestiary {
+                Display::Flex
+            } else {
+                Display::None
+            };
+        }
+        if let Ok(mut n) = tree.single_mut() {
+            n.display = if *open == OpenOverlay::Tree {
+                Display::Flex
+            } else {
+                Display::None
+            };
+        }
+    }
+    if selected.is_changed() && *open == OpenOverlay::Bestiary {
+        built.0 = false;
+    }
+    if built.0 || *open == OpenOverlay::None {
+        return;
+    }
+    let Some(wr) = world_res else {
+        return;
+    };
+    let Some(bio) = biology else {
+        return;
+    };
+    let data = &wr.0.data;
+
+    let clear = |commands: &mut Commands, entity: Entity| {
+        if let Ok(kids) = children.get(entity) {
+            for k in kids.iter() {
+                commands.entity(k).despawn();
+            }
+        }
+    };
+
+    match *open {
+        OpenOverlay::Bestiary => {
+            let Ok(content) = bestiary_content.single() else {
+                return;
+            };
+            clear(&mut commands, content);
+            let assemblage = selected
+                .0
+                .map(|h| bio.0.assemblage(data, h))
+                .unwrap_or_default();
+            commands.entity(content).with_children(|c| {
+                if assemblage.species.is_empty() {
+                    c.spawn(label(
+                        "Select a land hex on the map, then open the Bestiary.",
+                        18.0,
+                    ));
+                    return;
+                }
+                for sp in &assemblage.species {
+                    c.spawn((
+                        Node {
+                            width: Val::Px(240.0),
+                            flex_direction: FlexDirection::Column,
+                            padding: UiRect::all(Val::Px(10.0)),
+                            row_gap: Val::Px(4.0),
+                            ..default()
+                        },
+                        BackgroundColor(Color::srgba(0.10, 0.12, 0.16, 0.95)),
+                    ))
+                    .with_children(|card| {
+                        card.spawn(label(&sp.name, 18.0));
+                        card.spawn((
+                            label(&format!("{} · {}", sp.guild, sp.family), 13.0).0,
+                            label("", 13.0).1,
+                            TextColor(Color::srgb(0.70, 0.80, 0.95)),
+                        ));
+                        card.spawn((
+                            label(&format!("[{}]", sp.trait_chips.join(", ")), 12.0).0,
+                            label("", 12.0).1,
+                            TextColor(Color::srgb(0.65, 0.65, 0.72)),
+                        ));
+                        card.spawn((
+                            label(&sp.description, 12.0).0,
+                            label("", 12.0).1,
+                            TextColor(Color::srgb(0.80, 0.80, 0.84)),
+                        ));
+                    });
+                }
+            });
+            built.0 = true;
+        }
+        OpenOverlay::Tree => {
+            let Ok(content) = tree_content.single() else {
+                return;
+            };
+            clear(&mut commands, content);
+            build_tree_content(&mut commands, content, bio.0.as_ref(), timeline.as_deref());
+            built.0 = true;
+        }
+        OpenOverlay::None => {}
+    }
+}
+
+/// Builds the Tree-of-Life overlay content: an indented, time-aware branch list
+/// from `tree_snapshot(current_year)` — extinct branches greyed (Prep-09 §7).
+fn build_tree_content(
+    commands: &mut Commands,
+    content: Entity,
+    view: &dyn genesis_core::BiologyView,
+    timeline: Option<&WorldTimeline>,
+) {
+    let year = timeline
+        .and_then(|t| t.frames.get(t.current))
+        .map(|f| f.year)
+        .unwrap_or(4_500_000_000);
+    let tree = view.tree_snapshot(genesis_core::time::WorldYear(year));
+    let depth = |rank: &str| match rank {
+        "root" => 0.0,
+        "kingdom" => 1.0,
+        _ => 2.0,
+    };
+    commands.entity(content).with_children(|c| {
+        c.spawn(Node {
+            flex_direction: FlexDirection::Column,
+            row_gap: Val::Px(3.0),
+            ..default()
+        })
+        .with_children(|col| {
+            col.spawn(label(
+                &format!(
+                    "As of {}  ·  {} living branches",
+                    format_year(year),
+                    tree.nodes.iter().filter(|n| n.extinction_year.is_none()).count()
+                ),
+                15.0,
+            ));
+            for node in &tree.nodes {
+                let extinct = node.extinction_year.is_some();
+                let color = if extinct {
+                    Color::srgb(0.48, 0.48, 0.52)
+                } else {
+                    Color::srgb(0.85, 0.92, 0.86)
+                };
+                let suffix = if extinct { "  (extinct)" } else { "" };
+                col.spawn((
+                    label(
+                        &format!(
+                            "{} · {} · {}{}",
+                            node.name, node.rank, node.defining_trait, suffix
+                        ),
+                        14.0,
+                    )
+                    .0,
+                    label("", 14.0).1,
+                    TextColor(color),
+                    Node {
+                        margin: UiRect::left(Val::Px(depth(&node.rank) * 22.0)),
+                        ..default()
+                    },
+                ));
+            }
+        });
+    });
+}
+
 /// [L] toggles the legend; the panel's `Display` follows `LegendVisible`.
 fn toggle_legend(
     keys: Res<ButtonInput<KeyCode>>,
@@ -1706,6 +2011,8 @@ fn handle_actions(
     mut seed_fresh: ResMut<SeedInputFresh>,
     mut pending_quit: ResMut<PendingMenuQuit>,
     mut render_mode: ResMut<CurrentRenderMode>,
+    mut open_overlay: ResMut<OpenOverlay>,
+    mut overlay_built: ResMut<OverlayBuilt>,
     mut next_screen: ResMut<NextState<AppScreen>>,
     screen: Res<State<AppScreen>>,
     mut exit: MessageWriter<AppExit>,
@@ -1759,6 +2066,22 @@ fn handle_actions(
                 if let Some(cd) = colors_dirty.as_mut() {
                     cd.0 = true;
                 }
+            }
+            UiAction::ToggleBestiary => {
+                *open_overlay = if *open_overlay == OpenOverlay::Bestiary {
+                    OpenOverlay::None
+                } else {
+                    OpenOverlay::Bestiary
+                };
+                overlay_built.0 = false;
+            }
+            UiAction::ToggleTree => {
+                *open_overlay = if *open_overlay == OpenOverlay::Tree {
+                    OpenOverlay::None
+                } else {
+                    OpenOverlay::Tree
+                };
+                overlay_built.0 = false;
             }
             UiAction::JumpToYear(year) => {
                 if let (Some(tl), Some(wr), Some(cd), Some(rd)) = (
