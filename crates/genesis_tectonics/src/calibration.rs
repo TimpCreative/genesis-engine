@@ -41,6 +41,13 @@ const MAX_OCEAN_M: f32 = -1.0;
 /// Island hexes seeded per 1000 cells at `island_density = 1.0` (Doc 10 §8).
 const ISLAND_HEXES_PER_1000: f32 = 1.0;
 
+/// Time constant (years) of the temporal low-pass on the calibration ranking
+/// field (Doc 10 §7). Coastlines are stable over spans short of this and migrate
+/// with the plates over spans longer than it — cratons hold their shape for tens
+/// of My, and abrupt reorganizations morph in over a couple of ticks instead of
+/// snapping. `interval / τ` per tick, so the smoothing is tick-length aware.
+const TEMPORAL_TAU_YEARS: f64 = 20_000_000.0;
+
 /// A monotone target hypsometric curve `H(p)`: area-percentile `p ∈ [0,1]`
 /// (ascending) → elevation in meters, sea level = 0. Built from [`TerrainTargets`].
 pub struct HypsometricCurve {
@@ -119,7 +126,16 @@ impl HypsometricCurve {
 
 /// Map the structure field (`elevation_mean`) onto the target curve and pin the
 /// datum to 0. No-op when `targets.enabled` is false (legacy path).
-pub fn apply_hypsometry_transfer(data: &mut WorldData, targets: &TerrainTargets) {
+///
+/// `rank_ema` is the persistent temporal low-pass buffer (Doc 10 §7); pass an
+/// empty `Vec` for a stateless one-shot. `interval_years` is this tick's length
+/// (0 seeds the buffer).
+pub fn apply_hypsometry_transfer(
+    data: &mut WorldData,
+    targets: &TerrainTargets,
+    rank_ema: &mut Vec<f32>,
+    interval_years: f64,
+) {
     if !targets.enabled {
         return;
     }
@@ -132,12 +148,16 @@ pub fn apply_hypsometry_transfer(data: &mut WorldData, targets: &TerrainTargets)
     let phi: Vec<f32> = data.elevation_mean.clone();
     let phi_lo = smooth_field(&phi, data, SMOOTH_ITERS);
 
-    // Rank ascending by (Φ_lo, HexId): the lowest-potential cells become the
+    // Temporal low-pass (§7): rank by an EMA of Φ_lo so coastlines migrate with
+    // genuine drift instead of flickering on per-tick fluctuation.
+    let rank = temporal_rank_field(rank_ema, &phi_lo, interval_years);
+
+    // Rank ascending by (rank, HexId): the lowest-potential cells become the
     // deep ocean, the highest become peaks.
     let mut order: Vec<u32> = (0..n as u32).collect();
     order.sort_by(|&a, &b| {
-        phi_lo[a as usize]
-            .total_cmp(&phi_lo[b as usize])
+        rank[a as usize]
+            .total_cmp(&rank[b as usize])
             .then_with(|| a.cmp(&b))
     });
 
@@ -219,6 +239,26 @@ fn seed_islands(elev: &mut [f32], phi: &[f32], phi_lo: &[f32], data: &WorldData,
     }
 }
 
+/// Exponential moving average of `phi_lo` into `ema`, tick-length aware
+/// (`alpha = 1 − e^{−Δt/τ}`), returning the ranking field. Seeds `ema` from
+/// `phi_lo` on the first call (empty or resized buffer). Deterministic.
+fn temporal_rank_field(ema: &mut Vec<f32>, phi_lo: &[f32], interval_years: f64) -> Vec<f32> {
+    let n = phi_lo.len();
+    if ema.len() != n {
+        *ema = phi_lo.to_vec();
+        return ema.clone();
+    }
+    let alpha = if interval_years > 0.0 {
+        (1.0 - (-interval_years / TEMPORAL_TAU_YEARS).exp()) as f32
+    } else {
+        1.0
+    };
+    for (slot, &target) in ema.iter_mut().zip(phi_lo.iter()) {
+        *slot += alpha * (target - *slot);
+    }
+    ema.clone()
+}
+
 /// Smoothstep-tapered residual weight: 0 at the datum, ramping to 1 by
 /// [`TAPER_M`] away on either side.
 fn residual_taper(base_m: f32) -> f32 {
@@ -283,7 +323,7 @@ mod tests {
             }
             world.data.parameters.core.terrain.land_fraction = target;
             let t = world.data.parameters.core.terrain;
-            apply_hypsometry_transfer(&mut world.data, &t);
+            apply_hypsometry_transfer(&mut world.data, &t, &mut Vec::new(), 0.0);
             let realized = land_fraction(&world.data);
             assert!(
                 (realized - target).abs() <= 1.0 / n as f32 + 1e-4,
@@ -301,7 +341,7 @@ mod tests {
             world.data.elevation_mean[i] = (i as f32) - (n as f32) / 2.0;
         }
         let t = world.data.parameters.core.terrain;
-        apply_hypsometry_transfer(&mut world.data, &t);
+        apply_hypsometry_transfer(&mut world.data, &t, &mut Vec::new(), 0.0);
         // Some ocean cells sit in the shallow shelf band (shelf_depth..0),
         // i.e. the profile is not a cliff straight to the abyss.
         let shelf = world
@@ -339,7 +379,7 @@ mod tests {
         world.data.elevation_mean[interior as usize] = -4000.0;
 
         let t = world.data.parameters.core.terrain;
-        apply_hypsometry_transfer(&mut world.data, &t);
+        apply_hypsometry_transfer(&mut world.data, &t, &mut Vec::new(), 0.0);
 
         // After the transfer, no cell is a lone sub-sea hole ringed entirely by
         // land: smoothed ranking merges an isolated low into its neighborhood,
@@ -369,7 +409,7 @@ mod tests {
             }
             let mut t = world.data.parameters.core.terrain;
             t.island_density = density;
-            apply_hypsometry_transfer(&mut world.data, &t);
+            apply_hypsometry_transfer(&mut world.data, &t, &mut Vec::new(), 0.0);
             let sea = world.data.sea_level_m;
             let land = world
                 .data
@@ -386,6 +426,51 @@ mod tests {
     }
 
     #[test]
+    fn temporal_lowpass_lags_a_sudden_structure_change() {
+        let structure_a = |world: &mut genesis_core::World, n: usize| {
+            for i in 0..n {
+                world.data.elevation_mean[i] =
+                    (i.wrapping_mul(2654435761) % 10000) as f32 - 5000.0;
+            }
+        };
+        let structure_b = |world: &mut genesis_core::World, n: usize| {
+            for i in 0..n {
+                world.data.elevation_mean[i] = (i.wrapping_mul(40503) % 9000) as f32 - 4500.0;
+            }
+        };
+        let land_mask = |world: &genesis_core::World| -> Vec<bool> {
+            world
+                .data
+                .elevation_mean
+                .iter()
+                .map(|&e| e > world.data.sea_level_m)
+                .collect()
+        };
+        // Seed the EMA on structure A, then jump to a very different structure B
+        // over `interval`; count how many cells changed land/ocean class.
+        let run = |interval: f64| -> usize {
+            let mut world = test_world(6);
+            let n = world.data.cell_count() as usize;
+            let mut t = world.data.parameters.core.terrain;
+            t.island_density = 0.0; // isolate the temporal effect from island swaps
+            let mut ema = Vec::new();
+            structure_a(&mut world, n);
+            apply_hypsometry_transfer(&mut world.data, &t, &mut ema, 0.0);
+            let before = land_mask(&world);
+            structure_b(&mut world, n);
+            apply_hypsometry_transfer(&mut world.data, &t, &mut ema, interval);
+            let after = land_mask(&world);
+            before.iter().zip(&after).filter(|(a, b)| a != b).count()
+        };
+        let short = run(200_000.0); // Δt ≪ τ → coastline barely follows
+        let long = run(400_000_000.0); // Δt ≫ τ → coastline follows fully
+        assert!(
+            short < long,
+            "a short tick should lag the jump more than a long one (short={short}, long={long})"
+        );
+    }
+
+    #[test]
     fn transfer_is_deterministic() {
         let build = || {
             let mut world = test_world(6);
@@ -394,7 +479,7 @@ mod tests {
                 world.data.elevation_mean[i] = ((i * 40503) % 7000) as f32 - 3500.0;
             }
             let t = world.data.parameters.core.terrain;
-            apply_hypsometry_transfer(&mut world.data, &t);
+            apply_hypsometry_transfer(&mut world.data, &t, &mut Vec::new(), 0.0);
             world.data.elevation_mean.clone()
         };
         assert_eq!(build(), build());
@@ -407,7 +492,7 @@ mod tests {
         let sea_before = world.data.sea_level_m;
         let mut t = world.data.parameters.core.terrain;
         t.enabled = false;
-        apply_hypsometry_transfer(&mut world.data, &t);
+        apply_hypsometry_transfer(&mut world.data, &t, &mut Vec::new(), 0.0);
         assert_eq!(world.data.elevation_mean, before);
         assert_eq!(world.data.sea_level_m, sea_before);
     }

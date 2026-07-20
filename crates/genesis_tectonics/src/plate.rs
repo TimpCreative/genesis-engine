@@ -223,6 +223,11 @@ pub struct TectonicsState {
     pub cumulative_deposition_m: Vec<f32>,
     /// `elevation_mean` snapshot before boundary elevation this tick (boundary events).
     pub elevation_at_tick_start: Vec<f32>,
+    /// Temporally low-passed calibration ranking field (Doc 10 §7): an EMA of the
+    /// smoothed structure potential, so coastlines migrate with genuine plate
+    /// drift rather than flickering on each tick's global fluctuation. Empty
+    /// until the first calibration, then seeded from that tick.
+    pub calibration_rank_ema: Vec<f32>,
     /// Most recent per-hex ice load (m); drives GIA rebound after deglaciation
     /// (Doc 08 §9.1). Sticky: holds the last nonzero load so post-glacial
     /// rebound keeps relaxing across ice-free ticks.

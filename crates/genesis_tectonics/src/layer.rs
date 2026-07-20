@@ -99,10 +99,16 @@ impl SimulationLayer for TectonicsLayer {
             );
 
             // Calibrate the formation world so downstream layers see the target
-            // hypsometry and pinned datum from year 0 (Doc 10).
+            // hypsometry and pinned datum from year 0 (Doc 10). Seeds the
+            // temporal ranking EMA (interval 0).
             {
                 let targets = world.parameters.core.terrain;
-                crate::calibration::apply_hypsometry_transfer(world, &targets);
+                crate::calibration::apply_hypsometry_transfer(
+                    world,
+                    &targets,
+                    &mut state.calibration_rank_ema,
+                    0.0,
+                );
             }
 
             state.formation_complete = true;
@@ -376,7 +382,12 @@ impl SimulationLayer for TectonicsLayer {
             // next tick, so this never feeds back into the sim.
             timed_tick_step("calibration", tick_year, || {
                 let targets = world.parameters.core.terrain;
-                crate::calibration::apply_hypsometry_transfer(world, &targets);
+                crate::calibration::apply_hypsometry_transfer(
+                    world,
+                    &targets,
+                    &mut state.calibration_rank_ema,
+                    interval_years,
+                );
             });
 
             let (min_elev, max_elev) = elevation_min_max(world);
