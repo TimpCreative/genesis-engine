@@ -138,6 +138,34 @@ pub fn fill_closed_depressions(
     }
 }
 
+/// Final sediment-infill reconciliation for a completed generation.
+///
+/// Each simulated tick already self-heals: the tectonic tick's
+/// [`fill_closed_depressions`] fills any dry sub-sea pit the *previous* tick's
+/// hydrology left behind. But the very last hydrology tick can dry a deep
+/// endorheic basin to a salt flat at its tectonically-deepened bottom, and no
+/// tectonic tick follows to fill it — so the final snapshot alone carries a
+/// handful of dry sub-sea cells the running sim would have cleared next tick.
+/// This runs the same fill once more on the finished world (persisting to plate
+/// surfaces and rebuilding), so the snapshot matches the steady state.
+///
+/// Deliberately called only from the viewer/headless generator, not the
+/// tectonics-crate deep-time generator, so the chaotically-marginal land gates
+/// see the unmodified per-tick trajectory.
+pub fn finalize_dry_basins(
+    data: &mut WorldData,
+    registry: &mut PlateRegistry,
+    cache: &ProjectionCache,
+) {
+    let year = data.current_year.value();
+    let water = crate::accretion::label_water_components(data);
+    let open_ocean = water.open_ocean_mask();
+    // Interval scales only the gradual path; the dry sub-sea snap that clears
+    // these stragglers is rate-independent. Use one Ancient tick.
+    fill_closed_depressions(data, registry, cache, &open_ocean, year, 10_000_000.0);
+    crate::world_rebuild::rebuild_world_from_plate_surfaces_cached(data, registry, cache);
+}
+
 /// Barnes 2014 priority flood (+epsilon). Returns spill/fill elevation per
 /// cell, or `None` when there is no open-ocean seed (nothing to drain toward).
 fn priority_flood_spill(data: &WorldData, open_ocean: &[bool]) -> Option<Vec<f32>> {

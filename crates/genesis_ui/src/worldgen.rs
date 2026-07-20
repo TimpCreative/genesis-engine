@@ -221,6 +221,16 @@ pub fn generate_full_history(
     flush_climate_events(world, climate);
     flush_hydrology_events(world, hydrology);
 
+    // Final reconciliation: the last hydrology tick can dry a deep endorheic
+    // basin to a salt flat at its tectonically-deepened bottom with no following
+    // tectonic tick to fill it. The running sim clears these next tick; do the
+    // same once here so the final snapshot matches the steady state.
+    genesis_tectonics::basin_infill::finalize_dry_basins(
+        &mut world.data,
+        &mut tectonics.registry,
+        &tectonics.projection,
+    );
+
     Ok(())
 }
 
