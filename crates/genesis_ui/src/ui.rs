@@ -56,6 +56,7 @@ pub enum UiAction {
     ConfirmQuit,
     CancelQuit,
     SetRenderMode(RenderMode),
+    JumpToYear(i64),
 }
 
 /// Marks a top-bar layer-selector tab for its render mode (active highlight).
@@ -191,6 +192,27 @@ pub struct TimelineBarFill;
 #[derive(Component)]
 pub struct TimelineBufferedFill;
 
+/// Container for the geological era bands (behind the timeline fills).
+#[derive(Component)]
+pub struct EraBandStrip;
+/// Container for event pips (on top of the timeline fills).
+#[derive(Component)]
+pub struct PipStrip;
+/// True once the era bands + pips have been built for the current world.
+#[derive(Resource, Default)]
+pub struct TimelineMarksBuilt(pub bool);
+
+/// Pip color by life-event category (Prep-09 §5.1).
+fn pip_color(category: genesis_core::LifeEventCategory) -> Color {
+    use genesis_core::LifeEventCategory as C;
+    match category {
+        C::Origin => Color::srgb(0.45, 0.85, 0.55),
+        C::Innovation => Color::srgb(0.45, 0.70, 0.95),
+        C::Extinction => Color::srgb(0.95, 0.45, 0.40),
+        C::Milestone => Color::srgb(0.95, 0.82, 0.35),
+    }
+}
+
 /// Active world configuration being edited on the setup screen.
 #[derive(Resource, Default)]
 pub struct ActiveConfig(pub WorldGenConfig);
@@ -250,6 +272,7 @@ impl Plugin for GenesisUiPlugin {
             .init_resource::<SeedInputFresh>()
             .init_resource::<LegendVisible>()
             .init_resource::<PendingMenuQuit>()
+            .init_resource::<TimelineMarksBuilt>()
             .init_resource::<ScrubRepeat>()
             .init_resource::<HoveredHex>()
             .init_resource::<InspectorTab>()
@@ -303,6 +326,7 @@ impl Plugin for GenesisUiPlugin {
                         toggle_legend,
                         update_quit_overlay,
                         refresh_mode_tabs,
+                        build_timeline_marks,
                     )
                         .chain()
                         .run_if(in_state(AppScreen::Viewing)),
@@ -1003,8 +1027,13 @@ fn poll_generation(
 // Viewing screen (HUD + timeline)
 // ---------------------------------------------------------------------------
 
-fn spawn_viewing_hud(mut commands: Commands, mut pending_quit: ResMut<PendingMenuQuit>) {
+fn spawn_viewing_hud(
+    mut commands: Commands,
+    mut pending_quit: ResMut<PendingMenuQuit>,
+    mut marks_built: ResMut<TimelineMarksBuilt>,
+) {
     pending_quit.0 = false;
+    marks_built.0 = false; // rebuild era bands + pips for this world
     commands
         .spawn((
             ScreenRoot(AppScreen::Viewing),
@@ -1203,6 +1232,18 @@ fn spawn_viewing_hud(mut commands: Commands, mut pending_quit: ResMut<PendingMen
                                 BackgroundColor(Color::srgb(0.15, 0.16, 0.20)),
                             ))
                             .with_children(|bar| {
+                                // Geological era bands (behind everything).
+                                bar.spawn((
+                                    Node {
+                                        position_type: PositionType::Absolute,
+                                        left: Val::Px(0.0),
+                                        top: Val::Px(0.0),
+                                        width: Val::Percent(100.0),
+                                        height: Val::Percent(100.0),
+                                        ..default()
+                                    },
+                                    EraBandStrip,
+                                ));
                                 // Dim buffered region (grows as frames stream in)...
                                 bar.spawn((
                                     Node {
@@ -1228,6 +1269,18 @@ fn spawn_viewing_hud(mut commands: Commands, mut pending_quit: ResMut<PendingMen
                                     },
                                     BackgroundColor(ACCENT),
                                     TimelineBarFill,
+                                ));
+                                // Event pips (on top; filled by build_timeline_marks).
+                                bar.spawn((
+                                    Node {
+                                        position_type: PositionType::Absolute,
+                                        left: Val::Px(0.0),
+                                        top: Val::Px(0.0),
+                                        width: Val::Percent(100.0),
+                                        height: Val::Percent(100.0),
+                                        ..default()
+                                    },
+                                    PipStrip,
                                 ));
                             });
                             row.spawn(button(UiAction::Back)).with_children(|b| {
@@ -1545,6 +1598,81 @@ fn refresh_mode_tabs(
     }
 }
 
+/// Builds the era bands + event pips once the timeline is ready (Prep-09 §5).
+#[allow(clippy::type_complexity)]
+fn build_timeline_marks(
+    mut commands: Commands,
+    mut built: ResMut<TimelineMarksBuilt>,
+    timeline: Option<Res<WorldTimeline>>,
+    biology: Option<Res<ActiveBiologyView>>,
+    era_strip: Query<Entity, With<EraBandStrip>>,
+    pip_strip: Query<Entity, With<PipStrip>>,
+) {
+    if built.0 {
+        return;
+    }
+    let Some(tl) = timeline else {
+        return;
+    };
+    let target = tl.target_year.max(1);
+    let (Ok(era_e), Ok(pip_e)) = (era_strip.single(), pip_strip.single()) else {
+        return;
+    };
+
+    // Geological era bands, clamped to the run's target year.
+    let bounds = [0i64, 500_000_000, 2_000_000_000, 4_000_000_000, i64::MAX];
+    commands.entity(era_e).with_children(|s| {
+        for w in bounds.windows(2) {
+            let (start, end) = (w[0], w[1].min(target));
+            if start >= target {
+                continue;
+            }
+            let (_, color) = geological_era(start);
+            let left = (start as f32 / target as f32 * 100.0).clamp(0.0, 100.0);
+            let width = ((end - start) as f32 / target as f32 * 100.0).clamp(0.0, 100.0);
+            s.spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Percent(left),
+                    top: Val::Px(0.0),
+                    width: Val::Percent(width),
+                    height: Val::Percent(100.0),
+                    ..default()
+                },
+                BackgroundColor(color.with_alpha(0.5)),
+            ));
+        }
+    });
+
+    // Life-event pips (stub now; physical event pips join when the event stream
+    // is wired, Prep-09 §5.1). Each is a click-to-jump marker.
+    if let Some(bio) = biology.as_ref() {
+        let events = bio
+            .0
+            .life_events(genesis_core::time::WorldYear(0), genesis_core::time::WorldYear(target));
+        commands.entity(pip_e).with_children(|s| {
+            for ev in events {
+                let left = (ev.year as f32 / target as f32 * 100.0).clamp(0.0, 100.0);
+                s.spawn((
+                    Button,
+                    UiAction::JumpToYear(ev.year),
+                    Interaction::default(),
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: Val::Percent(left),
+                        top: Val::Px(-4.0),
+                        width: Val::Px(10.0),
+                        height: Val::Px(10.0),
+                        ..default()
+                    },
+                    BackgroundColor(pip_color(ev.category)),
+                ));
+            }
+        });
+    }
+    built.0 = true;
+}
+
 /// [L] toggles the legend; the panel's `Display` follows `LegendVisible`.
 fn toggle_legend(
     keys: Res<ButtonInput<KeyCode>>,
@@ -1630,6 +1758,25 @@ fn handle_actions(
                 render_mode.0 = mode;
                 if let Some(cd) = colors_dirty.as_mut() {
                     cd.0 = true;
+                }
+            }
+            UiAction::JumpToYear(year) => {
+                if let (Some(tl), Some(wr), Some(cd), Some(rd)) = (
+                    timeline.as_mut(),
+                    world_res.as_mut(),
+                    colors_dirty.as_mut(),
+                    rivers_dirty.as_mut(),
+                ) {
+                    if let Some((idx, _)) = tl
+                        .frames
+                        .iter()
+                        .enumerate()
+                        .min_by_key(|(_, f)| (f.year - year).abs())
+                    {
+                        tl.playing = false;
+                        tl.current = idx;
+                        apply_current_frame(tl, wr, cd, rd);
+                    }
                 }
             }
             UiAction::TimelineStep(step) => {
