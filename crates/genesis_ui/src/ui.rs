@@ -13,7 +13,8 @@ use bevy::prelude::*;
 use bevy::ui::FocusPolicy;
 use genesis_render::{
     ColorsDirty, CurrentRenderMode, HexEntityCache, HexMeshIndex, RenderMode, RiversDirty,
-    WorldDirty, WorldResource, precipitation_to_color, regime_to_color, temperature_to_color,
+    WorldDirty, WorldResource, precipitation_to_color, regime_to_color, soil_class_color,
+    temperature_to_color,
 };
 
 use crate::hex_inspect::{
@@ -82,10 +83,23 @@ pub struct ActiveSetupTab(pub SetupTab);
 #[derive(Component)]
 pub struct TabRow(pub SetupTab);
 
-/// Number of pre-spawned legend rows (max entries any render mode uses).
-const LEGEND_ROWS: usize = 8;
+/// Number of pre-spawned legend rows (max entries any render mode uses — Soil
+/// has the most: 9 classes + water).
+const LEGEND_ROWS: usize = 10;
+
+/// Whether the viewing-screen legend is shown (toggle with [L]).
+#[derive(Resource)]
+pub struct LegendVisible(pub bool);
+
+impl Default for LegendVisible {
+    fn default() -> Self {
+        Self(true)
+    }
+}
 
 /// Viewing-screen legend markers — rows are pre-spawned and updated per mode.
+#[derive(Component)]
+pub struct LegendPanel;
 #[derive(Component)]
 pub struct LegendTitle;
 #[derive(Component)]
@@ -190,6 +204,7 @@ impl Plugin for GenesisUiPlugin {
         app.init_state::<AppScreen>()
             .init_resource::<ActiveConfig>()
             .init_resource::<ActiveSetupTab>()
+            .init_resource::<LegendVisible>()
             .init_resource::<ScrubRepeat>()
             .init_resource::<HoveredHex>()
             .init_resource::<InspectorTab>()
@@ -238,6 +253,7 @@ impl Plugin for GenesisUiPlugin {
                         timeline_playback,
                         refresh_hud,
                         refresh_legend,
+                        toggle_legend,
                     )
                         .chain()
                         .run_if(in_state(AppScreen::Viewing)),
@@ -419,20 +435,22 @@ fn spawn_setup_screen(mut commands: Commands, active_tab: Res<ActiveSetupTab>) {
                 });
 
             for (param, name, tab) in SETUP_PARAMS {
-                let visibility = if tab == current_tab {
-                    Visibility::Visible
+                // Display::None (not Visibility::Hidden) so inactive rows take no
+                // layout space — otherwise the hidden rows leave large gaps.
+                let display = if tab == current_tab {
+                    Display::Flex
                 } else {
-                    Visibility::Hidden
+                    Display::None
                 };
                 parent
                     .spawn((
                         Node {
+                            display,
                             column_gap: Val::Px(10.0),
                             align_items: AlignItems::Center,
                             ..default()
                         },
                         TabRow(tab),
-                        visibility,
                     ))
                     .with_children(|row| {
                         row.spawn((
@@ -484,11 +502,14 @@ fn spawn_setup_screen(mut commands: Commands, active_tab: Res<ActiveSetupTab>) {
                         }
                     });
             }
-            parent.spawn((
-                label("Type hex (0-9 a-f) to edit the seed.", 14.0).0,
-                label("Type hex (0-9 a-f) to edit the seed.", 14.0).1,
-                TextColor(Color::srgb(0.6, 0.6, 0.65)),
-            ));
+            {
+                let hint = "Seed: type 0-9 a-f  ·  Backspace to delete  ·  Random for a surprise";
+                parent.spawn((
+                    label(hint, 14.0).0,
+                    label(hint, 14.0).1,
+                    TextColor(Color::srgb(0.6, 0.6, 0.65)),
+                ));
+            }
             parent.spawn(Node {
                 height: Val::Px(16.0),
                 ..default()
@@ -604,16 +625,17 @@ fn refresh_param_values(
     }
 }
 
-/// Shows only the rows belonging to the active setup tab.
-fn update_tab_visibility(active: Res<ActiveSetupTab>, mut rows: Query<(&TabRow, &mut Visibility)>) {
+/// Shows only the rows belonging to the active setup tab (via `Display`, so
+/// inactive rows collapse instead of leaving gaps).
+fn update_tab_visibility(active: Res<ActiveSetupTab>, mut rows: Query<(&TabRow, &mut Node)>) {
     if !active.is_changed() {
         return;
     }
-    for (row, mut vis) in &mut rows {
-        *vis = if row.0 == active.0 {
-            Visibility::Visible
+    for (row, mut node) in &mut rows {
+        node.display = if row.0 == active.0 {
+            Display::Flex
         } else {
-            Visibility::Hidden
+            Display::None
         };
     }
 }
@@ -855,9 +877,10 @@ fn spawn_viewing_hud(mut commands: Commands) {
             },
         ))
         .with_children(|parent| {
-            // Color legend for the active render mode (top-right overlay).
+            // Color legend for the active render mode (top-right overlay, [L] toggles).
             parent
                 .spawn((
+                    LegendPanel,
                     Node {
                         position_type: PositionType::Absolute,
                         top: Val::Px(12.0),
@@ -1125,7 +1148,7 @@ fn refresh_hud(
             )
         };
         text.0 = format!(
-            "{generating}Year {}  |  Mode: {} [M]  |  scrub/hold < >, Space plays, Esc for menu",
+            "{generating}Year {}  |  Mode: {} [M]  |  [L] legend  |  scrub/hold < >, Space plays, Esc for menu",
             format_year(frame.year),
             mode.0.label(),
         );
@@ -1178,12 +1201,24 @@ fn legend_entries(mode: RenderMode) -> Vec<(Color, &'static str)> {
             (regime_to_color(Rg::Tundra), "Tundra"),
             (ice, "Ice / polar"),
         ],
-        RenderMode::Soil => vec![
-            (Color::srgb(0.60, 0.50, 0.35), "Thin / poor"),
-            (Color::srgb(0.45, 0.35, 0.22), "Moderate"),
-            (Color::srgb(0.28, 0.20, 0.12), "Rich / fertile"),
-            (Color::srgb(0.85, 0.82, 0.75), "Salt flat"),
-        ],
+        RenderMode::Soil => {
+            use genesis_core::data::SoilClass as S;
+            // Representative fertility so the swatches match the map's tint,
+            // including the barren (purple-grey) and saline (pink) classes.
+            let f = 0.3;
+            vec![
+                (Color::srgb(0.08, 0.28, 0.55), "Water"),
+                (soil_class_color(S::None, f), "Barren / no soil"),
+                (soil_class_color(S::Sandy, f), "Sandy"),
+                (soil_class_color(S::Loamy, f), "Loamy"),
+                (soil_class_color(S::Alluvial, f), "Alluvial (floodplain)"),
+                (soil_class_color(S::Loess, f), "Loess"),
+                (soil_class_color(S::Volcanic, f), "Volcanic"),
+                (soil_class_color(S::Calcareous, f), "Calcareous"),
+                (soil_class_color(S::Peaty, f), "Peaty"),
+                (soil_class_color(S::Saline, f), "Saline (salt)"),
+            ]
+        }
     }
 }
 
@@ -1217,6 +1252,26 @@ fn refresh_legend(
     for (lbl, mut text) in &mut labels {
         if let Some((_, name)) = entries.get(lbl.0) {
             text.0 = (*name).to_string();
+        }
+    }
+}
+
+/// [L] toggles the legend; the panel's `Display` follows `LegendVisible`.
+fn toggle_legend(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut visible: ResMut<LegendVisible>,
+    mut panel: Query<&mut Node, With<LegendPanel>>,
+) {
+    if keys.just_pressed(KeyCode::KeyL) {
+        visible.0 = !visible.0;
+    }
+    if visible.is_changed() {
+        if let Ok(mut node) = panel.single_mut() {
+            node.display = if visible.0 {
+                Display::Flex
+            } else {
+                Display::None
+            };
         }
     }
 }

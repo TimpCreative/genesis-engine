@@ -427,6 +427,14 @@ fn soil_to_color(data: &WorldData, hex_idx: usize) -> Color {
         .get(hex_idx)
         .copied()
         .unwrap_or(SoilClass::None);
+    soil_class_color(class, fertility)
+}
+
+/// Color for a soil class at the given fertility (greener when fertile). Public
+/// so the UI legend shows exactly the colors on the map — including the
+/// purple-grey barren (`None`) and pink saline classes.
+pub fn soil_class_color(class: genesis_core::data::SoilClass, fertility: f32) -> Color {
+    use genesis_core::data::SoilClass;
     let (r, g, b) = match class {
         SoilClass::None => (0.35, 0.35, 0.35),
         SoilClass::Sandy => (0.75, 0.70, 0.45),
@@ -438,7 +446,6 @@ fn soil_to_color(data: &WorldData, hex_idx: usize) -> Color {
         SoilClass::Peaty => (0.30, 0.35, 0.22),
         SoilClass::Saline => (0.85, 0.82, 0.70),
     };
-    // Tint toward fertility (greener when fertile).
     Color::srgb(r * (1.0 - 0.3 * fertility), g * (0.7 + 0.3 * fertility), b)
 }
 
