@@ -12,8 +12,8 @@ use std::sync::mpsc::{Receiver, channel};
 use bevy::prelude::*;
 use bevy::ui::FocusPolicy;
 use genesis_render::{
-    ColorsDirty, CurrentRenderMode, HexEntityCache, HexMeshIndex, RiversDirty, WorldDirty,
-    WorldResource,
+    ColorsDirty, CurrentRenderMode, HexEntityCache, HexMeshIndex, RenderMode, RiversDirty,
+    WorldDirty, WorldResource, precipitation_to_color, regime_to_color, temperature_to_color,
 };
 
 use crate::hex_inspect::{
@@ -81,6 +81,19 @@ pub struct ActiveSetupTab(pub SetupTab);
 /// Tags a setup-screen parameter row with the tab it belongs to.
 #[derive(Component)]
 pub struct TabRow(pub SetupTab);
+
+/// Number of pre-spawned legend rows (max entries any render mode uses).
+const LEGEND_ROWS: usize = 8;
+
+/// Viewing-screen legend markers — rows are pre-spawned and updated per mode.
+#[derive(Component)]
+pub struct LegendTitle;
+#[derive(Component)]
+pub struct LegendRow(pub usize);
+#[derive(Component)]
+pub struct LegendSwatch(pub usize);
+#[derive(Component)]
+pub struct LegendLabel(pub usize);
 
 /// User-adjustable world parameters shown on the setup screen.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -224,6 +237,7 @@ impl Plugin for GenesisUiPlugin {
                         timeline_keyboard,
                         timeline_playback,
                         refresh_hud,
+                        refresh_legend,
                     )
                         .chain()
                         .run_if(in_state(AppScreen::Viewing)),
@@ -841,6 +855,57 @@ fn spawn_viewing_hud(mut commands: Commands) {
             },
         ))
         .with_children(|parent| {
+            // Color legend for the active render mode (top-right overlay).
+            parent
+                .spawn((
+                    Node {
+                        position_type: PositionType::Absolute,
+                        top: Val::Px(12.0),
+                        right: Val::Px(12.0),
+                        flex_direction: FlexDirection::Column,
+                        padding: UiRect::all(Val::Px(10.0)),
+                        row_gap: Val::Px(4.0),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgba(0.05, 0.06, 0.08, 0.85)),
+                ))
+                .with_children(|panel| {
+                    panel.spawn((
+                        label("", 15.0).0,
+                        label("", 15.0).1,
+                        TextColor(Color::WHITE),
+                        LegendTitle,
+                    ));
+                    for i in 0..LEGEND_ROWS {
+                        panel
+                            .spawn((
+                                Node {
+                                    column_gap: Val::Px(8.0),
+                                    align_items: AlignItems::Center,
+                                    ..default()
+                                },
+                                LegendRow(i),
+                                Visibility::Hidden,
+                            ))
+                            .with_children(|row| {
+                                row.spawn((
+                                    Node {
+                                        width: Val::Px(18.0),
+                                        height: Val::Px(18.0),
+                                        ..default()
+                                    },
+                                    BackgroundColor(Color::WHITE),
+                                    LegendSwatch(i),
+                                ));
+                                row.spawn((
+                                    label("", 14.0).0,
+                                    label("", 14.0).1,
+                                    TextColor(Color::srgb(0.85, 0.85, 0.9)),
+                                    LegendLabel(i),
+                                ));
+                            });
+                    }
+                });
             parent
                 .spawn((
                     BlocksMapPick,
@@ -1072,6 +1137,87 @@ fn refresh_hud(
     }
     if let Ok(mut node) = bars.p1().single_mut() {
         node.width = Val::Percent((buffered_year as f32 / target * 100.0).clamp(0.0, 100.0));
+    }
+}
+
+/// (swatch color, label) entries for the legend of a render mode. Colors come
+/// from the same ramps the map uses, so the key matches what's on screen.
+fn legend_entries(mode: RenderMode) -> Vec<(Color, &'static str)> {
+    use genesis_core::data::ClimateRegimePlaceholder as Rg;
+    let ice = Color::srgb(0.95, 0.97, 1.0);
+    match mode {
+        RenderMode::Elevation => vec![
+            (Color::srgb(0.05, 0.12, 0.35), "Deep ocean"),
+            (Color::srgb(0.20, 0.45, 0.70), "Shelf / shallow sea"),
+            (Color::srgb(0.47, 0.63, 0.35), "Lowland"),
+            (Color::srgb(0.55, 0.50, 0.30), "Highland"),
+            (Color::srgb(0.90, 0.90, 0.92), "Mountain peaks"),
+        ],
+        RenderMode::Temperature => vec![
+            (ice, "Ice / permafrost"),
+            (temperature_to_color(-30.0), "Frozen"),
+            (temperature_to_color(0.0), "Cold"),
+            (temperature_to_color(15.0), "Mild"),
+            (temperature_to_color(30.0), "Hot"),
+            (temperature_to_color(45.0), "Very hot"),
+        ],
+        RenderMode::Precipitation => vec![
+            (precipitation_to_color(50.0), "Arid"),
+            (precipitation_to_color(400.0), "Semi-arid"),
+            (precipitation_to_color(900.0), "Temperate"),
+            (precipitation_to_color(1600.0), "Wet"),
+            (precipitation_to_color(2300.0), "Very wet"),
+        ],
+        RenderMode::ClimateRegime => vec![
+            (Color::srgb(0.08, 0.45, 0.60), "Ocean"),
+            (regime_to_color(Rg::Tropical), "Tropical"),
+            (regime_to_color(Rg::HotDesert), "Hot desert"),
+            (regime_to_color(Rg::Mediterranean), "Mediterranean"),
+            (regime_to_color(Rg::Temperate), "Temperate"),
+            (regime_to_color(Rg::Boreal), "Boreal"),
+            (regime_to_color(Rg::Tundra), "Tundra"),
+            (ice, "Ice / polar"),
+        ],
+        RenderMode::Soil => vec![
+            (Color::srgb(0.60, 0.50, 0.35), "Thin / poor"),
+            (Color::srgb(0.45, 0.35, 0.22), "Moderate"),
+            (Color::srgb(0.28, 0.20, 0.12), "Rich / fertile"),
+            (Color::srgb(0.85, 0.82, 0.75), "Salt flat"),
+        ],
+    }
+}
+
+/// Repaints the legend when the render mode changes.
+#[allow(clippy::type_complexity)]
+fn refresh_legend(
+    mode: Res<CurrentRenderMode>,
+    mut title: Query<&mut Text, (With<LegendTitle>, Without<LegendLabel>)>,
+    mut rows: Query<(&LegendRow, &mut Visibility)>,
+    mut swatches: Query<(&LegendSwatch, &mut BackgroundColor)>,
+    mut labels: Query<(&LegendLabel, &mut Text), Without<LegendTitle>>,
+) {
+    // Cheap enough to refresh every frame (8 rows), which also covers the first
+    // frame after entering the viewer without special-casing initialization.
+    let entries = legend_entries(mode.0);
+    if let Ok(mut text) = title.single_mut() {
+        text.0 = format!("{} key", mode.0.label());
+    }
+    for (row, mut vis) in &mut rows {
+        *vis = if row.0 < entries.len() {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
+    }
+    for (swatch, mut bg) in &mut swatches {
+        if let Some((color, _)) = entries.get(swatch.0) {
+            bg.0 = *color;
+        }
+    }
+    for (lbl, mut text) in &mut labels {
+        if let Some((_, name)) = entries.get(lbl.0) {
+            text.0 = (*name).to_string();
+        }
     }
 }
 

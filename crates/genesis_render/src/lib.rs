@@ -13,7 +13,7 @@ mod systems;
 
 pub use color::{
     MAX_ELEVATION_M, MIN_ELEVATION_M, elevation_color, hex_color_for_mode, hex_fill_color,
-    precipitation_to_color, temperature_to_color,
+    precipitation_to_color, regime_to_color, temperature_to_color,
 };
 pub use outline::SelectedHex;
 pub use pick::{cursor_hex, screen_to_hex, screen_to_lat_lon};
