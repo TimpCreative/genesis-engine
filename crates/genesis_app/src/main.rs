@@ -21,7 +21,9 @@ use genesis_core::data::WATER_NONE;
 use genesis_core::{WorldParameters, WorldYear, create_world};
 use genesis_hydrology::HydrologyState;
 use genesis_hydrology::validation::HydroMetrics;
-use genesis_render::{GenesisRenderPlugin, RenderMode, WorldResource};
+use genesis_render::{
+    CurrentProjection, GenesisRenderPlugin, MapProjection, RenderMode, WorldResource,
+};
 use genesis_tectonics::TectonicsState;
 
 use genesis_ui::GenesisUiPlugin;
@@ -499,6 +501,16 @@ fn run_headless(screenshot_dir: String, dump_path: Option<String>) {
         frames_until_next: 3,
     })
     .add_systems(Update, auto_screenshot_system);
+
+    // GENESIS_PROJECTION=globe|ortho renders the headless screenshots as the
+    // orthographic globe (default is the flat map). Handy for verifying the
+    // globe view without a GUI.
+    if let Ok(p) = std::env::var("GENESIS_PROJECTION") {
+        let p = p.to_ascii_lowercase();
+        if p == "globe" || p == "ortho" || p == "orthographic" {
+            app.insert_resource(CurrentProjection(MapProjection::Orthographic));
+        }
+    }
 
     app.run();
 }
