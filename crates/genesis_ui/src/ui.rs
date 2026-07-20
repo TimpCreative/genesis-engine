@@ -13,9 +13,9 @@ use bevy::prelude::*;
 use bevy::ui::FocusPolicy;
 use genesis_core::data::BiomeId;
 use genesis_render::{
-    ActiveBiologyView, ColorsDirty, CurrentRenderMode, HexEntityCache, HexMeshIndex, RenderMode,
-    RiversDirty, SelectedHex, WorldDirty, WorldResource, biome_color, heatmap_color,
-    precipitation_to_color, regime_to_color, soil_class_color, temperature_to_color,
+    ActiveBiologyView, ColorsDirty, CurrentProjection, CurrentRenderMode, HexEntityCache,
+    HexMeshIndex, RenderMode, RiversDirty, SelectedHex, WorldDirty, WorldResource, biome_color,
+    heatmap_color, precipitation_to_color, regime_to_color, soil_class_color, temperature_to_color,
 };
 
 use crate::biology_view::StubBiologyView;
@@ -59,7 +59,13 @@ pub enum UiAction {
     JumpToYear(i64),
     ToggleBestiary,
     ToggleTree,
+    ToggleProjection,
 }
+
+/// Marks the top-bar projection button's label so it can show the active
+/// projection ("Flat map" / "Globe").
+#[derive(Component)]
+pub struct ProjectionTabLabel;
 
 /// Which full-screen overlay is open over the map (Prep-09 §7–§8).
 #[derive(Resource, Clone, Copy, PartialEq, Eq, Default)]
@@ -275,6 +281,16 @@ impl Default for ScrubRepeat {
     }
 }
 
+/// Key-repeat state for hold-to-delete on the seed field's Backspace.
+#[derive(Resource)]
+pub struct SeedBackspaceRepeat(pub Timer);
+
+impl Default for SeedBackspaceRepeat {
+    fn default() -> Self {
+        Self(Timer::from_seconds(SCRUB_INITIAL_DELAY_S, TimerMode::Once))
+    }
+}
+
 /// Delay before hold-to-scrub starts repeating (s).
 pub const SCRUB_INITIAL_DELAY_S: f32 = 0.35;
 /// Repeat interval while an arrow key is held (s).
@@ -305,6 +321,7 @@ impl Plugin for GenesisUiPlugin {
             .init_resource::<OpenOverlay>()
             .init_resource::<OverlayBuilt>()
             .init_resource::<ScrubRepeat>()
+            .init_resource::<SeedBackspaceRepeat>()
             .init_resource::<HoveredHex>()
             .init_resource::<InspectorTab>()
             .init_resource::<InspectorVisible>()
@@ -341,25 +358,36 @@ impl Plugin for GenesisUiPlugin {
                     )
                         .run_if(in_state(AppScreen::Setup)),
                     poll_generation.run_if(resource_exists::<GenerationTask>),
+                    // Split into two internally-chained groups to stay under
+                    // Bevy's tuple-arity limit; the outer `.chain()` preserves the
+                    // overall order across both groups.
                     (
-                        update_hovered_hex,
-                        handle_map_hex_click,
-                        inspector_hotkeys,
-                        escape_ladder,
-                        handle_inspector_tabs,
-                        refresh_tab_colors,
-                        update_hex_tooltip,
-                        update_hex_inspector,
-                        timeline_keyboard,
-                        timeline_playback,
-                        refresh_hud,
-                        refresh_legend,
-                        toggle_legend,
-                        update_quit_overlay,
-                        refresh_mode_tabs,
-                        build_timeline_marks,
-                        overlay_hotkeys,
-                        update_overlays,
+                        (
+                            update_hovered_hex,
+                            handle_map_hex_click,
+                            inspector_hotkeys,
+                            escape_ladder,
+                            handle_inspector_tabs,
+                            refresh_tab_colors,
+                            update_hex_tooltip,
+                            update_hex_inspector,
+                            timeline_keyboard,
+                            timeline_playback,
+                        )
+                            .chain(),
+                        (
+                            refresh_hud,
+                            refresh_legend,
+                            toggle_legend,
+                            update_quit_overlay,
+                            refresh_mode_tabs,
+                            refresh_projection_tab,
+                            handle_projection_toggle,
+                            build_timeline_marks,
+                            overlay_hotkeys,
+                            update_overlays,
+                        )
+                            .chain(),
                     )
                         .chain()
                         .run_if(in_state(AppScreen::Viewing)),
@@ -836,15 +864,32 @@ const SEED_MAX_LEN: usize = 24;
 /// fired, so change detection stays quiet otherwise.
 fn seed_text_input(
     keys: Res<ButtonInput<KeyCode>>,
+    time: Res<Time>,
     mut config: ResMut<ActiveConfig>,
     mut fresh: ResMut<SeedInputFresh>,
+    mut bksp_repeat: ResMut<SeedBackspaceRepeat>,
 ) {
     // Cmd/Ctrl combos (copy/paste) are handled by `seed_clipboard`; don't also
     // type their letter (e.g. Cmd+C would otherwise insert a hex 'c').
     if seed_modifier_held(&keys) {
         return;
     }
-    let backspace = keys.just_pressed(KeyCode::Backspace);
+    // Delete on the initial press, then repeat while Backspace is held after an
+    // initial delay, so a held key clears the field instead of one char at a time.
+    let backspace = if keys.just_pressed(KeyCode::Backspace) {
+        bksp_repeat.0 = Timer::from_seconds(SCRUB_INITIAL_DELAY_S, TimerMode::Once);
+        true
+    } else if keys.pressed(KeyCode::Backspace) {
+        bksp_repeat.0.tick(time.delta());
+        if bksp_repeat.0.is_finished() {
+            bksp_repeat.0 = Timer::from_seconds(SCRUB_REPEAT_INTERVAL_S, TimerMode::Once);
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    };
     let typed = keys
         .get_just_pressed()
         .find_map(|code| keycode_to_seed_char(*code));
@@ -1153,6 +1198,14 @@ fn spawn_viewing_hud(
                             ..default()
                         },
                     ));
+                    bar.spawn(button(UiAction::ToggleProjection))
+                        .with_children(|b| {
+                            b.spawn((
+                                label("Flat map", 14.0).0,
+                                label("Flat map", 14.0).1,
+                                ProjectionTabLabel,
+                            ));
+                        });
                     bar.spawn(button(UiAction::ToggleTree)).with_children(|b| {
                         b.spawn(label("Tree of Life", 14.0));
                     });
@@ -1756,6 +1809,39 @@ fn refresh_mode_tabs(
     }
 }
 
+/// Keeps the top-bar projection button's label in sync with the active
+/// projection (also toggled by the `P` hotkey).
+fn refresh_projection_tab(
+    projection: Res<CurrentProjection>,
+    mut label: Query<&mut Text, With<ProjectionTabLabel>>,
+) {
+    if !projection.is_changed() {
+        return;
+    }
+    if let Ok(mut text) = label.single_mut() {
+        text.0 = projection.0.label().to_string();
+    }
+}
+
+/// Handles the top-bar projection button. Same effect as the `P` hotkey: cycle
+/// the projection and rebuild the mesh topology (the visible hex set differs);
+/// refresh the river overlay. Its own system so `handle_actions` stays under
+/// Bevy's 16-param limit.
+fn handle_projection_toggle(
+    interactions: ChangedButtons<&'static UiAction>,
+    mut projection: ResMut<CurrentProjection>,
+    mut world_dirty: ResMut<WorldDirty>,
+    mut rivers_dirty: ResMut<RiversDirty>,
+) {
+    for (interaction, action) in &interactions {
+        if *interaction == Interaction::Pressed && matches!(action, UiAction::ToggleProjection) {
+            projection.0 = projection.0.cycle_next();
+            world_dirty.0 = true;
+            rivers_dirty.dirty = true;
+        }
+    }
+}
+
 /// Builds the era bands + event pips once the timeline is ready (Prep-09 §5).
 #[allow(clippy::type_complexity)]
 fn build_timeline_marks(
@@ -2161,6 +2247,9 @@ fn handle_actions(
                 };
                 overlay_built.0 = false;
             }
+            // Handled by `handle_projection_toggle` (a dedicated system keeps
+            // `handle_actions` under Bevy's 16-param limit).
+            UiAction::ToggleProjection => {}
             UiAction::JumpToYear(year) => {
                 if let (Some(tl), Some(wr), Some(cd), Some(rd)) = (
                     timeline.as_mut(),
