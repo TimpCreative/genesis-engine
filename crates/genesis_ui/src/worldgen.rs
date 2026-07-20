@@ -49,10 +49,19 @@ pub struct WorldGenConfig {
     pub major_plates: u8,
     pub minor_plates: u8,
     /// Target continental crust coverage at formation (fraction of the
-    /// sphere's area; ~0.29 is present-day Earth, 0.22 a Hadean world).
+    /// sphere's area; ~0.29 is present-day Earth, 0.22 a Hadean world). Under
+    /// the Doc 10 calibration this seeds *where* continents form; the *amount*
+    /// of dry land is set by `land_fraction`.
     pub continental_fraction: f32,
     /// Planetary water inventory in global-equivalent-layer meters (Doc 08 §3.1).
     pub water_inventory_gel_m: f32,
+    /// Doc 10 land coverage target (fraction of the sphere above sea level).
+    /// Solved for exactly each tick.
+    pub land_fraction: f32,
+    /// Doc 10 mountain intensity (height/fatness of the orogenic tail).
+    pub orogeny_intensity: f32,
+    /// Doc 10 ocean-island seeding density.
+    pub island_density: f32,
 }
 
 impl Default for WorldGenConfig {
@@ -67,6 +76,9 @@ impl Default for WorldGenConfig {
             minor_plates: defaults.core.geology.initial_minor_plate_count,
             continental_fraction: defaults.core.geology.initial_continental_fraction,
             water_inventory_gel_m: defaults.core.hydrology.water_inventory_gel_m,
+            land_fraction: defaults.core.terrain.land_fraction,
+            orogeny_intensity: defaults.core.terrain.orogeny_intensity,
+            island_density: defaults.core.terrain.island_density,
         }
     }
 }
@@ -81,6 +93,9 @@ impl WorldGenConfig {
         params.core.geology.initial_minor_plate_count = self.minor_plates;
         params.core.geology.initial_continental_fraction = self.continental_fraction;
         params.core.hydrology.water_inventory_gel_m = self.water_inventory_gel_m;
+        params.core.terrain.land_fraction = self.land_fraction;
+        params.core.terrain.orogeny_intensity = self.orogeny_intensity;
+        params.core.terrain.island_density = self.island_density;
         params
     }
 }

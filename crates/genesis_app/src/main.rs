@@ -387,6 +387,15 @@ fn generate_world_from_env() -> (genesis_core::World, TectonicsState) {
             Err(_) => eprintln!("GENESIS_SEED={seed_str} is not a valid u64; using default seed"),
         }
     }
+    if let Ok(v) = std::env::var("GENESIS_LAND_FRACTION") {
+        match v.parse::<f32>() {
+            Ok(f) if (0.05..=0.95).contains(&f) => {
+                parameters.core.terrain.land_fraction = f;
+                eprintln!("GENESIS_LAND_FRACTION={f}");
+            }
+            _ => eprintln!("GENESIS_LAND_FRACTION={v} invalid (want 0.05..=0.95); using default"),
+        }
+    }
 
     let mut world = create_world(parameters).expect("default world creates successfully");
     let mut tectonics = TectonicsState::new();

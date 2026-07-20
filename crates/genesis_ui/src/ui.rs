@@ -60,6 +60,9 @@ pub enum Param {
     MinorPlates,
     ContinentalFraction,
     WaterInventory,
+    LandFraction,
+    Mountains,
+    Islands,
 }
 
 /// Marks the text node displaying a parameter's current value.
@@ -315,13 +318,16 @@ fn spawn_main_menu(mut commands: Commands) {
 // Setup screen
 // ---------------------------------------------------------------------------
 
-const SETUP_PARAMS: [(Param, &str); 7] = [
+const SETUP_PARAMS: [(Param, &str); 10] = [
     (Param::Seed, "Seed"),
     (Param::SubdivisionLevel, "Detail (subdivision level)"),
     (Param::TargetYear, "Simulate to year"),
+    (Param::LandFraction, "Land coverage %"),
+    (Param::Mountains, "Mountains"),
+    (Param::Islands, "Islands"),
     (Param::MajorPlates, "Major plates"),
     (Param::MinorPlates, "Minor plates"),
-    (Param::ContinentalFraction, "Continental crust %"),
+    (Param::ContinentalFraction, "Continental crust seed %"),
     (Param::WaterInventory, "Water inventory (GEL m)"),
 ];
 
@@ -397,6 +403,9 @@ fn format_param(config: &WorldGenConfig, param: Param) -> String {
         Param::MinorPlates => config.minor_plates.to_string(),
         Param::ContinentalFraction => format!("{:.0}%", config.continental_fraction * 100.0),
         Param::WaterInventory => format!("{:.0}", config.water_inventory_gel_m),
+        Param::LandFraction => format!("{:.0}%", config.land_fraction * 100.0),
+        Param::Mountains => format!("{:.2}x", config.orogeny_intensity),
+        Param::Islands => format!("{:.1}x", config.island_density),
     }
 }
 
@@ -450,6 +459,19 @@ fn adjust_param(config: &mut WorldGenConfig, param: Param, direction: i8) {
         Param::WaterInventory => {
             let next = config.water_inventory_gel_m + f32::from(direction) * 250.0;
             config.water_inventory_gel_m = next.clamp(500.0, 6000.0);
+        }
+        Param::LandFraction => {
+            // Steps of 2 percentage points; the solved land coverage target.
+            let steps = (config.land_fraction * 50.0).round() + f32::from(direction);
+            config.land_fraction = (steps / 50.0).clamp(0.05, 0.95);
+        }
+        Param::Mountains => {
+            let next = config.orogeny_intensity + f32::from(direction) * 0.25;
+            config.orogeny_intensity = next.clamp(0.0, 3.0);
+        }
+        Param::Islands => {
+            let next = config.island_density + f32::from(direction) * 0.5;
+            config.island_density = next.clamp(0.0, 3.0);
         }
     }
 }
