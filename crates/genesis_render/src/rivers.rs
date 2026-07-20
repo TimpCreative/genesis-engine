@@ -10,12 +10,14 @@ use bevy::prelude::*;
 use genesis_core::HexId;
 use genesis_core::data::{HydroFlags, RiverClass, WorldData, river_class};
 
-use crate::polygon::unwrap_lon_relative;
-use crate::projection::{MapProjection, project, should_skip_for_equirectangular};
+use glam::DVec3;
+
+use crate::projection::MapProjection;
 use crate::resources::{
     CameraState, ColorsDirty, CurrentProjection, HexEntityCache, RiversDirty, WorldDirty,
     WorldResource,
 };
+use crate::systems::view_center;
 
 /// Zoom ≥ this shows Stream-class rivers (regional).
 pub const ZOOM_REGIONAL: f32 = 2.0;
@@ -233,7 +235,12 @@ pub fn update_river_overlay(
 ) {
     let lod = min_class_for_zoom(camera.zoom);
     let lod_changed = rivers_dirty.last_lod != Some(lod);
-    if !world_dirty.0 && !colors_dirty.0 && !rivers_dirty.dirty && !lod_changed {
+    let projection = projection_mode.0;
+    // On the globe, rivers reproject as it rotates (pan changes CameraState), so
+    // rebuild on camera change too. The flat map is world-fixed and never needs a
+    // pan-driven rebuild (zoom is covered by `lod_changed`).
+    let globe_rotated = projection == MapProjection::Orthographic && camera.is_changed();
+    if !world_dirty.0 && !colors_dirty.0 && !rivers_dirty.dirty && !lod_changed && !globe_rotated {
         return;
     }
     let Some(world_res) = world_res else {
@@ -245,19 +252,11 @@ pub fn update_river_overlay(
         cache.entities.retain(|&e| e != entity);
     }
 
-    // The river overlay is equirectangular-only for now; on the globe it clears
-    // itself (Slice 3 will reproject it). The `P` toggle sets `rivers_dirty`, so
-    // this runs once on the switch and then stays quiet.
-    if projection_mode.0 != MapProjection::Equirectangular {
-        rivers_dirty.dirty = false;
-        rivers_dirty.last_lod = Some(lod);
-        return;
-    }
-
     let data = &world_res.0.data;
     let grid = &data.grid;
     let n = data.cell_count() as usize;
     let draw = select_river_hexes(data, lod);
+    let view = view_center(&camera);
 
     let mut positions: Vec<[f32; 3]> = Vec::new();
     let mut colors: Vec<[f32; 4]> = Vec::new();
@@ -273,17 +272,23 @@ pub fn update_river_overlay(
             continue;
         };
         let hex = HexId(i as u32);
-        let (clat, clon) = grid.center_lat_lon(hex);
-        if should_skip_for_equirectangular(clat) {
-            continue;
+        let center_dir = DVec3::from(grid.cell_center_direction(hex));
+        if !projection.hex_visible(center_dir, view) {
+            continue; // polar-skipped (flat) or far hemisphere (globe)
         }
         let Some(&target) = grid.neighbors(hex).get(dir.index()) else {
             continue;
         };
-        let (tlat, tlon) = grid.center_lat_lon(target);
-        let (x0, y0) = project(clat, clon);
-        let unwrapped = unwrap_lon_relative(tlon, clon);
-        let (x1, y1) = project(tlat, unwrapped);
+        let target_dir = DVec3::from(grid.cell_center_direction(target));
+        // Drop segments whose downstream end is off-map, so a river never draws a
+        // stray chord across the globe's limb or the flat map's antimeridian gap.
+        if !projection.hex_visible(target_dir, view) {
+            continue;
+        }
+        // Equirectangular unwraps the target's longitude relative to the source
+        // hex's center; the globe ignores the reference and uses the view.
+        let (x0, y0) = projection.project(center_dir, center_dir, view);
+        let (x1, y1) = projection.project(target_dir, center_dir, view);
 
         let ephemeral = data.hydro_flags[i].contains(HydroFlags::EPHEMERAL);
         let rgba = class_color(class, ephemeral);
