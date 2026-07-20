@@ -154,7 +154,7 @@ Operate on the calibrated field, each a knob hitting its count by construction:
 
 - **Keep:** motion, boundary detect/classify, hotspots, reorganization, partition, projection/rebuild — the structure engine. Hydrology flooding/lakes/rivers. The bathtub *machinery* (repurposed for eustasy + water distribution).
 - **Reframe:** erosion & collapse → smoothing operators on `Φ`. GEL/bathtub → water distribution + eustatic offset, not the datum.
-- **Remove (once the transfer is authoritative, Phase 3):** `continental_heal`, `basin_infill`, `coast_cleanup` elevation edits, `subduction_erosion`-as-land%-bound, and the hard baseline constants. Their *intent* (coherent coasts, no interior pits, bounded land) is met by construction, so they stop existing rather than being maintained.
+- **Retain (Phase 3 finding — deletion retracted):** `continental_heal`, `basin_infill`, and `coast_cleanup` were expected to be redundant, but they clean the raw **structure** the calibration then maps — specifically the multi-hex accreted-oceanic interior pits that the smoothed ranking does *not* dissolve (it lifts isolated 1-hex lows, not whole basins). Gating them off under calibration **doubled** the dry sub-sea perforation (129 → 269 @ subdiv 7, 1B), so they earn their place as structure conditioning and stay. `subduction_erosion` also stays (a gate bounds crust fraction). The hard baseline constants and the "structure emits unitless Φ" refactor are **deferred** — high risk to a result the user is happy with, low user-visible benefit.
 
 ---
 

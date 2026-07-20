@@ -334,6 +334,14 @@ impl SimulationLayer for TectonicsLayer {
                 rebuild_world_from_plate_surfaces_cached(world, &state.registry, &state.projection);
             });
 
+            // These passes clean the raw *structure* the calibration then maps:
+            // coast de-speckle removes coastal spray, continental heal + closed-
+            // depression infill fill the multi-hex accreted-oceanic interior pits
+            // that calibration's smoothed ranking does NOT dissolve on its own
+            // (it lifts isolated 1-hex lows, not whole basins). Empirically,
+            // dropping them under calibration doubled the dry sub-sea perforation
+            // (129 -> 269 @ subdiv 7, 1B), so they earn their place as structure
+            // conditioning — Doc 10 §9's "delete" is retracted for these.
             timed_tick_step("coast_cleanup", tick_year, || {
                 let s = &mut *state;
                 cleanup_coast_artifacts(
