@@ -24,9 +24,11 @@ use genesis_core::parameters::TerrainTargets;
 /// the interior-perforation problem is dissolved rather than patched.
 const SMOOTH_ITERS: usize = 2;
 /// How much high-frequency structural detail (Φ − Φ_lo) is re-injected as local
-/// relief on top of the curve. Keeps mountains textured and valleys cut instead
-/// of an "equalized" beach ball. Phase 1 makes this regime-aware.
-const RESIDUAL_GAIN: f32 = 0.5;
+/// relief on top of the curve, per regime (Doc 10 §5.4 realism guard). Continental
+/// crust keeps mountains textured and valleys cut; oceanic crust stays smoother
+/// (abyssal plains) while retaining some ridge/seamount relief.
+const RESIDUAL_GAIN_LAND: f32 = 0.6;
+const RESIDUAL_GAIN_OCEAN: f32 = 0.3;
 /// Residual is tapered to zero within this distance of the datum, so the
 /// land/ocean crossing stays exact and coastlines stay crisp.
 const TAPER_M: f32 = 800.0;
@@ -35,6 +37,9 @@ const TAPER_M: f32 = 800.0;
 /// residual-induced interior sub-sea pits.
 const MIN_LAND_M: f32 = 1.0;
 const MAX_OCEAN_M: f32 = -1.0;
+
+/// Island hexes seeded per 1000 cells at `island_density = 1.0` (Doc 10 §8).
+const ISLAND_HEXES_PER_1000: f32 = 1.0;
 
 /// A monotone target hypsometric curve `H(p)`: area-percentile `p ∈ [0,1]`
 /// (ascending) → elevation in meters, sea level = 0. Built from [`TerrainTargets`].
@@ -146,9 +151,16 @@ pub fn apply_hypsometry_transfer(data: &mut WorldData, targets: &TerrainTargets)
         let base = curve.elev_at(p);
         // Re-inject tapered local detail; the datum guard keeps the land/ocean
         // classification (hence the land fraction) exactly as the curve set it.
+        // Regime-aware gain (§5.4): continental crust keeps relief, ocean floor
+        // stays smoother.
         let residual = phi[i] - phi_lo[i];
         let taper = residual_taper(base);
-        let mut e = base + RESIDUAL_GAIN * residual * taper;
+        let gain = if data.continental_crust.get(i).copied().unwrap_or(base > 0.0) {
+            RESIDUAL_GAIN_LAND
+        } else {
+            RESIDUAL_GAIN_OCEAN
+        };
+        let mut e = base + gain * residual * taper;
         if base > 0.0 {
             e = e.max(MIN_LAND_M);
         } else if base < 0.0 {
@@ -157,8 +169,54 @@ pub fn apply_hypsometry_transfer(data: &mut WorldData, targets: &TerrainTargets)
         elev[i] = e;
     }
 
+    seed_islands(&mut elev, &phi, &phi_lo, data, targets.island_density);
+
     data.elevation_mean.copy_from_slice(&elev);
     data.sea_level_m = 0.0;
+}
+
+/// Land-fraction-neutral island seeding (§8): the strongest oceanic seamounts
+/// (highest local relief) trade elevations with an equal number of the weakest
+/// coastal-margin land cells, so `island_density`-worth of islands appear in the
+/// open ocean while the land count is unchanged. Deterministic — cohorts sorted
+/// with `HexId` tie-breaks.
+fn seed_islands(elev: &mut [f32], phi: &[f32], phi_lo: &[f32], data: &WorldData, density: f32) {
+    if density <= 0.0 {
+        return;
+    }
+    let n = elev.len();
+    let target = (density * ISLAND_HEXES_PER_1000 * n as f32 / 1000.0).round() as usize;
+    if target == 0 {
+        return;
+    }
+
+    // Oceanic seamounts by descending local relief (Φ − Φ_lo): hotspot swells
+    // and ridge highs, the cells that would breach the surface first.
+    let mut seamounts: Vec<u32> = (0..n as u32)
+        .filter(|&i| {
+            let idx = i as usize;
+            elev[idx] < 0.0 && !data.continental_crust.get(idx).copied().unwrap_or(false)
+        })
+        .collect();
+    seamounts.sort_by(|&a, &b| {
+        let ra = phi[a as usize] - phi_lo[a as usize];
+        let rb = phi[b as usize] - phi_lo[b as usize];
+        rb.total_cmp(&ra).then_with(|| a.cmp(&b))
+    });
+
+    // Weakest land margins by ascending elevation: the lowest coastal fringe,
+    // which sinks to shallow ocean in exchange (keeps the land count fixed).
+    let mut margins: Vec<u32> = (0..n as u32).filter(|&i| elev[i as usize] > 0.0).collect();
+    margins.sort_by(|&a, &b| {
+        elev[a as usize]
+            .total_cmp(&elev[b as usize])
+            .then_with(|| a.cmp(&b))
+    });
+
+    let k = target.min(seamounts.len()).min(margins.len());
+    for t in 0..k {
+        elev.swap(seamounts[t] as usize, margins[t] as usize);
+    }
 }
 
 /// Smoothstep-tapered residual weight: 0 at the datum, ramping to 1 by
@@ -299,6 +357,32 @@ mod tests {
             })
             .count();
         assert_eq!(perforations, 0, "found {perforations} interior perforations");
+    }
+
+    #[test]
+    fn island_seeding_is_land_fraction_neutral() {
+        let build = |density: f32| {
+            let mut world = test_world(6);
+            let n = world.data.cell_count() as usize;
+            for i in 0..n {
+                world.data.elevation_mean[i] = ((i * 2654435761) % 10000) as f32 - 5000.0;
+            }
+            let mut t = world.data.parameters.core.terrain;
+            t.island_density = density;
+            apply_hypsometry_transfer(&mut world.data, &t);
+            let sea = world.data.sea_level_m;
+            let land = world
+                .data
+                .elevation_mean
+                .iter()
+                .filter(|&&e| e > sea)
+                .count();
+            (land, world.data.elevation_mean.clone())
+        };
+        let (land0, elev0) = build(0.0);
+        let (land3, elev3) = build(3.0);
+        assert_eq!(land0, land3, "island seeding must preserve the land count");
+        assert_ne!(elev0, elev3, "island_density > 0 should relocate some cells");
     }
 
     #[test]
