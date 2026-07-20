@@ -521,7 +521,12 @@ fn spawn_setup_screen(
     mut commands: Commands,
     active_tab: Res<ActiveSetupTab>,
     mut seed_fresh: ResMut<SeedInputFresh>,
+    mut config: ResMut<ActiveConfig>,
 ) {
+    // "New World" always opens on a fresh random seed (a different world every
+    // time); the user can still type their own or roll Random. Other params are
+    // preserved across entries.
+    config.0.seed_text = random_seed_string();
     // Next keystroke starts a fresh seed rather than appending to the shown one.
     seed_fresh.0 = true;
     let current_tab = active_tab.0;
