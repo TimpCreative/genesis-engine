@@ -6,6 +6,8 @@
 // - GENESIS_SCREENSHOT_DIR: if set, runs HEADLESS: generates the world up front,
 //   writes one PNG per render mode, then exits. Without it the app boots into
 //   the interactive menu (new world, parameters, timeline viewer).
+// - GENESIS_SCRUB_PARITY: if set (with SCREENSHOT_DIR), clears water_body_id
+//   before capture so screenshots exercise the HistoryFrame scrub color path.
 //   Examples:
 //     cargo run -p genesis_app                       # 1M years (default)
 //     GENESIS_TARGET_YEAR=10000000 cargo run -p genesis_app   # 10M years
@@ -15,8 +17,10 @@
 use bevy::prelude::*;
 use bevy::render::view::screenshot::{Screenshot, save_to_disk};
 use genesis_climate::ClimateState;
+use genesis_core::data::WATER_NONE;
 use genesis_core::{WorldParameters, WorldYear, create_world};
 use genesis_hydrology::HydrologyState;
+use genesis_hydrology::validation::HydroMetrics;
 use genesis_render::{GenesisRenderPlugin, RenderMode, WorldResource};
 use genesis_tectonics::TectonicsState;
 
@@ -129,6 +133,8 @@ fn target_year_from_env() -> WorldYear {
 
 fn print_world_summary(world: &genesis_core::World, tectonics: &TectonicsState) {
     let summary = genesis_tectonics::summarize_world(world, tectonics);
+    let hydro = HydroMetrics::capture(&world.data);
+    let (below_sea, below_sea_dry) = below_sea_counts(&world.data);
     info!(
         "Genesis Engine geology smoke test: subdivision level {}, {} hexes, {} plates",
         world.data.grid.subdivision_level(),
@@ -136,6 +142,8 @@ fn print_world_summary(world: &genesis_core::World, tectonics: &TectonicsState) 
         tectonics.registry.count(),
     );
     info!("{summary}");
+    info!("hydro: {hydro}");
+    info!("below_sea={below_sea} below_sea_dry={below_sea_dry}");
     eprintln!(
         "Genesis Engine geology smoke test: subdivision level {}, {} hexes, {} plates",
         world.data.grid.subdivision_level(),
@@ -143,6 +151,27 @@ fn print_world_summary(world: &genesis_core::World, tectonics: &TectonicsState) 
         tectonics.registry.count(),
     );
     eprintln!("{summary}");
+    eprintln!("hydro:\n{hydro}");
+    eprintln!("below_sea={below_sea} below_sea_dry={below_sea_dry}");
+}
+
+/// Counts cells below derived sea level, and how many of those lack standing water.
+fn below_sea_counts(data: &genesis_core::data::WorldData) -> (u32, u32) {
+    let sea = data.sea_level_m;
+    let mut below_sea = 0_u32;
+    let mut below_sea_dry = 0_u32;
+    for i in 0..data.elevation_mean.len() {
+        if data.elevation_mean[i] >= sea {
+            continue;
+        }
+        below_sea += 1;
+        let water = data.water_level_m.get(i).copied().unwrap_or(WATER_NONE);
+        let wet = water.is_finite() && water > data.elevation_mean[i];
+        if !wet {
+            below_sea_dry += 1;
+        }
+    }
+    (below_sea, below_sea_dry)
 }
 
 fn main() {
@@ -232,6 +261,28 @@ fn run_headless(screenshot_dir: String) {
     }
 
     print_world_summary(&world, &tectonics);
+
+    // Display-only morphological de-speckle of the final render buffers
+    // (generation is complete; the simulation state is never fed this back).
+    // Removes the single-hex land/ocean spray for the screenshots.
+    {
+        let d = &mut world.data;
+        genesis_tectonics::coast_cleanup::despeckle_display(
+            &mut d.elevation_mean,
+            &mut d.water_level_m,
+            &d.grid,
+            d.sea_level_m,
+        );
+    }
+
+    // Optional UI-scrub stress: wipe body ids so color must rely on water_level
+    // (the pre-fix HistoryFrame hole). Oceans must still render blue.
+    if std::env::var("GENESIS_SCRUB_PARITY").is_ok() {
+        eprintln!("GENESIS_SCRUB_PARITY: clearing water_body_id before screenshots");
+        for id in &mut world.data.water_body_id {
+            *id = genesis_core::data::WaterBodyId::NONE;
+        }
+    }
 
     let _ = std::fs::create_dir_all(&screenshot_dir);
 

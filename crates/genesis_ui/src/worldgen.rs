@@ -7,7 +7,9 @@
 
 use genesis_climate::{ClimateLayer, ClimateState, flush_events_to_branch as flush_climate_events};
 use genesis_core::World;
-use genesis_core::data::{ClimateRegimePlaceholder, Direction, HydroFlags, SoilClass, WorldData};
+use genesis_core::data::{
+    ClimateRegimePlaceholder, Direction, HydroFlags, SoilClass, WaterBodyId, WorldData,
+};
 use genesis_core::lifecycle::{GenerationError, advance_with_coordinator_observed};
 use genesis_core::parameters::{WorldParameters, WorldSeed};
 use genesis_core::time::{TickCoordinator, WorldYear};
@@ -22,7 +24,7 @@ use genesis_tectonics::{
 pub const FRAME_MEMORY_BUDGET_BYTES: usize = 256 << 20;
 
 /// Approximate bytes per cell in a [`HistoryFrame`] (Doc 08 §12.4 + polish fields).
-const FRAME_BYTES_PER_CELL: usize = 36;
+const FRAME_BYTES_PER_CELL: usize = 40;
 
 /// Frame cap for a grid size, from the memory budget.
 pub fn max_history_frames(cell_count: u32) -> usize {
@@ -85,6 +87,7 @@ pub struct HistoryFrame {
     pub climate_regime: Vec<ClimateRegimePlaceholder>,
     /// Doc 08 §12.4 water fields.
     pub water_level_m: Vec<f32>,
+    pub water_body_id: Vec<WaterBodyId>,
     pub river_discharge_m3_yr: Vec<f32>,
     pub hydro_flags: Vec<HydroFlags>,
     pub ice_mask: Vec<bool>,
@@ -96,14 +99,26 @@ pub struct HistoryFrame {
 
 impl HistoryFrame {
     pub fn capture(data: &WorldData) -> Self {
+        // Display-only morphological de-speckle of the frame's render buffers
+        // (never fed back into the live simulation): removes the single-hex
+        // land/ocean spray so the scrubbed timeline shows coherent continents.
+        let mut elevation_mean = data.elevation_mean.clone();
+        let mut water_level_m = data.water_level_m.clone();
+        genesis_tectonics::coast_cleanup::despeckle_display(
+            &mut elevation_mean,
+            &mut water_level_m,
+            &data.grid,
+            data.sea_level_m,
+        );
         Self {
             year: data.current_year.value(),
             sea_level_m: data.sea_level_m,
-            elevation_mean: data.elevation_mean.clone(),
+            elevation_mean,
             temperature_mean: data.temperature_mean.clone(),
             precipitation: data.precipitation.clone(),
             climate_regime: data.climate_regime.clone(),
-            water_level_m: data.water_level_m.clone(),
+            water_level_m,
+            water_body_id: data.water_body_id.clone(),
             river_discharge_m3_yr: data.river_discharge_m3_yr.clone(),
             hydro_flags: data.hydro_flags.clone(),
             ice_mask: data.ice_mask.clone(),
@@ -126,6 +141,9 @@ impl HistoryFrame {
         data.climate_regime.copy_from_slice(&self.climate_regime);
         if data.water_level_m.len() == self.water_level_m.len() {
             data.water_level_m.copy_from_slice(&self.water_level_m);
+            if data.water_body_id.len() == self.water_body_id.len() {
+                data.water_body_id.copy_from_slice(&self.water_body_id);
+            }
             data.river_discharge_m3_yr
                 .copy_from_slice(&self.river_discharge_m3_yr);
             data.hydro_flags.copy_from_slice(&self.hydro_flags);
@@ -355,6 +373,99 @@ mod tests {
 
         last.apply(&mut world.data);
         assert_eq!(world.data.elevation_mean, last.elevation_mean);
+        assert_eq!(world.data.water_body_id, last.water_body_id);
+        assert_eq!(world.data.water_level_m, last.water_level_m);
+    }
+
+    /// Scrubbing must not paint oceans as salt flats when body ids are unset.
+    #[test]
+    fn scrubbed_frame_keeps_wet_hexes_blue_under_salt() {
+        use bevy::prelude::ColorToComponents;
+        use genesis_core::data::WaterBodyId;
+        use genesis_render::{RenderMode, hex_color_for_mode};
+
+        let config = WorldGenConfig {
+            seed: 0,
+            subdivision_level: 5,
+            // Past condensation onset (~215 My); oceans must be present for the scrub check.
+            target_year: 300_000_000,
+            ..WorldGenConfig::default()
+        };
+        let (mut world, frames) =
+            generate_world_with_history(&config, |_, _| {}).expect("generation");
+        let frame = frames.last().expect("frame");
+        // Simulate pre-fix scrub: hydro fields restored, body ids left NONE.
+        frame.apply(&mut world.data);
+        for id in &mut world.data.water_body_id {
+            *id = WaterBodyId::NONE;
+        }
+
+        let n = world.data.cell_count() as usize;
+        let mut wet = 0u32;
+        let mut blue = 0u32;
+        for i in 0..n {
+            let elev = world.data.elevation_mean[i];
+            let water = world.data.water_level_m[i];
+            if !(water.is_finite() && water > elev) {
+                continue;
+            }
+            wet += 1;
+            let rgb = {
+                let c = hex_color_for_mode(&world.data, i, RenderMode::Elevation, false);
+                c.to_srgba().to_f32_array_no_alpha()
+            };
+            if rgb[2] > rgb[0] + 0.05 && rgb[2] > rgb[1] {
+                blue += 1;
+            }
+        }
+        assert!(wet > 0, "expected standing water at 300M");
+        assert_eq!(
+            blue, wet,
+            "every wet hex must render blue after scrub (wet={wet} blue={blue})"
+        );
+    }
+
+    /// Manual diagnostic: HistoryFrame wetting across the timeline (ocean-tan bug).
+    #[test]
+    #[ignore = "manual ocean-tan HistoryFrame wetting diagnostic"]
+    fn diagnose_history_frame_wetting() {
+        let config = WorldGenConfig {
+            seed: 0,
+            subdivision_level: 5,
+            target_year: 1_000_000_000,
+            ..WorldGenConfig::default()
+        };
+        let (_, frames) = generate_world_with_history(&config, |_, _| {}).expect("generation");
+        println!("frames={}", frames.len());
+        for frame in &frames {
+            let n = frame.elevation_mean.len().max(1);
+            let mut land = 0u32;
+            let mut wet = 0u32;
+            let mut wet_with_salt = 0u32;
+            for i in 0..n {
+                let elev = frame.elevation_mean[i];
+                let water = frame.water_level_m[i];
+                if elev > frame.sea_level_m {
+                    land += 1;
+                }
+                let is_wet = water.is_finite() && water > elev;
+                if is_wet {
+                    wet += 1;
+                    if frame.salt_accumulated[i] > 0.0 {
+                        wet_with_salt += 1;
+                    }
+                }
+            }
+            if frame.year == 0 || frame.year % 200_000_000 == 0 || frame.year == 864_000_000 {
+                println!(
+                    "year={} land={:.1}% wet={:.1}% wet_with_salt={:.1}%",
+                    frame.year,
+                    100.0 * land as f64 / n as f64,
+                    100.0 * wet as f64 / n as f64,
+                    100.0 * wet_with_salt as f64 / n as f64
+                );
+            }
+        }
     }
 
     #[test]

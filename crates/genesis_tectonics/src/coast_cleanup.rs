@@ -5,8 +5,8 @@
 
 use std::collections::{BTreeSet, VecDeque};
 
-use genesis_core::data::{BedrockType, WorldData};
-use genesis_core::{HexId, PlateId};
+use genesis_core::data::{BedrockType, WATER_NONE, WorldData};
+use genesis_core::{HexGrid, HexId, PlateId};
 
 use crate::boundary::BoundaryInfo;
 use crate::plate::{PlateRegistry, PlateType};
@@ -18,6 +18,104 @@ pub const SUBMERGE_DEPTH_M: f32 = 10.0;
 
 /// Elevation above sea level when filling artifact inland puddles (m).
 pub const FILL_ABOVE_SEA_M: f32 = 1.0;
+
+/// Largest ocean-surrounded land component the display de-speckle submerges.
+/// Real islands are multi-hex clusters; the salt-and-pepper is 1–3 hex spray.
+/// Display-only, so removing spray costs no simulated land fraction.
+pub const DESPECKLE_OPEN_MAX_HEXES: usize = 3;
+/// Largest land-surrounded ocean pocket the display de-speckle fills.
+pub const DESPECKLE_CLOSE_MAX_HEXES: usize = 3;
+/// A land-surrounded ocean pocket deeper than this (below sea) is kept as a
+/// real basin; shallower multi-hex pockets are filled. Single-hex pockets are
+/// filled regardless of depth (a lone below-sea hex ringed by land is a
+/// projection/incision artifact, not a basin).
+pub const DESPECKLE_CLOSE_MAX_DEPTH_M: f32 = 300.0;
+
+/// **Display-only** morphological open/close on the land/ocean mask.
+///
+/// The salt-and-pepper single-hex islands and pockets are **adopted
+/// projection-hole hexes**: a plate owns the world hex by BFS adoption but
+/// stores no birth feature there, so the surface-modify cleanup
+/// ([`submerge_ephemeral_islands`]) is a no-op on them. This pass edits an
+/// elevation buffer directly: it submerges ocean-surrounded land components of
+/// `<= DESPECKLE_OPEN_MAX_HEXES` and fills small land-surrounded ocean pockets,
+/// leaving multi-hex islands and deep basins.
+///
+/// It is applied ONLY to display copies (headless render buffer, history
+/// frames), never to the live simulation `WorldData`: the deep-time land
+/// fraction sits close to the §11 gate floor and is chaotically sensitive, so
+/// perturbing the simulated elevation each tick tipped it below the gate. The
+/// simulation is left untouched; only what the user sees is de-speckled.
+///
+/// Updates `elevation` and `water_level` together so the render stays
+/// consistent: a submerged island joins the ocean (blue), a filled pocket
+/// becomes dry land. Deterministic: `neighbors_sorted` BFS, ascending `HexId`,
+/// both passes evaluated on the entry snapshot so nothing cascades.
+pub fn despeckle_display(elevation: &mut [f32], water_level: &mut [f32], grid: &HexGrid, sea: f32) {
+    let n = elevation.len();
+    let snap: Vec<f32> = elevation.to_vec();
+    let is_land = |e: f32| e > sea;
+    let is_ocean = |e: f32| e < sea;
+
+    // Opening: submerge isolated small land components. A connected land
+    // component of size <= K is, by construction, ringed by non-land (any land
+    // neighbor would be in the component), i.e. an ocean-surrounded island.
+    let mut visited = vec![false; n];
+    for start in 0..n {
+        if visited[start] || !is_land(snap[start]) {
+            continue;
+        }
+        let mut queue = VecDeque::from([start]);
+        visited[start] = true;
+        let mut cells = vec![start];
+        while let Some(i) = queue.pop_front() {
+            for &nb in grid.neighbors_sorted(HexId(i as u32)) {
+                let j = nb.0 as usize;
+                if j < n && !visited[j] && is_land(snap[j]) {
+                    visited[j] = true;
+                    queue.push_back(j);
+                    cells.push(j);
+                }
+            }
+        }
+        if cells.len() <= DESPECKLE_OPEN_MAX_HEXES {
+            for &c in &cells {
+                elevation[c] = sea - SUBMERGE_DEPTH_M;
+                water_level[c] = sea; // joins the ocean → renders as water
+            }
+        }
+    }
+
+    // Closing: fill isolated small ocean pockets ringed by land.
+    let mut ovisited = vec![false; n];
+    for start in 0..n {
+        if ovisited[start] || !is_ocean(snap[start]) {
+            continue;
+        }
+        let mut queue = VecDeque::from([start]);
+        ovisited[start] = true;
+        let mut cells = vec![start];
+        let mut min_elev = snap[start];
+        while let Some(i) = queue.pop_front() {
+            for &nb in grid.neighbors_sorted(HexId(i as u32)) {
+                let j = nb.0 as usize;
+                if j < n && !ovisited[j] && is_ocean(snap[j]) {
+                    ovisited[j] = true;
+                    queue.push_back(j);
+                    cells.push(j);
+                    min_elev = min_elev.min(snap[j]);
+                }
+            }
+        }
+        let shallow = min_elev > sea - DESPECKLE_CLOSE_MAX_DEPTH_M;
+        if cells.len() <= DESPECKLE_CLOSE_MAX_HEXES && (cells.len() == 1 || shallow) {
+            for &c in &cells {
+                elevation[c] = sea + FILL_ABOVE_SEA_M;
+                water_level[c] = WATER_NONE; // becomes dry land
+            }
+        }
+    }
+}
 
 /// Removes sub-grid islands and enclosed shallow puddles that lack tectonic justification.
 pub fn cleanup_coast_artifacts(
@@ -102,7 +200,11 @@ fn submerge_ephemeral_islands(
             max_elev = max_elev.max(data.elevation_mean[idx]);
             max_relief = max_relief.max(data.elevation_relief[idx]);
         }
-        if on_boundary {
+        // Tiny ocean-surrounded speckles are always artifacts, even on a
+        // plate boundary (island-arc noise). Larger candidates still respect
+        // the boundary guard so real arcs survive.
+        let tiny = component.len() as u32 <= max_hexes / 2;
+        if on_boundary && !tiny {
             continue;
         }
         if max_elev > sea + max_height_m {
@@ -392,7 +494,7 @@ mod tests {
         let center = HexId(10);
         let center_idx = center.0 as usize;
         world.data.elevation_mean[center_idx] = 15.0;
-        world.data.elevation_relief[center_idx] = 500.0;
+        world.data.elevation_relief[center_idx] = 900.0;
         registry
             .plates_mut()
             .get_mut(&PlateId(0))
@@ -402,7 +504,7 @@ mod tests {
                 center,
                 SurfaceFeature {
                     elevation_m: 15.0,
-                    relief_m: 500.0,
+                    relief_m: 900.0,
                     bedrock: BedrockType::Igneous,
                     fertility: 0.0,
                     age_year: 0,
@@ -581,6 +683,62 @@ mod tests {
         assert!(
             world.data.elevation_mean[pocket_idx] < 0.0,
             "deep enclosed lake should remain"
+        );
+    }
+
+    #[test]
+    fn despeckle_display_removes_single_hex_island_and_pocket_and_keeps_continent() {
+        let mut params = WorldParameters::default();
+        params.core.grid.subdivision_level = 5;
+        let world = create_world(params).expect("world");
+        let grid = &world.data.grid;
+        let n = world.data.cell_count() as usize;
+        let sea = 0.0_f32;
+
+        // An all-ocean world with one lone land island.
+        let mut elev = vec![-1000.0_f32; n];
+        let mut water = vec![sea; n];
+        let island = 100usize;
+        elev[island] = 800.0;
+        water[island] = WATER_NONE;
+
+        despeckle_display(&mut elev, &mut water, grid, sea);
+        assert!(elev[island] < sea, "lone island must be submerged");
+        assert!(
+            water[island].is_finite() && water[island] >= sea,
+            "submerged island must join the ocean (render as water)"
+        );
+
+        // An all-land world with one lone ocean pocket.
+        let mut elev = vec![800.0_f32; n];
+        let mut water = vec![WATER_NONE; n];
+        let pocket = 100usize;
+        elev[pocket] = -50.0;
+        water[pocket] = sea;
+
+        despeckle_display(&mut elev, &mut water, grid, sea);
+        assert!(elev[pocket] > sea, "lone pocket must be filled to land");
+        assert!(
+            !(water[pocket].is_finite() && water[pocket] > elev[pocket]),
+            "filled pocket must render as dry land"
+        );
+
+        // A large contiguous continent is untouched.
+        let mut elev = vec![-1000.0_f32; n];
+        let mut water = vec![sea; n];
+        for (i, e) in elev.iter_mut().enumerate() {
+            if i < n / 2 {
+                *e = 800.0;
+                water[i] = WATER_NONE;
+            }
+        }
+        let before = elev.clone();
+        despeckle_display(&mut elev, &mut water, grid, sea);
+        // Interior continent hexes (far from any coast) keep their elevation.
+        let interior = 0usize;
+        assert_eq!(
+            elev[interior], before[interior],
+            "solid continent interior must be untouched by de-speckle"
         );
     }
 }

@@ -331,6 +331,13 @@ impl SimulationLayer for TectonicsLayer {
                     tick_year.value(),
                 );
                 rebuild_world_from_plate_surfaces_cached(world, &s.registry, &s.projection);
+                crate::continental_heal::heal_continental_surface(
+                    world,
+                    &mut s.registry,
+                    &s.projection,
+                    tick_year.value(),
+                );
+                rebuild_world_from_plate_surfaces_cached(world, &s.registry, &s.projection);
             });
             state.boundaries = boundaries;
 

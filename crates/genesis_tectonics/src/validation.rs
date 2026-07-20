@@ -164,6 +164,57 @@ pub fn continental_fraction(data: &WorldData) -> f32 {
     land as f32 / data.cell_count() as f32
 }
 
+/// Spatial-coherence metrics for the land mask (Doc 06 continent morphology).
+///
+/// `large_frac`: fraction of land hexes that sit in connected components of at
+/// least `large_min` hexes — high means land is a few solid continents, low
+/// means salt-and-pepper spray. `small_components`: number of connected land
+/// components of `1..=3` hexes — the "starfield" count, which should be tiny.
+/// Deterministic: `neighbors_sorted` BFS in ascending `HexId`.
+pub struct LandCohesion {
+    pub large_frac: f32,
+    pub small_components: u32,
+    pub components: u32,
+}
+
+pub fn land_cohesion(data: &WorldData, large_min: u32) -> LandCohesion {
+    let n = data.cell_count() as usize;
+    let sea = data.sea_level_m;
+    let is_land = |i: usize| data.elevation_mean[i] > sea;
+    let mut visited = vec![false; n];
+    let mut sizes: Vec<u32> = Vec::new();
+    for start in 0..n {
+        if visited[start] || !is_land(start) {
+            continue;
+        }
+        let mut queue = std::collections::VecDeque::from([start]);
+        visited[start] = true;
+        let mut size = 0u32;
+        while let Some(i) = queue.pop_front() {
+            size += 1;
+            for &nb in data.grid.neighbors_sorted(HexId(i as u32)) {
+                let j = nb.0 as usize;
+                if j < n && !visited[j] && is_land(j) {
+                    visited[j] = true;
+                    queue.push_back(j);
+                }
+            }
+        }
+        sizes.push(size);
+    }
+    let land_total: u32 = sizes.iter().sum();
+    let large: u32 = sizes.iter().filter(|&&s| s >= large_min).sum();
+    LandCohesion {
+        large_frac: if land_total == 0 {
+            0.0
+        } else {
+            large as f32 / land_total as f32
+        },
+        small_components: sizes.iter().filter(|&&s| s <= 3).count() as u32,
+        components: sizes.len() as u32,
+    }
+}
+
 /// Hex with the highest `elevation_mean` (tie-break: lowest `HexId`).
 pub fn peak_elevation_hex(data: &WorldData) -> HexId {
     let mut best = HexId(0);
