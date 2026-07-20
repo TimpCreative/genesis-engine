@@ -720,6 +720,7 @@ Strictness is a setting: the default holds the Earth-like preset to this Earth-*
 7. **Sub-hex ecology** for the creek-scale zoom (Doc 14): individual creature placement synthesized like sub-hex terrain (Doc 04 §3.7).
 8. **Multiple-origin worlds** (`multiple_origins`): interacting independent trees, competitive replacement, and the chaos-mode implications.
 9. **Selective-breeding mechanics** (Doc 10) built on the §10.2 domestication hook.
+10. **Timeline era-band color vs. the "green = life" semantic.** The viewer's deep-time timeline colors each geological eon (`genesis_ui::geological_era`): today Hadean red-brown, Archean brown, **Proterozoic green-teal**, Phanerozoic blue. Green reads as *life*, but the biosphere is only just emerging across that span (biogenesis is probabilistic, §3.1, and most of the eon predates any simulated life). It's kept for now because the palette is genuinely nice — but it's a mild semantic mismatch worth revisiting when biology owns the "life exists yet?" signal. Options to consider: reserve greens for post-biogenesis eras only (Proterozoic → a mineral teal/slate, greens starting at the Phanerozoic-analog); or drive a subtle band tint from the actual biosphere state (barren → green as `richness`/biomass rises) so the color *earns* its green rather than asserting it by calendar. Pairs with the event-anchored era boundaries (Hadean→Archean on `OceansStabilized`, later boundaries on the oxygenation / complex-life events this doc emits, §13).
 
 ---
 
