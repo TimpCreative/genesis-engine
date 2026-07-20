@@ -666,7 +666,7 @@ mod integration_tests {
     #[ignore = "long history: §11 criteria 3–5 and event volume (run with cargo test -p genesis_tectonics -- --ignored)"]
     fn validation_full_suite_passes() {
         // Doc 06 §11 validates the structure engine (orogenic belts, cratons,
-        // hypsometry of the raw field); the Doc 10 calibration is validated
+        // hypsometry of the raw field); the Doc 06-CAL calibration is validated
         // separately. Mountain-range placement on the calibrated output is a
         // Phase 1 (feature-controller) deliverable.
         let (world, state) =
@@ -848,7 +848,7 @@ mod integration_tests {
         }
 
         // Projection round-trip test: match features by their raw elevation
-        // fingerprint, so it runs on the structure engine (Doc 10 calibration
+        // fingerprint, so it runs on the structure engine (Doc 06-CAL calibration
         // rewrites elevation_mean and would break the fingerprint).
         let (world_1b, state_1b) = run_validation_world_with(
             WorldYear(VALIDATION_TARGET_YEAR_ONE_BILLION),

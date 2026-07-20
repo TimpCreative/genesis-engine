@@ -1,7 +1,11 @@
-# Terrain Calibration & Tuning — Module Specification
+# Terrain Calibration & Tuning — Doc 06 Companion Specification
 
-**Document:** `10-terrain-calibration-specification` (v0.1, draft)
-**Status:** Design approved (3 forks locked); implementation not started
+**Document:** `06-terrain-calibration-specification` (v0.1, draft) — a companion to
+Doc 06 (Tectonics), like `06-REVIEW`. Referenced in code as **Doc 06-CAL** to
+disambiguate its section numbers from the Tectonics module spec. (Originally
+drafted as "Doc 10"; renumbered because slot 10 is Civilization — the doc map
+is fully allocated 00–20.)
+**Status:** Design approved (3 forks locked); Phases 0–2 & 4 implemented, Phase 3 retracted (see §9)
 **Repository:** [TimpCreative/genesis-engine](https://github.com/TimpCreative/genesis-engine)
 **Supersedes:** the corrective-pass approach in Doc 06 §6–8 (heal / basin_infill / coast_cleanup / collapse-as-corrector) for *absolute elevation* and *land coverage*. Doc 06 continues to own plate **structure**; this doc owns **magnitudes and targets**.
 

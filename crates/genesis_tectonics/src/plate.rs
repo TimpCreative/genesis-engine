@@ -223,7 +223,7 @@ pub struct TectonicsState {
     pub cumulative_deposition_m: Vec<f32>,
     /// `elevation_mean` snapshot before boundary elevation this tick (boundary events).
     pub elevation_at_tick_start: Vec<f32>,
-    /// Temporally low-passed calibration ranking field (Doc 10 §7): an EMA of the
+    /// Temporally low-passed calibration ranking field (Doc 06-CAL §7): an EMA of the
     /// smoothed structure potential, so coastlines migrate with genuine plate
     /// drift rather than flickering on each tick's global fluctuation. Empty
     /// until the first calibration, then seeded from that tick.

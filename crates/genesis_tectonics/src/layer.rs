@@ -99,7 +99,7 @@ impl SimulationLayer for TectonicsLayer {
             );
 
             // Calibrate the formation world so downstream layers see the target
-            // hypsometry and pinned datum from year 0 (Doc 10). Seeds the
+            // hypsometry and pinned datum from year 0 (Doc 06-CAL). Seeds the
             // temporal ranking EMA (interval 0).
             {
                 let targets = world.parameters.core.terrain;
@@ -341,7 +341,7 @@ impl SimulationLayer for TectonicsLayer {
             // (it lifts isolated 1-hex lows, not whole basins). Empirically,
             // dropping them under calibration doubled the dry sub-sea perforation
             // (129 -> 269 @ subdiv 7, 1B), so they earn their place as structure
-            // conditioning — Doc 10 §9's "delete" is retracted for these.
+            // conditioning — Doc 06-CAL §9's "delete" is retracted for these.
             timed_tick_step("coast_cleanup", tick_year, || {
                 let s = &mut *state;
                 cleanup_coast_artifacts(
@@ -384,7 +384,7 @@ impl SimulationLayer for TectonicsLayer {
                 clamp_terrain(world);
             });
 
-            // Solve-to-target calibration (Doc 10): map the structure field onto
+            // Solve-to-target calibration (Doc 06-CAL): map the structure field onto
             // the target hypsometric curve and pin the datum to 0. Final word on
             // absolute height; the raw structure is rebuilt from plate surfaces
             // next tick, so this never feeds back into the sim.

@@ -1,4 +1,4 @@
-//! Terrain calibration — the solve-to-target hypsometry transfer (Doc 10).
+//! Terrain calibration — the solve-to-target hypsometry transfer (Doc 06-CAL).
 //!
 //! The tectonic sim produces a *relative* structure field (where continents,
 //! belts, ridges, and basins are). This pass maps that field's **rank** onto a
@@ -24,7 +24,7 @@ use genesis_core::parameters::TerrainTargets;
 /// the interior-perforation problem is dissolved rather than patched.
 const SMOOTH_ITERS: usize = 2;
 /// How much high-frequency structural detail (Φ − Φ_lo) is re-injected as local
-/// relief on top of the curve, per regime (Doc 10 §5.4 realism guard). Continental
+/// relief on top of the curve, per regime (Doc 06-CAL §5.4 realism guard). Continental
 /// crust keeps mountains textured and valleys cut; oceanic crust stays smoother
 /// (abyssal plains) while retaining some ridge/seamount relief.
 const RESIDUAL_GAIN_LAND: f32 = 0.6;
@@ -38,11 +38,11 @@ const TAPER_M: f32 = 800.0;
 const MIN_LAND_M: f32 = 1.0;
 const MAX_OCEAN_M: f32 = -1.0;
 
-/// Island hexes seeded per 1000 cells at `island_density = 1.0` (Doc 10 §8).
+/// Island hexes seeded per 1000 cells at `island_density = 1.0` (Doc 06-CAL §8).
 const ISLAND_HEXES_PER_1000: f32 = 1.0;
 
 /// Time constant (years) of the temporal low-pass on the calibration ranking
-/// field (Doc 10 §7). Coastlines are stable over spans short of this and migrate
+/// field (Doc 06-CAL §7). Coastlines are stable over spans short of this and migrate
 /// with the plates over spans longer than it — cratons hold their shape for tens
 /// of My, and abrupt reorganizations morph in over a couple of ticks instead of
 /// snapping. `interval / τ` per tick, so the smoothing is tick-length aware.
@@ -127,7 +127,7 @@ impl HypsometricCurve {
 /// Map the structure field (`elevation_mean`) onto the target curve and pin the
 /// datum to 0. No-op when `targets.enabled` is false (legacy path).
 ///
-/// `rank_ema` is the persistent temporal low-pass buffer (Doc 10 §7); pass an
+/// `rank_ema` is the persistent temporal low-pass buffer (Doc 06-CAL §7); pass an
 /// empty `Vec` for a stateless one-shot. `interval_years` is this tick's length
 /// (0 seeds the buffer).
 pub fn apply_hypsometry_transfer(

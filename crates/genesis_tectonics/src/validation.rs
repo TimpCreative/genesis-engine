@@ -142,7 +142,7 @@ pub fn run_validation_world(
 /// [`run_validation_world`] with a hook to tweak the parameters first.
 ///
 /// Doc 06 §11 structure gates and projection round-trip tests validate the
-/// **structure engine**, so they disable the Doc 10 calibration
+/// **structure engine**, so they disable the Doc 06-CAL calibration
 /// (`p.core.terrain.enabled = false`) to read the raw tectonic field; the
 /// calibrated output is validated separately (land fraction, shelf, no-pit).
 pub fn run_validation_world_with(

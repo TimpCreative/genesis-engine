@@ -53,17 +53,17 @@ pub struct WorldGenConfig {
     pub minor_plates: u8,
     /// Target continental crust coverage at formation (fraction of the
     /// sphere's area; ~0.29 is present-day Earth, 0.22 a Hadean world). Under
-    /// the Doc 10 calibration this seeds *where* continents form; the *amount*
+    /// the Doc 06-CAL calibration this seeds *where* continents form; the *amount*
     /// of dry land is set by `land_fraction`.
     pub continental_fraction: f32,
     /// Planetary water inventory in global-equivalent-layer meters (Doc 08 §3.1).
     pub water_inventory_gel_m: f32,
-    /// Doc 10 land coverage target (fraction of the sphere above sea level).
+    /// Doc 06-CAL land coverage target (fraction of the sphere above sea level).
     /// Solved for exactly each tick.
     pub land_fraction: f32,
-    /// Doc 10 mountain intensity (height/fatness of the orogenic tail).
+    /// Doc 06-CAL mountain intensity (height/fatness of the orogenic tail).
     pub orogeny_intensity: f32,
-    /// Doc 10 ocean-island seeding density.
+    /// Doc 06-CAL ocean-island seeding density.
     pub island_density: f32,
 }
 
@@ -241,7 +241,7 @@ pub fn generate_full_history(
 
     // Final reconciliation (legacy path only): the last hydrology tick can dry a
     // deep endorheic basin to a salt flat at its tectonically-deepened bottom
-    // with no following tectonic tick to fill it. Under the Doc 10 calibration
+    // with no following tectonic tick to fill it. Under the Doc 06-CAL calibration
     // this raw rebuild would overwrite the calibrated terrain with the raw
     // structure, so skip it — the last calibrated tick is authoritative.
     if !world.data.parameters.core.terrain.enabled {

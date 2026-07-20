@@ -140,12 +140,12 @@ impl SimulationLayer for HydrologyLayer {
         // §2.2 step 2 — flooding solve (§3.4): sea level, the ocean mask,
         // and the candidate-sea list (written by §5.2, not here).
         //
-        // Doc 10 datum pin: when the calibration layer is active the land/ocean
+        // Doc 06-CAL datum pin: when the calibration layer is active the land/ocean
         // line is the calibrated terrain's sea level = 0, not the GEL budget, so
         // flood to the volume that fills everything below 0. GEL still drives the
         // budget partition (ice / groundwater / atmosphere) above.
         let ocean_volume_m3 = if world.parameters.core.terrain.enabled {
-            // Datum pin (Doc 10): solve sea level as the (1 − land_fraction)
+            // Datum pin (Doc 06-CAL): solve sea level as the (1 − land_fraction)
             // elevation quantile, so the land fraction is exactly the target,
             // independent of the GEL budget, thermosteric drift, or which era
             // last calibrated the terrain. During condensation the level rises
@@ -283,7 +283,7 @@ impl SimulationLayer for HydrologyLayer {
         debug_assert!(
             {
                 // Check against the volume we actually flooded with: under the
-                // Doc 10 datum pin this is the volume-below-0, not the GEL budget
+                // Doc 06-CAL datum pin this is the volume-below-0, not the GEL budget
                 // term; the invariant (accounted standing water == flooded
                 // volume) holds either way.
                 let effective = thermosteric_effective_volume_m3(
@@ -595,7 +595,7 @@ mod tests {
         params.core.climate.skip_planetary_formation = true;
         // Legacy GEL-flood test on a uniform synthetic field: a flat −100 m
         // world has no land-fraction quantile to solve, so exercise the legacy
-        // budget flood rather than the Doc 10 datum solve.
+        // budget flood rather than the Doc 06-CAL datum solve.
         params.core.terrain.enabled = false;
         params.core.grid.subdivision_level = 4;
         let grid = HexGrid::new(4, EARTH_RADIUS_KM).expect("grid");

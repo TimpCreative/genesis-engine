@@ -215,7 +215,7 @@ impl Default for HydrologyParameters {
     }
 }
 
-/// Terrain calibration targets (Doc 10 — the solve-to-target layer).
+/// Terrain calibration targets (Doc 06-CAL — the solve-to-target layer).
 ///
 /// The calibration layer maps the tectonic **structure** field onto these
 /// targets each tick, so headline terrain properties are settings we *solve
@@ -226,14 +226,14 @@ impl Default for HydrologyParameters {
 /// mutating `world` (avoids an aliasing borrow).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TerrainTargets {
-    /// Master switch. `true` runs the calibrated (Doc 10) terrain; `false`
+    /// Master switch. `true` runs the calibrated (Doc 06-CAL) terrain; `false`
     /// falls back to the legacy emergent bathtub path.
     pub enabled: bool,
     /// Fraction of the sphere above sea level (the pinned datum, 0 m). The land
     /// coverage dial. Default 0.29 (Earth ≈ 0.29). Band 0.05–0.95.
     pub land_fraction: f32,
     /// Allowed ± per-year excursion of land fraction around the setpoint
-    /// (Doc 10 §7 temporal controller). Default 0.08. Band 0.0–0.20.
+    /// (Doc 06-CAL §7 temporal controller). Default 0.08. Band 0.0–0.20.
     pub land_fraction_wander: f32,
     /// Modal land elevation above sea (m). Default 300. Band 0–1500.
     pub continental_modal_height_m: f32,
@@ -253,11 +253,11 @@ pub struct TerrainTargets {
     pub slope_width_frac: f32,
     /// Sharpness of the land/ocean split. Default 1.0. Band 0.3–2.0.
     pub hypsometric_bimodality: f32,
-    /// Oceanic high-spot (island/arc) seeding rate (Doc 10 §8, Phase 1).
+    /// Oceanic high-spot (island/arc) seeding rate (Doc 06-CAL §8, Phase 1).
     /// Default 1.0. Band 0–3.
     pub island_density: f32,
     /// Number of major fertile river valleys, as a discharge-percentile cut
-    /// (Doc 10 §8, Phase 1). Default 1.0. Band 0–3.
+    /// (Doc 06-CAL §8, Phase 1). Default 1.0. Band 0–3.
     pub river_density: f32,
 }
 

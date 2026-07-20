@@ -106,7 +106,7 @@ pub fn bathtub_level_m(
 ///
 /// Feeding this to [`solve_flooding`] pins the solved sea level to `level_m`:
 /// `bathtub_level_m` inverts volume→level, so the level it returns is exactly
-/// `level_m`. Used by the Doc 10 datum pin so the land/ocean line follows the
+/// `level_m`. Used by the Doc 06-CAL datum pin so the land/ocean line follows the
 /// calibrated terrain (sea level = 0) instead of the GEL water budget.
 pub fn volume_to_fill_to_level_m3(data: &WorldData, level_m: f64) -> f64 {
     let hex_area_m2 = data.grid.hex_area_km2(HexId(0)) * 1.0e6;
@@ -123,7 +123,7 @@ pub fn volume_to_fill_to_level_m3(data: &WorldData, level_m: f64) -> f64 {
 /// Sea level (m) that puts exactly `land_fraction` of cells above it: the
 /// `(1 − land_fraction)` elevation quantile.
 ///
-/// The direct solve-to-target datum (Doc 10) — land fraction is exact by
+/// The direct solve-to-target datum (Doc 06-CAL) — land fraction is exact by
 /// construction, independent of the water budget, thermosteric drift, or which
 /// era last calibrated the terrain.
 pub fn sea_level_for_land_fraction(data: &WorldData, land_fraction: f64) -> f64 {
