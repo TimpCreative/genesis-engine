@@ -3,10 +3,12 @@
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use genesis_core::HexId;
+use glam::DVec3;
 
-use crate::polygon::{direction_to_lat_lon, hex_polygon_vertices, unwrap_lon_relative};
-use crate::projection::{project, should_skip_for_equirectangular};
-use crate::resources::WorldResource;
+use crate::polygon::hex_polygon_vertices;
+use crate::projection::MapProjection;
+use crate::resources::{CameraState, CurrentProjection, WorldResource};
+use crate::systems::view_center;
 
 /// Currently selected map hex (shared by UI inspector and outline).
 #[derive(Resource, Default, Clone, Copy)]
@@ -15,16 +17,24 @@ pub struct SelectedHex(pub Option<HexId>);
 #[derive(Component)]
 pub(crate) struct SelectionOutline;
 
-/// Rebuilds the bright outline ring when [`SelectedHex`] changes.
+/// Rebuilds the bright outline ring when the selection, world, or (on the globe)
+/// the view rotation changes.
 pub(crate) fn sync_selection_outline(
     mut commands: Commands,
     selected: Res<SelectedHex>,
+    projection_mode: Res<CurrentProjection>,
+    camera: Res<CameraState>,
     world_res: Option<Res<WorldResource>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     existing: Query<Entity, With<SelectionOutline>>,
 ) {
+    let projection = projection_mode.0;
+    // The globe's outline is projection-space, so it must follow rotation.
+    let globe_rotated = projection == MapProjection::Orthographic && camera.is_changed();
     if !selected.is_changed()
+        && !projection_mode.is_changed()
+        && !globe_rotated
         && !world_res.as_ref().is_some_and(|w| w.is_changed())
         && selected.0.is_some()
     {
@@ -46,18 +56,17 @@ pub(crate) fn sync_selection_outline(
     if hex.0 as usize >= data.cell_count() as usize {
         return;
     }
-    let (center_lat, center_lon) = grid.center_lat_lon(hex);
-    if should_skip_for_equirectangular(center_lat) {
-        return;
+    let center_dir = DVec3::from(grid.cell_center_direction(hex));
+    let view = view_center(&camera);
+    if !projection.hex_visible(center_dir, view) {
+        return; // polar-skipped (flat) or on the far hemisphere (globe)
     }
 
     let vertices = hex_polygon_vertices(grid, hex);
     let ring: Vec<[f32; 3]> = vertices
         .iter()
         .map(|v| {
-            let (lat, lon) = direction_to_lat_lon(*v);
-            let unwrapped = unwrap_lon_relative(lon, center_lon);
-            let (x, y) = project(lat, unwrapped);
+            let (x, y) = projection.project(*v, center_dir, view);
             [x, y, 1.0]
         })
         .collect();
@@ -66,7 +75,7 @@ pub(crate) fn sync_selection_outline(
     }
 
     // Thin triangle strip around the ring (inward offset toward center).
-    let (cx, cy) = project(center_lat, center_lon);
+    let (cx, cy) = projection.project(center_dir, center_dir, view);
     let mut positions: Vec<[f32; 3]> = Vec::with_capacity(ring.len() * 2);
     let mut colors: Vec<[f32; 4]> = Vec::with_capacity(ring.len() * 2);
     let outline = [1.0_f32, 0.95, 0.35, 1.0];

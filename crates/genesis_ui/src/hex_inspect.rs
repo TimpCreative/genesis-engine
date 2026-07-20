@@ -9,8 +9,8 @@ use genesis_core::data::{
     BedrockType, HydroFlags, WATER_NONE, WaterBodyId, WorldData, river_class,
 };
 use genesis_render::{
-    ActiveBiologyView, CameraDragState, CameraState, SelectedHex, WorldResource, cursor_hex,
-    screen_to_hex,
+    ActiveBiologyView, CameraDragState, CameraState, CurrentProjection, SelectedHex, WorldResource,
+    cursor_hex, screen_to_hex,
 };
 
 /// Hex under the cursor (tooltip only).
@@ -221,6 +221,7 @@ pub fn spawn_hex_inspect_ui(mut commands: Commands) {
 pub fn update_hovered_hex(
     window_query: Query<&Window, With<PrimaryWindow>>,
     camera: Res<CameraState>,
+    projection: Res<CurrentProjection>,
     world_res: Option<Res<WorldResource>>,
     blocked: Query<&Interaction, With<BlocksMapPick>>,
     mut hovered: ResMut<HoveredHex>,
@@ -238,7 +239,7 @@ pub fn update_hovered_hex(
         hovered.0 = None;
         return;
     };
-    let next = cursor_hex(&window_query, &camera, &world_res.0.data.grid);
+    let next = cursor_hex(&window_query, &camera, projection.0, &world_res.0.data.grid);
     if hovered.0 != next {
         hovered.0 = next;
     }
@@ -248,6 +249,7 @@ pub fn handle_map_hex_click(
     drag: Res<CameraDragState>,
     window_query: Query<&Window, With<PrimaryWindow>>,
     camera: Res<CameraState>,
+    projection: Res<CurrentProjection>,
     world_res: Option<Res<WorldResource>>,
     blocked: Query<&Interaction, With<BlocksMapPick>>,
     mut selected: ResMut<SelectedHex>,
@@ -271,7 +273,8 @@ pub fn handle_map_hex_click(
     let Some(cursor) = window.cursor_position() else {
         return;
     };
-    let Some(hex) = screen_to_hex(window, &camera, cursor, &world_res.0.data.grid) else {
+    let Some(hex) = screen_to_hex(window, &camera, projection.0, cursor, &world_res.0.data.grid)
+    else {
         return;
     };
     if selected.0 == Some(hex) {

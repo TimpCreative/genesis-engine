@@ -11,9 +11,10 @@ use genesis_core::HexId;
 use genesis_core::data::{HydroFlags, RiverClass, WorldData, river_class};
 
 use crate::polygon::unwrap_lon_relative;
-use crate::projection::{project, should_skip_for_equirectangular};
+use crate::projection::{MapProjection, project, should_skip_for_equirectangular};
 use crate::resources::{
-    CameraState, ColorsDirty, HexEntityCache, RiversDirty, WorldDirty, WorldResource,
+    CameraState, ColorsDirty, CurrentProjection, HexEntityCache, RiversDirty, WorldDirty,
+    WorldResource,
 };
 
 /// Zoom ≥ this shows Stream-class rivers (regional).
@@ -221,6 +222,7 @@ pub fn update_river_overlay(
     mut commands: Commands,
     world_res: Option<Res<WorldResource>>,
     camera: Res<CameraState>,
+    projection_mode: Res<CurrentProjection>,
     world_dirty: Res<WorldDirty>,
     colors_dirty: Res<ColorsDirty>,
     mut rivers_dirty: ResMut<RiversDirty>,
@@ -241,6 +243,15 @@ pub fn update_river_overlay(
     for entity in overlay_q.iter() {
         commands.entity(entity).despawn();
         cache.entities.retain(|&e| e != entity);
+    }
+
+    // The river overlay is equirectangular-only for now; on the globe it clears
+    // itself (Slice 3 will reproject it). The `P` toggle sets `rivers_dirty`, so
+    // this runs once on the switch and then stays quiet.
+    if projection_mode.0 != MapProjection::Equirectangular {
+        rivers_dirty.dirty = false;
+        rivers_dirty.last_lod = Some(lod);
+        return;
     }
 
     let data = &world_res.0.data;

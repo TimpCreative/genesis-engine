@@ -23,7 +23,7 @@ pub use polygon::hex_polygon_vertices;
 pub use projection::{MapProjection, ViewCenter, lat_lon_to_dir};
 pub use render_mode::{CurrentRenderMode, RenderMode};
 pub use resources::{
-    ActiveBiologyView, CameraState, ColorsDirty, HexChunk, HexEntityCache, HexMeshIndex,
-    RiversDirty, WorldDirty, WorldResource,
+    ActiveBiologyView, CameraState, ColorsDirty, CurrentProjection, HexChunk, HexEntityCache,
+    HexMeshIndex, RiversDirty, WorldDirty, WorldResource,
 };
 pub use systems::{CameraDragState, MAP_DRAG_THRESHOLD_PX};

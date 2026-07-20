@@ -4,6 +4,14 @@ use bevy::prelude::*;
 use genesis_core::World;
 use genesis_core::biology_view::BiologyView;
 
+use crate::projection::MapProjection;
+
+/// The active map projection (flat equirectangular vs. rotatable globe). Cycled
+/// with the `P` key; a change rebuilds the hex mesh topology (the visible hex set
+/// differs between projections).
+#[derive(Resource, Default)]
+pub struct CurrentProjection(pub MapProjection);
+
 /// Wraps the simulation [`World`] as a Bevy resource (read-only for rendering).
 #[derive(Resource)]
 pub struct WorldResource(pub World);
@@ -76,6 +84,11 @@ pub struct HexChunk {
     /// `(hex, first_vertex, vertex_count)` — the hex's fan vertices within
     /// this chunk's buffers (7 for hexagons, 6 for pentagons).
     pub slots: Vec<(genesis_core::HexId, u32, u8)>,
+    /// Unit-sphere direction of every vertex, parallel to the mesh's position
+    /// buffer. Lets the globe reproject positions in place each frame as it
+    /// rotates, without rebuilding the mesh. A slot's center direction is
+    /// `vertex_dirs[first_vertex]` (the fan's center vertex is pushed first).
+    pub vertex_dirs: Vec<Vec3>,
 }
 
 /// Chunk lookup for in-place recoloring. Hexes are merged into a few large
