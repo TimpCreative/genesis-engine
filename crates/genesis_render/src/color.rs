@@ -205,37 +205,37 @@ pub fn hex_fill_color(elevation_m: f32, sea_level_m: f32, _is_pentagon: bool) ->
     elevation_color(elevation_m, sea_level_m)
 }
 
-/// Maps temperature in °C to a color: blue (cold) → green (mild) → yellow (warm) → red (hot).
+/// Maps temperature in °C to a color across an indigo → blue → teal → green →
+/// yellow → orange → red ramp. Control stops are packed at the warm end so the
+/// 30/40/50 °C band (where oceans and the tropics cluster) stays legible instead
+/// of saturating to one red. Domain −40…+50 °C (Earth's surface extremes).
 pub fn temperature_to_color(temp_c: f32) -> Color {
-    let normalized = ((temp_c + 40.0) / 75.0).clamp(0.0, 1.0);
-
-    let (r, g, b) = if normalized < 0.25 {
-        let t = normalized / 0.25;
-        (
-            0.1 + t * (0.4 - 0.1),
-            0.1 + t * (0.6 - 0.1),
-            0.6 + t * (0.95 - 0.6),
-        )
-    } else if normalized < 0.5 {
-        let t = (normalized - 0.25) / 0.25;
-        (0.4, 0.6 + t * (0.85 - 0.6), 0.95 + t * (0.4 - 0.95))
-    } else if normalized < 0.75 {
-        let t = (normalized - 0.5) / 0.25;
-        (
-            0.4 + t * (0.95 - 0.4),
-            0.85 + t * (0.9 - 0.85),
-            0.4 + t * (0.2 - 0.4),
-        )
-    } else {
-        let t = (normalized - 0.75) / 0.25;
-        (
-            0.95 + t * (0.85 - 0.95),
-            0.9 + t * (0.2 - 0.9),
-            0.2 + t * (0.15 - 0.2),
-        )
-    };
-
-    Color::srgb(r, g, b)
+    const STOPS: [(f32, (f32, f32, f32)); 9] = [
+        (-40.0, (0.10, 0.10, 0.45)), // deep cold — indigo
+        (-20.0, (0.15, 0.30, 0.80)), // cold — blue
+        (-5.0, (0.25, 0.60, 0.90)),  // chilly — sky blue
+        (5.0, (0.35, 0.80, 0.75)),   // cool — teal
+        (14.0, (0.55, 0.85, 0.45)),  // mild — green
+        (22.0, (0.90, 0.88, 0.35)),  // warm — yellow
+        (30.0, (0.95, 0.65, 0.25)),  // hot — orange
+        (40.0, (0.90, 0.35, 0.18)),  // very hot — red-orange
+        (50.0, (0.70, 0.12, 0.12)),  // extreme — deep red
+    ];
+    let t = temp_c.clamp(STOPS[0].0, STOPS[STOPS.len() - 1].0);
+    for pair in STOPS.windows(2) {
+        let (t0, c0) = pair[0];
+        let (t1, c1) = pair[1];
+        if t <= t1 {
+            let f = ((t - t0) / (t1 - t0)).clamp(0.0, 1.0);
+            return Color::srgb(
+                c0.0 + f * (c1.0 - c0.0),
+                c0.1 + f * (c1.1 - c0.1),
+                c0.2 + f * (c1.2 - c0.2),
+            );
+        }
+    }
+    let last = STOPS[STOPS.len() - 1].1;
+    Color::srgb(last.0, last.1, last.2)
 }
 
 /// Maps precipitation in mm/year to a color: brown (dry) → tan → green → dark blue-green (very wet).
@@ -296,9 +296,48 @@ pub fn hex_color_for_mode(
 
     match mode {
         RenderMode::Elevation => water_aware_elevation_color(data, hex_idx, is_pentagon),
-        RenderMode::Temperature => temperature_to_color(data.temperature_mean[hex_idx]),
+        RenderMode::Temperature => {
+            // Ice/permafrost reads as white here (its natural home) instead of on
+            // the elevation map. Sea ice and glaciated land both show frozen.
+            let flags = data
+                .hydro_flags
+                .get(hex_idx)
+                .copied()
+                .unwrap_or(HydroFlags::NONE);
+            if data.ice_mask.get(hex_idx).copied().unwrap_or(false)
+                || flags.contains(HydroFlags::SEA_ICE)
+            {
+                Color::srgb(0.95, 0.97, 1.0)
+            } else {
+                temperature_to_color(data.temperature_mean[hex_idx])
+            }
+        }
         RenderMode::Precipitation => precipitation_to_color(data.precipitation[hex_idx]),
-        RenderMode::ClimateRegime => regime_to_color(data.climate_regime[hex_idx]),
+        RenderMode::ClimateRegime => {
+            // Water and ice get ocean/ice colors so the regime view stays
+            // continent-vs-ocean legible; the land-regime palette (which the
+            // classifier also assigns to ocean cells) only applies on dry land.
+            let flags = data
+                .hydro_flags
+                .get(hex_idx)
+                .copied()
+                .unwrap_or(HydroFlags::NONE);
+            let elev = data.elevation_mean[hex_idx];
+            let water = data
+                .water_level_m
+                .get(hex_idx)
+                .copied()
+                .unwrap_or(WATER_NONE);
+            if data.ice_mask.get(hex_idx).copied().unwrap_or(false)
+                || flags.contains(HydroFlags::SEA_ICE)
+            {
+                Color::srgb(0.95, 0.97, 1.0)
+            } else if water.is_finite() && water > elev {
+                ocean_regime_color(data.temperature_mean[hex_idx])
+            } else {
+                regime_to_color(data.climate_regime[hex_idx])
+            }
+        }
         RenderMode::Soil => soil_to_color(data, hex_idx),
     }
 }
@@ -312,9 +351,10 @@ fn water_aware_elevation_color(data: &WorldData, hex_idx: usize, is_pentagon: bo
         .get(hex_idx)
         .copied()
         .unwrap_or(HydroFlags::NONE);
-    if data.ice_mask.get(hex_idx).copied().unwrap_or(false) || flags.contains(HydroFlags::SEA_ICE) {
-        return Color::srgb(0.92, 0.95, 0.98);
-    }
+    // Ice is NOT painted on the elevation map — this view is for land height and
+    // water, and an ice cap would hide the terrain/ocean beneath it. Ice/permafrost
+    // has its own white in the Temperature view.
+    //
     // Standing water must win over salt-flat tint. Timeline scrubbing restores
     // `water_level_m` from HistoryFrame; salt on a currently wet hex is residue
     // under the water column, not a salt flat (§5.3 / §12.1).
@@ -420,6 +460,14 @@ pub fn regime_to_color(regime: genesis_core::data::ClimateRegimePlaceholder) -> 
         R::Polar => (0.92, 0.94, 0.97),
     };
     Color::srgb(r, g, b)
+}
+
+/// Ocean cells in the climate-regime view: a cold-navy → warm-teal ramp so water
+/// reads as one coherent, distinctly aquatic band instead of borrowing land-
+/// regime colors. Domain ≈ −2…+30 °C sea-surface temperature.
+fn ocean_regime_color(sea_surface_c: f32) -> Color {
+    let t = ((sea_surface_c + 2.0) / 32.0).clamp(0.0, 1.0);
+    Color::srgb(0.04 + t * 0.06, 0.20 + t * 0.45, 0.45 + t * 0.20)
 }
 
 #[cfg(test)]

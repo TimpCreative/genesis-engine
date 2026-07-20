@@ -328,7 +328,7 @@ const SETUP_PARAMS: [(Param, &str); 10] = [
     (Param::MajorPlates, "Major plates"),
     (Param::MinorPlates, "Minor plates"),
     (Param::ContinentalFraction, "Continental crust seed %"),
-    (Param::WaterInventory, "Water inventory (GEL m)"),
+    (Param::WaterInventory, "Total water (m deep if spread flat)"),
 ];
 
 fn spawn_setup_screen(mut commands: Commands) {
