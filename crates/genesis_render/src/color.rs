@@ -290,6 +290,7 @@ pub fn hex_color_for_mode(
     hex_idx: usize,
     mode: RenderMode,
     is_pentagon: bool,
+    biology: Option<&dyn genesis_core::biology_view::BiologyView>,
 ) -> Color {
     let _elev = data.elevation_mean[hex_idx];
     let _sea_level = data.sea_level_m;
@@ -339,7 +340,75 @@ pub fn hex_color_for_mode(
             }
         }
         RenderMode::Soil => soil_to_color(data, hex_idx),
+        RenderMode::Biome => {
+            let biome = biology
+                .map(|v| v.biome_at(data, genesis_core::HexId(hex_idx as u32)))
+                .unwrap_or(genesis_core::data::BiomeId::NONE);
+            biome_color(biome)
+        }
+        RenderMode::Biomass => {
+            let v = biology
+                .map(|b| b.biomass_at(data, genesis_core::HexId(hex_idx as u32)))
+                .unwrap_or(0.0);
+            heatmap_color(v)
+        }
+        RenderMode::Diversity => {
+            let v = biology
+                .map(|b| b.richness_at(data, genesis_core::HexId(hex_idx as u32)))
+                .unwrap_or(0.0);
+            heatmap_color(v)
+        }
+        // Civilization placeholder (Doc 10) — flat neutral for now.
+        RenderMode::Society => Color::srgb(0.30, 0.30, 0.34),
     }
+}
+
+/// Categorical color for a stub biome id (Prep-09 §4.1). The index scheme
+/// matches `genesis_ui::biology_view::STUB_BIOMES`; `BiomeId::NONE` is ocean.
+pub fn biome_color(biome: genesis_core::data::BiomeId) -> Color {
+    use genesis_core::data::BiomeId;
+    if biome == BiomeId::NONE {
+        return Color::srgb(0.12, 0.28, 0.48); // ocean
+    }
+    let (r, g, b) = match biome.0 {
+        0 => (0.10, 0.42, 0.16),  // Tropical rainforest
+        1 => (0.72, 0.70, 0.32),  // Tropical savanna
+        2 => (0.85, 0.74, 0.45),  // Hot desert
+        3 => (0.58, 0.58, 0.26),  // Mediterranean scrub
+        4 => (0.22, 0.56, 0.26),  // Temperate forest
+        5 => (0.74, 0.76, 0.42),  // Temperate grassland
+        6 => (0.16, 0.46, 0.40),  // Boreal forest
+        7 => (0.66, 0.68, 0.60),  // Tundra
+        8 => (0.86, 0.89, 0.92),  // Polar desert
+        9 => (0.24, 0.50, 0.46),  // Wetland
+        10 => (0.60, 0.62, 0.66), // Alpine
+        11 => (0.35, 0.66, 0.72), // Coastal shallows
+        _ => (0.5, 0.5, 0.5),
+    };
+    Color::srgb(r, g, b)
+}
+
+/// Sequential heatmap for a normalized value ∈ [0,1] (biomass, diversity):
+/// deep indigo → blue → teal-green → yellow (viridis-like), for latitudinal-
+/// gradient legibility.
+pub fn heatmap_color(v: f32) -> Color {
+    const STOPS: [(f32, f32, f32); 5] = [
+        (0.09, 0.05, 0.24),
+        (0.15, 0.30, 0.54),
+        (0.13, 0.55, 0.55),
+        (0.42, 0.72, 0.28),
+        (0.95, 0.90, 0.20),
+    ];
+    let v = v.clamp(0.0, 1.0) * (STOPS.len() - 1) as f32;
+    let i = (v.floor() as usize).min(STOPS.len() - 2);
+    let f = v - i as f32;
+    let a = STOPS[i];
+    let b = STOPS[i + 1];
+    Color::srgb(
+        a.0 + f * (b.0 - a.0),
+        a.1 + f * (b.1 - a.1),
+        a.2 + f * (b.2 - a.2),
+    )
 }
 
 /// Doc 08 §12.1 water-aware terrain ramp.
@@ -663,7 +732,7 @@ mod tests {
         data.water_level_m[0] = WATER_NONE;
         data.sea_level_m = -3000.0;
 
-        let formation = color_to_rgb(hex_color_for_mode(&data, 0, RenderMode::Elevation, false));
+        let formation = color_to_rgb(hex_color_for_mode(&data, 0, RenderMode::Elevation, false, None));
         let modern = color_to_rgb(elevation_color(200.0, 0.0));
         assert!(
             modern[1] > modern[0] && modern[1] > modern[2],
@@ -675,7 +744,7 @@ mod tests {
         );
 
         data.current_year = WorldYear(FORMATION_END_YEAR);
-        let post = color_to_rgb(hex_color_for_mode(&data, 0, RenderMode::Elevation, false));
+        let post = color_to_rgb(hex_color_for_mode(&data, 0, RenderMode::Elevation, false, None));
         colors_approx_equal(
             Color::srgb(post[0], post[1], post[2]),
             elevation_color(200.0, data.sea_level_m),
@@ -712,7 +781,7 @@ mod tests {
         data.elevation_mean[0] = 200.0;
         data.water_level_m[0] = WATER_NONE;
 
-        let rgb = color_to_rgb(hex_color_for_mode(&data, 0, RenderMode::Elevation, false));
+        let rgb = color_to_rgb(hex_color_for_mode(&data, 0, RenderMode::Elevation, false, None));
         let modern = color_to_rgb(elevation_color(200.0, 0.0));
         for i in 0..3 {
             assert!((rgb[i] - modern[i]).abs() < EPS);
@@ -735,7 +804,7 @@ mod tests {
         data.water_body_id[0] = WaterBodyId::NONE;
         data.sea_level_m = -500.0;
 
-        let color = hex_color_for_mode(&data, 0, RenderMode::Elevation, false);
+        let color = hex_color_for_mode(&data, 0, RenderMode::Elevation, false, None);
         let rgb = color_to_rgb(color);
         assert!(
             rgb[2] > rgb[0] + 0.05 && rgb[2] > rgb[1],
@@ -773,7 +842,7 @@ mod tests {
         );
         data.sea_level_m = 0.0;
 
-        let color = hex_color_for_mode(&data, 0, RenderMode::Elevation, false);
+        let color = hex_color_for_mode(&data, 0, RenderMode::Elevation, false, None);
         let rgb = color_to_rgb(color);
         assert!(
             (rgb[0] - 0.85).abs() < 0.05 && (rgb[1] - 0.82).abs() < 0.05,
@@ -797,7 +866,7 @@ mod tests {
         data.water_body_id[0] = WaterBodyId::NONE;
         data.sea_level_m = 0.0;
 
-        let color = hex_color_for_mode(&data, 0, RenderMode::Elevation, false);
+        let color = hex_color_for_mode(&data, 0, RenderMode::Elevation, false, None);
         let rgb = color_to_rgb(color);
         let ramp = color_to_rgb(elevation_color(100.0, 0.0));
         for i in 0..3 {

@@ -7,7 +7,6 @@
 //! trees, and life-events are seeded fabrications. **Not ecologically valid** —
 //! every method carries the `// STUB` intent and is discarded at Doc 09.
 
-use bevy::prelude::Resource;
 use genesis_core::biology_view::{
     Assemblage, BiologyView, GuildSummary, LifeEventCategory, LifeEventPip, SpeciesPeek,
     TreeNodePeek, TreePeek,
@@ -16,9 +15,8 @@ use genesis_core::data::{BiomeId, WorldData};
 use genesis_core::grid::HexId;
 use genesis_core::time::WorldYear;
 
-/// The active biology view, wired at world load (stub now, Doc 09 adapter later).
-#[derive(Resource)]
-pub struct ActiveBiologyView(pub Box<dyn BiologyView>);
+// The `ActiveBiologyView` resource lives in `genesis_render` (so the recolor
+// systems can read it); `genesis_ui` inserts a `StubBiologyView` into it.
 
 /// Stub biome catalog — `BiomeId(index)`; shared name/color scheme with the
 /// render layer (`genesis_render::stub_biome_color`).

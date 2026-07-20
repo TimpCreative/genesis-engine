@@ -11,13 +11,14 @@ use std::sync::mpsc::{Receiver, channel};
 
 use bevy::prelude::*;
 use bevy::ui::FocusPolicy;
+use genesis_core::data::BiomeId;
 use genesis_render::{
-    ColorsDirty, CurrentRenderMode, HexEntityCache, HexMeshIndex, RenderMode, RiversDirty,
-    WorldDirty, WorldResource, precipitation_to_color, regime_to_color, soil_class_color,
-    temperature_to_color,
+    ActiveBiologyView, ColorsDirty, CurrentRenderMode, HexEntityCache, HexMeshIndex, RenderMode,
+    RiversDirty, WorldDirty, WorldResource, biome_color, heatmap_color, precipitation_to_color,
+    regime_to_color, soil_class_color, temperature_to_color,
 };
 
-use crate::biology_view::{ActiveBiologyView, StubBiologyView};
+use crate::biology_view::StubBiologyView;
 use crate::hex_inspect::{
     BlocksMapPick, HoveredHex, InspectorTab, InspectorVisible, PendingMenuQuit,
     clear_inspect_on_exit, despawn_hex_inspect_ui, handle_inspector_tabs, handle_map_hex_click,
@@ -54,6 +55,29 @@ pub enum UiAction {
     RandomizeSeed,
     ConfirmQuit,
     CancelQuit,
+    SetRenderMode(RenderMode),
+}
+
+/// Marks a top-bar layer-selector tab for its render mode (active highlight).
+#[derive(Component)]
+pub struct ModeTab(pub RenderMode);
+
+/// Marks the top-bar year + geological-era readout text.
+#[derive(Component)]
+pub struct TopBarStatusText;
+
+/// Geological eon for a simulation year (year 0 = formation), with a band color
+/// for the top bar and the timeline strip (Prep-09 §5.2). Reused by Prep9-3.
+pub fn geological_era(year: i64) -> (&'static str, Color) {
+    if year < 500_000_000 {
+        ("Hadean", Color::srgb(0.42, 0.20, 0.20))
+    } else if year < 2_000_000_000 {
+        ("Archean", Color::srgb(0.45, 0.35, 0.22))
+    } else if year < 4_000_000_000 {
+        ("Proterozoic", Color::srgb(0.22, 0.42, 0.38))
+    } else {
+        ("Phanerozoic", Color::srgb(0.24, 0.40, 0.55))
+    }
 }
 
 /// Setup-screen parameter groups, so the world recipe stays organized as knobs
@@ -278,6 +302,7 @@ impl Plugin for GenesisUiPlugin {
                         refresh_legend,
                         toggle_legend,
                         update_quit_overlay,
+                        refresh_mode_tabs,
                     )
                         .chain()
                         .run_if(in_state(AppScreen::Viewing)),
@@ -993,6 +1018,45 @@ fn spawn_viewing_hud(mut commands: Commands, mut pending_quit: ResMut<PendingMen
             },
         ))
         .with_children(|parent| {
+            // Top bar: layer selector (left) + year/era readout (right).
+            parent
+                .spawn((
+                    BlocksMapPick,
+                    FocusPolicy::Block,
+                    Interaction::default(),
+                    Node {
+                        position_type: PositionType::Absolute,
+                        top: Val::Px(0.0),
+                        left: Val::Px(0.0),
+                        width: Val::Percent(100.0),
+                        flex_direction: FlexDirection::Row,
+                        align_items: AlignItems::Center,
+                        column_gap: Val::Px(4.0),
+                        padding: UiRect::axes(Val::Px(8.0), Val::Px(6.0)),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgba(0.05, 0.06, 0.08, 0.9)),
+                ))
+                .with_children(|bar| {
+                    for mode in RenderMode::ALL {
+                        bar.spawn((button(UiAction::SetRenderMode(mode)), ModeTab(mode)))
+                            .with_children(|b| {
+                                b.spawn(label(mode.label(), 15.0));
+                            });
+                    }
+                    // Spacer pushes the status readout to the right.
+                    bar.spawn(Node {
+                        flex_grow: 1.0,
+                        ..default()
+                    });
+                    bar.spawn((
+                        label("", 15.0).0,
+                        label("", 15.0).1,
+                        TextColor(Color::srgb(0.85, 0.85, 0.9)),
+                        TopBarStatusText,
+                    ));
+                });
+
             // "Return to menu?" confirm overlay — hidden until Esc; blocks the
             // map so an accidental Esc can't discard the world.
             parent
@@ -1381,6 +1445,33 @@ fn legend_entries(mode: RenderMode) -> Vec<(Color, &'static str)> {
                 (soil_class_color(S::Saline, f), "Saline (salt)"),
             ]
         }
+        RenderMode::Biome => vec![
+            (biome_color(BiomeId::NONE), "Ocean"),
+            (biome_color(BiomeId(0)), "Tropical rainforest"),
+            (biome_color(BiomeId(1)), "Tropical savanna"),
+            (biome_color(BiomeId(2)), "Hot desert"),
+            (biome_color(BiomeId(4)), "Temperate forest"),
+            (biome_color(BiomeId(5)), "Grassland"),
+            (biome_color(BiomeId(6)), "Boreal forest"),
+            (biome_color(BiomeId(7)), "Tundra"),
+            (biome_color(BiomeId(9)), "Wetland"),
+            (biome_color(BiomeId(10)), "Alpine"),
+        ],
+        RenderMode::Biomass => vec![
+            (heatmap_color(0.05), "Barren"),
+            (heatmap_color(0.30), "Sparse"),
+            (heatmap_color(0.55), "Moderate"),
+            (heatmap_color(0.80), "Rich"),
+            (heatmap_color(1.0), "Lush"),
+        ],
+        RenderMode::Diversity => vec![
+            (heatmap_color(0.05), "Depauperate"),
+            (heatmap_color(0.35), "Low"),
+            (heatmap_color(0.60), "Moderate"),
+            (heatmap_color(0.85), "High"),
+            (heatmap_color(1.0), "Hyperdiverse"),
+        ],
+        RenderMode::Society => vec![(Color::srgb(0.30, 0.30, 0.34), "Not simulated (Doc 10)")],
     }
 }
 
@@ -1435,6 +1526,25 @@ fn update_quit_overlay(
     }
 }
 
+/// Highlights the active layer-selector tab and refreshes the top-bar year/era.
+fn refresh_mode_tabs(
+    mode: Res<CurrentRenderMode>,
+    timeline: Option<Res<WorldTimeline>>,
+    mut tabs: Query<(&ModeTab, &mut BackgroundColor)>,
+    mut status: Query<&mut Text, With<TopBarStatusText>>,
+) {
+    let active = Color::srgb(0.20, 0.32, 0.48);
+    for (tab, mut bg) in &mut tabs {
+        bg.0 = if tab.0 == mode.0 { active } else { BUTTON_BG };
+    }
+    if let Some(tl) = timeline {
+        if let (Ok(mut text), Some(frame)) = (status.single_mut(), tl.frames.get(tl.current)) {
+            let (era, _) = geological_era(frame.year);
+            text.0 = format!("{}  ·  {}", format_year(frame.year), era);
+        }
+    }
+}
+
 /// [L] toggles the legend; the panel's `Display` follows `LegendVisible`.
 fn toggle_legend(
     keys: Res<ButtonInput<KeyCode>>,
@@ -1467,6 +1577,7 @@ fn handle_actions(
     mut active_tab: ResMut<ActiveSetupTab>,
     mut seed_fresh: ResMut<SeedInputFresh>,
     mut pending_quit: ResMut<PendingMenuQuit>,
+    mut render_mode: ResMut<CurrentRenderMode>,
     mut next_screen: ResMut<NextState<AppScreen>>,
     screen: Res<State<AppScreen>>,
     mut exit: MessageWriter<AppExit>,
@@ -1514,6 +1625,12 @@ fn handle_actions(
             }
             UiAction::CancelQuit => {
                 pending_quit.0 = false;
+            }
+            UiAction::SetRenderMode(mode) => {
+                render_mode.0 = mode;
+                if let Some(cd) = colors_dirty.as_mut() {
+                    cd.0 = true;
+                }
             }
             UiAction::TimelineStep(step) => {
                 if let (Some(timeline), Some(world_res), Some(colors_dirty), Some(rivers_dirty)) = (

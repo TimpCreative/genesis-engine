@@ -14,7 +14,8 @@ use crate::polygon::{direction_to_lat_lon, hex_polygon_vertices, unwrap_lon_rela
 use crate::projection::{project, should_skip_for_equirectangular};
 use crate::render_mode::CurrentRenderMode;
 use crate::resources::{
-    CameraState, ColorsDirty, HexChunk, HexEntityCache, HexMeshIndex, WorldDirty, WorldResource,
+    ActiveBiologyView, CameraState, ColorsDirty, HexChunk, HexEntityCache, HexMeshIndex, WorldDirty,
+    WorldResource,
 };
 
 const MIN_ZOOM: f32 = 0.1;
@@ -190,11 +191,17 @@ pub fn update_window_title(
 pub fn update_hex_colors(
     world_res: Option<Res<WorldResource>>,
     render_mode: Res<CurrentRenderMode>,
+    biology: Option<Res<ActiveBiologyView>>,
     mut colors_dirty: ResMut<ColorsDirty>,
     index: Res<HexMeshIndex>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
-    if !render_mode.is_changed() && !colors_dirty.0 {
+    // Re-tint when the mode changes, the colors are flagged dirty, or the biology
+    // view was (re)registered (so biology layers fill in once the world loads).
+    if !render_mode.is_changed()
+        && !colors_dirty.0
+        && !biology.as_ref().is_some_and(|b| b.is_changed())
+    {
         return;
     }
     let Some(world_res) = world_res else {
@@ -210,6 +217,7 @@ pub fn update_hex_colors(
     let data = &world_res.0.data;
     let grid = &data.grid;
     let n = data.cell_count() as usize;
+    let bio = biology.as_ref().map(|b| b.0.as_ref());
 
     for chunk in &index.chunks {
         let Some(mesh) = meshes.get_mut(&chunk.mesh) else {
@@ -225,7 +233,7 @@ pub fn update_hex_colors(
             if idx >= n {
                 continue;
             }
-            let color = hex_color_for_mode(data, idx, render_mode.0, grid.is_pentagon(hex))
+            let color = hex_color_for_mode(data, idx, render_mode.0, grid.is_pentagon(hex), bio)
                 .to_linear()
                 .to_f32_array();
             let start = base as usize;
@@ -245,6 +253,7 @@ pub fn render_world_if_dirty(
     mut commands: Commands,
     world_res: Option<Res<WorldResource>>,
     render_mode: Res<CurrentRenderMode>,
+    biology: Option<Res<ActiveBiologyView>>,
     mut world_dirty: ResMut<WorldDirty>,
     mut cache: ResMut<HexEntityCache>,
     mut index: ResMut<HexMeshIndex>,
@@ -265,6 +274,7 @@ pub fn render_world_if_dirty(
 
     let data = &world_res.0.data;
     let grid = &data.grid;
+    let bio = biology.as_ref().map(|b| b.0.as_ref());
     // White base material shared by every chunk: the shader multiplies it by
     // per-vertex colors, so the vertex color IS the hex color.
     let shared_material = materials.add(ColorMaterial::default());
@@ -334,7 +344,7 @@ pub fn render_world_if_dirty(
             .collect();
 
         let idx = hex.0 as usize;
-        let color = hex_color_for_mode(data, idx, render_mode.0, grid.is_pentagon(hex))
+        let color = hex_color_for_mode(data, idx, render_mode.0, grid.is_pentagon(hex), bio)
             .to_linear()
             .to_f32_array();
 

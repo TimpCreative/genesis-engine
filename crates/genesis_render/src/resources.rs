@@ -2,10 +2,17 @@
 
 use bevy::prelude::*;
 use genesis_core::World;
+use genesis_core::biology_view::BiologyView;
 
 /// Wraps the simulation [`World`] as a Bevy resource (read-only for rendering).
 #[derive(Resource)]
 pub struct WorldResource(pub World);
+
+/// The active biology read-view (Prep-09 §2). Holds a `StubBiologyView` now; a
+/// `genesis_biology` adapter at Doc 09. Lives here (not `genesis_ui`) so the
+/// recolor systems can read it; inserted by `genesis_ui` at world load.
+#[derive(Resource)]
+pub struct ActiveBiologyView(pub Box<dyn BiologyView>);
 
 /// When true, hex mesh entities are rebuilt from [`WorldResource`].
 #[derive(Resource)]
