@@ -87,6 +87,18 @@ pub struct TabRow(pub SetupTab);
 /// has the most: 9 classes + water).
 const LEGEND_ROWS: usize = 10;
 
+/// True until the user's next keystroke replaces the seed, so typing on a
+/// freshly-shown or just-randomized seed starts a new one instead of appending
+/// to it.
+#[derive(Resource)]
+pub struct SeedInputFresh(pub bool);
+
+impl Default for SeedInputFresh {
+    fn default() -> Self {
+        Self(true)
+    }
+}
+
 /// Whether the viewing-screen legend is shown (toggle with [L]).
 #[derive(Resource)]
 pub struct LegendVisible(pub bool);
@@ -204,6 +216,7 @@ impl Plugin for GenesisUiPlugin {
         app.init_state::<AppScreen>()
             .init_resource::<ActiveConfig>()
             .init_resource::<ActiveSetupTab>()
+            .init_resource::<SeedInputFresh>()
             .init_resource::<LegendVisible>()
             .init_resource::<ScrubRepeat>()
             .init_resource::<HoveredHex>()
@@ -411,7 +424,13 @@ const SETUP_PARAMS: [(Param, &str, SetupTab); 10] = [
     ),
 ];
 
-fn spawn_setup_screen(mut commands: Commands, active_tab: Res<ActiveSetupTab>) {
+fn spawn_setup_screen(
+    mut commands: Commands,
+    active_tab: Res<ActiveSetupTab>,
+    mut seed_fresh: ResMut<SeedInputFresh>,
+) {
+    // Next keystroke starts a fresh seed rather than appending to the shown one.
+    seed_fresh.0 = true;
     let current_tab = active_tab.0;
     commands
         .spawn(full_screen_root(AppScreen::Setup))
@@ -666,7 +685,11 @@ const SEED_MAX_LEN: usize = 16;
 /// Types hex characters into the seed field on the setup screen (validated
 /// charset only; Backspace deletes). Only mutates the config when a relevant key
 /// fired, so change detection stays quiet otherwise.
-fn seed_text_input(keys: Res<ButtonInput<KeyCode>>, mut config: ResMut<ActiveConfig>) {
+fn seed_text_input(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut config: ResMut<ActiveConfig>,
+    mut fresh: ResMut<SeedInputFresh>,
+) {
     let backspace = keys.just_pressed(KeyCode::Backspace);
     let typed = SEED_HEX_KEYS
         .iter()
@@ -676,12 +699,19 @@ fn seed_text_input(keys: Res<ButtonInput<KeyCode>>, mut config: ResMut<ActiveCon
         return;
     }
     let seed = &mut config.0.seed_text;
-    if backspace {
-        seed.pop();
-    } else if let Some(ch) = typed {
+    if let Some(ch) = typed {
+        // First keystroke after the screen loaded or Random was clicked starts a
+        // brand-new seed instead of appending to the shown one.
+        if fresh.0 {
+            seed.clear();
+            fresh.0 = false;
+        }
         if seed.len() < SEED_MAX_LEN {
             seed.push(ch);
         }
+    } else if backspace {
+        fresh.0 = false;
+        seed.pop();
     }
 }
 
@@ -1286,6 +1316,7 @@ fn handle_actions(
     interactions: ChangedButtons<&'static UiAction>,
     mut config: ResMut<ActiveConfig>,
     mut active_tab: ResMut<ActiveSetupTab>,
+    mut seed_fresh: ResMut<SeedInputFresh>,
     mut next_screen: ResMut<NextState<AppScreen>>,
     screen: Res<State<AppScreen>>,
     mut exit: MessageWriter<AppExit>,
@@ -1324,6 +1355,8 @@ fn handle_actions(
             }
             UiAction::RandomizeSeed => {
                 config.0.seed_text = random_seed_string();
+                // Next keystroke starts fresh rather than appending to the roll.
+                seed_fresh.0 = true;
             }
             UiAction::TimelineStep(step) => {
                 if let (Some(timeline), Some(world_res), Some(colors_dirty), Some(rivers_dirty)) = (
