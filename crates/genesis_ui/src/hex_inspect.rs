@@ -4,11 +4,13 @@ use bevy::prelude::*;
 use bevy::ui::FocusPolicy;
 use bevy::window::PrimaryWindow;
 use genesis_core::HexId;
+use genesis_core::biology_view::BiologyView;
 use genesis_core::data::{
-    BedrockType, BiomeId, HydroFlags, SoilClass, WATER_NONE, WaterBodyId, WorldData, river_class,
+    BedrockType, HydroFlags, WATER_NONE, WaterBodyId, WorldData, river_class,
 };
 use genesis_render::{
-    CameraDragState, CameraState, SelectedHex, WorldResource, cursor_hex, screen_to_hex,
+    ActiveBiologyView, CameraDragState, CameraState, SelectedHex, WorldResource, cursor_hex,
+    screen_to_hex,
 };
 
 /// Hex under the cursor (tooltip only).
@@ -390,6 +392,7 @@ pub fn update_hex_inspector(
     visible: Res<InspectorVisible>,
     tab: Res<InspectorTab>,
     world_res: Option<Res<WorldResource>>,
+    biology: Option<Res<ActiveBiologyView>>,
     mut root: Query<&mut Node, With<HexInspectorRoot>>,
     mut header: Query<&mut Text, (With<HexInspectorHeader>, Without<HexInspectorBody>)>,
     mut body: Query<&mut Text, (With<HexInspectorBody>, Without<HexInspectorHeader>)>,
@@ -408,7 +411,8 @@ pub fn update_hex_inspector(
         *h = Text::new(format_inspector_header(data, hex));
     }
     if let Ok(mut b) = body.single_mut() {
-        *b = Text::new(format_inspector_tab(data, hex, *tab));
+        let bio = biology.as_ref().map(|v| v.0.as_ref());
+        *b = Text::new(format_inspector_tab(data, hex, *tab, bio));
     }
 }
 
@@ -465,13 +469,18 @@ pub fn format_inspector_header(data: &WorldData, hex: HexId) -> String {
     )
 }
 
-pub fn format_inspector_tab(data: &WorldData, hex: HexId, tab: InspectorTab) -> String {
+pub fn format_inspector_tab(
+    data: &WorldData,
+    hex: HexId,
+    tab: InspectorTab,
+    biology: Option<&dyn BiologyView>,
+) -> String {
     let i = hex.0 as usize;
     match tab {
         InspectorTab::Terrain => format_terrain(data, i),
         InspectorTab::Climate => format_climate(data, i),
         InspectorTab::Water => format_water(data, i),
-        InspectorTab::Life => format_life(data, i),
+        InspectorTab::Life => format_life(data, hex, biology),
         InspectorTab::Society => "Society\nNot simulated yet.".to_string(),
         InspectorTab::Debug => format_debug(data, hex, i),
     }
@@ -572,24 +581,34 @@ fn format_water(data: &WorldData, i: usize) -> String {
     )
 }
 
-fn format_life(data: &WorldData, i: usize) -> String {
+fn format_life(data: &WorldData, hex: HexId, biology: Option<&dyn BiologyView>) -> String {
+    let i = hex.0 as usize;
     let hab = data.habitability.get(i).copied().unwrap_or(0.0);
     let fert = data.soil_fertility.get(i).copied().unwrap_or(0.0);
-    let soil = format!(
-        "{:?}",
-        data.soil_class.get(i).copied().unwrap_or(SoilClass::None)
+    let Some(bio) = biology else {
+        return format!("Habitability {hab:.2}\nSoil fertility {fert:.2}\nNot simulated yet.");
+    };
+    let a = bio.assemblage(data, hex);
+    let near_cap = if a.richness > 0.85 { "  (near cap)" } else { "" };
+    let mut s = format!(
+        "Biome: {}\nRichness R {:.2}{near_cap}\nOccupied guilds {} / {}",
+        a.biome_name, a.richness, a.occupied_guilds, a.guild_capacity,
     );
-    let biome = data.biome.get(i).copied().unwrap_or(BiomeId::NONE);
-    if biome == BiomeId::NONE && hab == 0.0 {
-        format!(
-            "Habitability {hab:.2}\nSoil fertility {fert:.2}\nSoil {soil}\nBiome —\nNot simulated yet."
-        )
-    } else {
-        format!(
-            "Habitability {hab:.2}\nSoil fertility {fert:.2}\nSoil {soil}\nBiome id {}",
-            biome.0
-        )
+    if let Some(dominant) = a.species.first() {
+        s.push_str(&format!(
+            "\n\nDominant: {}\n  {} · {}\n  [{}]",
+            dominant.name,
+            dominant.guild,
+            dominant.family,
+            dominant.trait_chips.join(", "),
+        ));
+        s.push_str(&format!(
+            "\n\nGenerate assemblage ({} guilds) →  [B]",
+            a.occupied_guilds
+        ));
     }
+    s.push_str(&format!("\n\nHabitability {hab:.2} · Soil fert {fert:.2}"));
+    s
 }
 
 fn format_debug(data: &WorldData, hex: HexId, i: usize) -> String {
@@ -635,7 +654,7 @@ mod tests {
     fn terrain_tab_shows_sea_level_and_leads_with_above_sea() {
         let params = WorldParameters::default();
         let world = create_world(params).expect("world");
-        let text = format_inspector_tab(&world.data, HexId(2), InspectorTab::Terrain);
+        let text = format_inspector_tab(&world.data, HexId(2), InspectorTab::Terrain, None);
         assert!(text.contains("Above sea"));
         assert!(text.contains("Sea level"));
         assert!(
@@ -664,7 +683,7 @@ mod tests {
     fn terrain_tab_mentions_relief() {
         let params = WorldParameters::default();
         let world = create_world(params).expect("world");
-        let text = format_inspector_tab(&world.data, HexId(1), InspectorTab::Terrain);
+        let text = format_inspector_tab(&world.data, HexId(1), InspectorTab::Terrain, None);
         assert!(text.contains("Relief"));
     }
 
@@ -672,7 +691,7 @@ mod tests {
     fn society_tab_is_placeholder() {
         let params = WorldParameters::default();
         let world = create_world(params).expect("world");
-        let text = format_inspector_tab(&world.data, HexId(0), InspectorTab::Society);
+        let text = format_inspector_tab(&world.data, HexId(0), InspectorTab::Society, None);
         assert!(text.contains("Not simulated yet"));
     }
 }
