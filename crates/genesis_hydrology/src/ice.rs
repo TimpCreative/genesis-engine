@@ -3,6 +3,7 @@
 use genesis_core::HexId;
 use genesis_core::data::{HydroFlags, SoilClass, WaterBodyId, WaterBodyKind, WorldData};
 
+use crate::erosion::continental_fluvial_floor_m;
 use crate::routing::{RoutingSurface, hex_area_m2};
 
 /// Ice-sheet temperature threshold, °C (§9.1).
@@ -19,12 +20,60 @@ pub const ICE_LOAD_DEPRESSION_M: f32 = 250.0;
 pub const GLACIAL_EROSION_FACTOR: f64 = 2.5;
 /// Maximum glacial overdeepening below the fluvial floor, meters (§9.2).
 pub const OVERDEEPEN_MAX_M: f32 = 400.0;
+/// Hex rings from ocean within which continental glacial overdeepening (fjords)
+/// may ignore the freeboard floor.
+pub const FJORD_OCEAN_RING_HEXES: u32 = 2;
 /// Loess loft range in hex hops (§9.2).
 pub const LOESS_RANGE: usize = 3;
 /// Fraction of carved load lofted as loess.
 pub const LOESS_FRACTION: f64 = 0.15;
 /// Moraine dam fraction of carved load deposited at the terminus.
 pub const MORAINE_FRACTION: f64 = 0.2;
+
+/// True if hex is ocean/sea wet, or dry land below sea (ocean-side bathymetry).
+fn is_ocean_side(data: &WorldData, i: usize) -> bool {
+    if data.elevation_mean[i] < data.sea_level_m {
+        return true;
+    }
+    let id = data.water_body_id[i];
+    if id == WaterBodyId::NONE {
+        return false;
+    }
+    data.water_bodies
+        .get(&id)
+        .is_some_and(|b| matches!(b.kind, WaterBodyKind::Ocean | WaterBodyKind::Sea))
+}
+
+/// True if any hex within `rings` hops is ocean-side (fjord coastal exception).
+fn within_ocean_rings(data: &WorldData, start: usize, rings: u32) -> bool {
+    if rings == 0 {
+        return is_ocean_side(data, start);
+    }
+    let n = data.cell_count() as usize;
+    let mut visited = vec![false; n];
+    let mut frontier = vec![start];
+    visited[start] = true;
+    for _ in 0..=rings {
+        let mut next = Vec::new();
+        for &i in &frontier {
+            if is_ocean_side(data, i) {
+                return true;
+            }
+            for nb in data.grid.neighbors(HexId(i as u32)) {
+                let j = nb.0 as usize;
+                if j < n && !visited[j] {
+                    visited[j] = true;
+                    next.push(j);
+                }
+            }
+        }
+        frontier = next;
+        if frontier.is_empty() {
+            break;
+        }
+    }
+    false
+}
 
 /// Updates `ice_mask`, sea-ice flags, budgeted `ice_volume_m3`, GIA deltas,
 /// and glacial sediment load for §8. Returns per-hex glacial load (meters).
@@ -96,7 +145,14 @@ pub fn update_ice(
                 }
             })
             .unwrap_or(data.elevation_mean[i] - OVERDEEPEN_MAX_M);
-        let max_cut = f64::from(data.elevation_mean[i] - floor).max(0.0);
+        let mut max_cut = f64::from(data.elevation_mean[i] - floor).max(0.0);
+        // Continental interiors respect the freeboard floor; coastal rings
+        // keep §9.2 fjord overdeepening (Doc 08 morphology deviation).
+        if let Some(cont_floor) = continental_fluvial_floor_m(data, i)
+            && !within_ocean_rings(data, i, FJORD_OCEAN_RING_HEXES)
+        {
+            max_cut = max_cut.min((f64::from(data.elevation_mean[i]) - cont_floor).max(0.0));
+        }
         let carved = carved.min(max_cut);
         glacial_load[i] += carved;
         data.hydro_elevation_delta_m[i] -= carved as f32;
@@ -164,6 +220,7 @@ fn loft_loess(data: &mut WorldData, origin: usize, range: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::erosion::{CONTINENTAL_FREEBOARD_M, CONTINENTAL_INCISION_ALLOWANCE_M};
     use genesis_core::parameters::WorldParameters;
     use genesis_core::{WorldYear, create_world};
 
@@ -192,5 +249,117 @@ mod tests {
         assert!(vol > 0.0);
         assert!(world.data.ice_load_m.iter().any(|&l| l > 0.0));
         assert_eq!(load.len(), n);
+    }
+
+    #[test]
+    fn interior_continental_ice_respects_freeboard_floor() {
+        let mut params = WorldParameters::default();
+        params.core.grid.subdivision_level = 5;
+        params.core.geology.base_erosion_rate_per_year = 5.0e-8;
+        let mut world = create_world(params).expect("world");
+        world.data.current_year = WorldYear(1_000_000_000);
+        let n = world.data.cell_count() as usize;
+        let sea = 0.0_f32;
+        world.data.sea_level_m = sea;
+        // Ocean only at hex 0; pick a far interior hex for ice.
+        world.data.elevation_mean[0] = -100.0;
+        world.data.water_level_m[0] = 0.0;
+        world.data.water_body_id[0] = WaterBodyId(0);
+        world.data.water_bodies.insert(
+            WaterBodyId(0),
+            genesis_core::data::WaterBody {
+                id: WaterBodyId(0),
+                kind: WaterBodyKind::Ocean,
+                surface_m: 0.0,
+                area_km2: 1.0,
+                volume_km3: 1.0,
+                salinity: 0.0,
+                outlet: None,
+            },
+        );
+        world.data.continental_crust = vec![true; n];
+        world.data.continental_crust[0] = false;
+        for i in 1..n {
+            world.data.elevation_mean[i] = sea + CONTINENTAL_FREEBOARD_M;
+            world.data.elevation_relief[i] = 50.0;
+            world.data.temperature_mean[i] = -20.0;
+        }
+        // Find a hex more than 2 rings from ocean hex 0.
+        let interior = (1..n)
+            .find(|&i| !within_ocean_rings(&world.data, i, FJORD_OCEAN_RING_HEXES))
+            .expect("grid should have an interior hex beyond fjord rings");
+        world.data.hydro_elevation_delta_m = vec![0.0; n];
+        world.data.glaciation_intensity = 1.0;
+        world.data.ice_load_m = vec![0.0; n];
+        let surface = RoutingSurface::build(&world.data, &[]);
+        let mut prev = vec![false; n];
+        let (_vol, _load) = update_ice(&mut world.data, &surface, &mut prev, 5e-8, 50_000_000.0);
+        let floor = sea + CONTINENTAL_FREEBOARD_M - CONTINENTAL_INCISION_ALLOWANCE_M;
+        let elev_after =
+            world.data.elevation_mean[interior] + world.data.hydro_elevation_delta_m[interior];
+        assert!(
+            elev_after >= floor - 1e-3,
+            "interior glacial carve must not go below freeboard floor; hex={interior} elev={elev_after}"
+        );
+    }
+
+    #[test]
+    fn coastal_ice_may_overdeepen_below_freeboard() {
+        let mut params = WorldParameters::default();
+        params.core.grid.subdivision_level = 5;
+        params.core.geology.base_erosion_rate_per_year = 5.0e-8;
+        let mut world = create_world(params).expect("world");
+        world.data.current_year = WorldYear(1_000_000_000);
+        let n = world.data.cell_count() as usize;
+        let sea = 0.0_f32;
+        world.data.sea_level_m = sea;
+        world.data.elevation_mean[0] = -100.0;
+        world.data.water_level_m[0] = 0.0;
+        world.data.water_body_id[0] = WaterBodyId(0);
+        world.data.water_bodies.insert(
+            WaterBodyId(0),
+            genesis_core::data::WaterBody {
+                id: WaterBodyId(0),
+                kind: WaterBodyKind::Ocean,
+                surface_m: 0.0,
+                area_km2: 1.0,
+                volume_km3: 1.0,
+                salinity: 0.0,
+                outlet: None,
+            },
+        );
+        world.data.continental_crust = vec![true; n];
+        world.data.continental_crust[0] = false;
+        for i in 1..n {
+            world.data.elevation_mean[i] = sea + CONTINENTAL_FREEBOARD_M;
+            world.data.elevation_relief[i] = 500.0;
+            world.data.temperature_mean[i] = -20.0;
+        }
+        let coastal = world
+            .data
+            .grid
+            .neighbors(HexId(0))
+            .first()
+            .copied()
+            .expect("ocean has a neighbor")
+            .0 as usize;
+        world.data.hydro_elevation_delta_m = vec![0.0; n];
+        world.data.glaciation_intensity = 1.0;
+        world.data.ice_load_m = vec![0.0; n];
+        assert!(
+            within_ocean_rings(&world.data, coastal, FJORD_OCEAN_RING_HEXES),
+            "neighbor of ocean must be in fjord rings"
+        );
+        let surface = RoutingSurface::build(&world.data, &[]);
+        let mut prev = vec![false; n];
+        let (_vol, _load) = update_ice(&mut world.data, &surface, &mut prev, 5e-8, 50_000_000.0);
+        let floor = sea + CONTINENTAL_FREEBOARD_M - CONTINENTAL_INCISION_ALLOWANCE_M;
+        let elev_after =
+            world.data.elevation_mean[coastal] + world.data.hydro_elevation_delta_m[coastal];
+        // Fjord path may cut below the continental freeboard floor.
+        assert!(
+            elev_after < floor,
+            "coastal glacial overdeepen should be allowed below freeboard floor; got {elev_after}"
+        );
     }
 }

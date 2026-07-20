@@ -3,11 +3,13 @@
 //! Phase 1: plate generation, drift, boundaries, and terrain sculpting.
 
 pub mod accretion;
+pub mod basin_infill;
 pub mod boundary;
 pub mod boundary_events;
 pub mod coast_cleanup;
 pub mod collapse;
 pub mod collision_jam;
+pub mod continental_heal;
 #[cfg(test)]
 mod diagnostics;
 pub mod elevation;

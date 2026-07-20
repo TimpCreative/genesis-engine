@@ -49,7 +49,7 @@ Therefore: when you do something non-obvious, document it. This usually means ad
 
 When Brax opens a chat with you in Cursor, your first response should establish that you've read the docs. Something like:
 
-> Read the foundation docs. Working on Genesis Engine, currently in Phase 2 (Climate & Hydrology; Doc 08 §15 exit gates still open). What's the task?
+> Read the foundation docs. Working on Genesis Engine, currently Phase 2 complete (Docs 07–08 exited). What's the task?
 
 This isn't ceremony — it's a verification that the rules are loading and your context includes the docs. If you can't access them, say so.
 
@@ -110,13 +110,14 @@ When in doubt, write a determinism test alongside the code.
 
 ### Production Resolution: Subdivision 8
 
-The game runs at **subdivision level 8** (65,612 cells; ISEA3H cell count is `10 × 3^n + 2`, per Doc 04 §3.1). Brax's directive (July 2026): levels 5–7 are for fast iteration and general testing, but **module acceptance gates and final verification must pass at subdiv 8**, and performance optimization targets 8.
+The game runs at **subdivision level 8** (65,612 cells; ISEA3H cell count is `10 × 3^n + 2`, per Doc 04 §3.1). Brax's directive (July 2026, reinforced repeatedly): levels 5–7 are for fast iteration and general testing only. **Module acceptance, morphology proof, elevation screenshots, and final verification must pass at subdiv 8.** Performance optimization targets 8.
 
 Practical consequences:
 
 - Resolution-sensitive behavior (per-hex rates, area fractions, relief limits, component sizes) must be verified at 8 before a task is declared done — per-hex effects bite differently across levels (the Doc 06 v0.13 subduction-erosion lesson: an unscaled per-hex rate destroyed half the continental crust at subdiv 5).
-- Long verification runs at 8 are background-task material: a full 4 B-year history at subdiv 8 is minutes, not seconds.
-- The `WorldParameters.grid.subdivision_level` library default stays 7 for iteration speed; the game-facing defaults (app env fallback, new-world menu) are 8.
+- Long verification runs at 8 are background-task material: a full 4 B-year history at subdiv 8 is minutes, not seconds. **Do not “prove” continent visuals at subdiv 7 to save time.**
+- Never export a morphology screenshot pack with `GENESIS_SUBDIVISION_LEVEL=7`. Omit the env var (app default is 8) or set it to `8`.
+- The `WorldParameters.grid.subdivision_level` library default stays 7 for unit-test speed; the game-facing defaults (app env fallback, new-world menu) are 8.
 
 ---
 
@@ -133,6 +134,7 @@ Before announcing a task is complete, verify:
 - Tests cover the new code meaningfully — not just "make it compile"
 - Documentation comments exist on public items
 - The task as Brax described it is actually done
+- If the task touches continent shape, elevation look, or screenshot proof: **subdiv-8** elevation images exist and were inspected (not subdiv 7)
 
 If any of these fail, fix them before declaring done.
 

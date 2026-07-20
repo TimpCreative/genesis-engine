@@ -207,7 +207,7 @@ pub struct HydrologyParameters {
 impl Default for HydrologyParameters {
     fn default() -> Self {
         Self {
-            water_inventory_gel_m: 2700.0,
+            water_inventory_gel_m: 2400.0,
             runoff_coefficient_base: 0.4,
             open_water_evap_factor: 1.2,
             groundwater_capacity_m: 30.0,

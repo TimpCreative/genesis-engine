@@ -29,11 +29,19 @@ pub mod state;
 pub mod validation;
 
 pub use budget::{
-    CONSERVATION_TOLERANCE_REL, WaterBudget, condensed_fraction_at_year, inventory_volume_m3,
+    CONDENSATION_COMPLETE_C, CONDENSATION_ONSET_C, CONSERVATION_TOLERANCE_REL, FORMATION_END_YEAR,
+    WaterBudget, condensed_fraction_at_year, formation_cooling_temperature_c, inventory_volume_m3,
 };
-pub use erosion::{DEPOSITION_THRESHOLD_M, ErosionOutcome, K_CHANNEL_PER_YEAR, apply_erosion};
+pub use erosion::{
+    CONTINENTAL_FREEBOARD_M, CONTINENTAL_INCISION_ALLOWANCE_M, DEPOSITION_THRESHOLD_M,
+    ErosionOutcome, K_CHANNEL_PER_YEAR, apply_erosion, continental_fluvial_floor_m,
+};
 pub use events::flush_events_to_branch;
 pub use groundwater::is_hot_spring;
+pub use lakes::{
+    SALINE_SOIL_SALT_MIN, SALT_EXPORT_RATE, SALT_LAKE_SALINITY_THRESHOLD, SALT_LOAD_FACTOR,
+    export_salt,
+};
 pub use layer::{
     DEFAULT_ANCIENT_HYDROLOGY_TICK_YEARS, DEFAULT_FORMATION_HYDROLOGY_TICK_YEARS,
     DEFAULT_GEOLOGICAL_HYDROLOGY_TICK_YEARS, DEFAULT_PREHISTORIC_HYDROLOGY_TICK_YEARS,

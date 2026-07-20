@@ -33,7 +33,7 @@ const CAMERA_Z: f32 = 999.0;
 pub(crate) struct MainCamera;
 
 /// Visible world size in radians for the current window aspect and zoom.
-fn viewport_world_size(window_aspect: f32, zoom: f32) -> (f32, f32) {
+pub(crate) fn viewport_world_size(window_aspect: f32, zoom: f32) -> (f32, f32) {
     if window_aspect > WORLD_ASPECT {
         let width = WORLD_WIDTH / zoom;
         (width, width / window_aspect)
@@ -87,31 +87,69 @@ pub fn sync_camera(
     }
 }
 
+/// Pixel distance before an LMB press becomes a pan (below = click).
+pub const MAP_DRAG_THRESHOLD_PX: f32 = 5.0;
+
+/// Tracks LMB press so short clicks select hexes and longer drags pan.
+#[derive(Resource, Default)]
+pub struct CameraDragState {
+    press_cursor: Option<Vec2>,
+    dragging: bool,
+    /// Set for one frame when LMB releases without exceeding the drag threshold.
+    pub just_clicked_map: bool,
+}
+
 pub fn handle_camera_input(
     mouse_buttons: Res<ButtonInput<MouseButton>>,
     mouse_motion: Res<AccumulatedMouseMotion>,
     mut mouse_wheel: MessageReader<MouseWheel>,
     mut camera_state: ResMut<CameraState>,
+    mut drag: ResMut<CameraDragState>,
     window_query: Query<&Window, With<PrimaryWindow>>,
 ) {
+    drag.just_clicked_map = false;
+    let Ok(window) = window_query.single() else {
+        return;
+    };
+    let cursor = window.cursor_position();
+
+    if mouse_buttons.just_pressed(MouseButton::Left) {
+        drag.press_cursor = cursor;
+        drag.dragging = false;
+    }
+
     if mouse_buttons.pressed(MouseButton::Left) {
-        let delta = mouse_motion.delta;
-        if delta != Vec2::ZERO {
-            let Some(window) = window_query.single().ok() else {
-                return;
-            };
-            let aspect = window.width() / window.height().max(1.0);
-            let (viewport_width, viewport_height) = viewport_world_size(aspect, camera_state.zoom);
-
-            let lon_per_pixel = f64::from(viewport_width) / f64::from(window.width());
-            let lat_per_pixel = f64::from(viewport_height) / f64::from(window.height());
-
-            camera_state.center_lon_rad -= f64::from(delta.x) * lon_per_pixel;
-            camera_state.center_lat_rad += f64::from(delta.y) * lat_per_pixel;
-            camera_state.center_lat_rad = camera_state
-                .center_lat_rad
-                .clamp(-PI / 2.0 + 0.01, PI / 2.0 - 0.01);
+        if let (Some(origin), Some(pos)) = (drag.press_cursor, cursor)
+            && !drag.dragging
+            && origin.distance(pos) > MAP_DRAG_THRESHOLD_PX
+        {
+            drag.dragging = true;
         }
+        if drag.dragging {
+            let delta = mouse_motion.delta;
+            if delta != Vec2::ZERO {
+                let aspect = window.width() / window.height().max(1.0);
+                let (viewport_width, viewport_height) =
+                    viewport_world_size(aspect, camera_state.zoom);
+
+                let lon_per_pixel = f64::from(viewport_width) / f64::from(window.width());
+                let lat_per_pixel = f64::from(viewport_height) / f64::from(window.height());
+
+                camera_state.center_lon_rad -= f64::from(delta.x) * lon_per_pixel;
+                camera_state.center_lat_rad += f64::from(delta.y) * lat_per_pixel;
+                camera_state.center_lat_rad = camera_state
+                    .center_lat_rad
+                    .clamp(-PI / 2.0 + 0.01, PI / 2.0 - 0.01);
+            }
+        }
+    }
+
+    if mouse_buttons.just_released(MouseButton::Left) {
+        if drag.press_cursor.is_some() && !drag.dragging {
+            drag.just_clicked_map = true;
+        }
+        drag.press_cursor = None;
+        drag.dragging = false;
     }
 
     for event in mouse_wheel.read() {

@@ -65,10 +65,13 @@ frames**, not disk snapshots. Decision record:
   the timeline grows behind it like a video buffer; playback stalls at the
   live edge until more frames arrive. `genesis_ui::worldgen::{GenEvent,
   generate_world_streaming}`.
-- Frame budget is level-aware: `max_frames = clamp(256 MB / (cells × 17 B),
-  16, 256)`, stride `max(target_year / max_frames, 500_000)` years, always
-  including the first tick and the final state
-  (`genesis_ui::worldgen::{max_history_frames, history_stride_years}`).
+- Scrub cadence is fixed at **10 My** (`HISTORY_STRIDE_YEARS`) so timeline
+  steps are identical at 1 By and 4.5 By. Soft memory budget remains
+  `max_frames = clamp(256 MB / (cells × ~40 B), 16, 256)` as an advisory;
+  long high-resolution runs can exceed it. Always include the first tick and
+  the final state
+  (`genesis_ui::worldgen::{HISTORY_STRIDE_YEARS, max_history_frames,
+  history_stride_years}`).
 - Scrubbing copies a frame's fields onto the displayed `WorldData` and sets the
   render layer's `ColorsDirty` flag: chunk meshes are recolored in place via
   their vertex-color buffers (the grid is immutable within a run); no meshes

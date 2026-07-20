@@ -463,7 +463,7 @@ See Doc 06 for full specification.
 6. Soil depth/class/fertility (Cretaceous beach + loess); coastal tides/estuaries
 7. Water-aware rendering, river LOD, Soil mode, HistoryFrame water fields, water-inventory knob
 
-**Exit criteria:** Doc 08 §15 validation gates pass (cheap CI + `--ignored` deep-time / perf / 3×3 calibration). A world has plausible climates, honest rivers and lakes, ice-driven sea-level excursions, and fertile soils from marine + glacial pathways. See Doc 08 for the authoritative physics and exit checklist.
+**Exit criteria:** Doc 08 §15 validation gates pass (cheap CI + `--ignored` deep-time / perf / 3×3 calibration) — **met (Doc 08 v0.8).** A world has plausible climates, honest rivers and lakes, ice-driven sea-level excursions, and fertile soils from marine + glacial pathways. See Doc 08 for the authoritative physics and exit checklist.
 
 ### Phase 3: Rendering MVP
 

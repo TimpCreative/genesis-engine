@@ -16,7 +16,7 @@ pub const INITIAL_ELEVATION_NOISE_STREAM: &str = "tectonics.initial_elevation_no
 pub const CONTINENTAL_BASE_ELEVATION_M: f32 = 800.0;
 
 /// Mean elevation for oceanic plates at formation (meters).
-pub const OCEANIC_BASE_ELEVATION_M: f32 = -3500.0;
+pub const OCEANIC_BASE_ELEVATION_M: f32 = -4000.0;
 
 /// Long-wavelength noise amplitude (m): regional highlands, plateaus, lowlands,
 /// and submerged continental margins.

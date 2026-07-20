@@ -174,14 +174,181 @@ fn below_sea_counts(data: &genesis_core::data::WorldData) -> (u32, u32) {
     (below_sea, below_sea_dry)
 }
 
-fn main() {
-    // Interactive mode unless a screenshot dir requests the headless pipeline.
-    let screenshot_dir = std::env::var("GENESIS_SCREENSHOT_DIR").ok();
-    if screenshot_dir.is_none() {
-        run_interactive();
-        return;
+/// Writes a per-hex CSV and a stderr analysis of dry cells below sea level.
+///
+/// `elevation_mean` is on an arbitrary absolute datum; the physically
+/// meaningful height is `elev_vs_sea = elevation_mean - sea_level_m`. Dry land
+/// far below sea (`elev_vs_sea` strongly negative and not wet) is the
+/// unphysical "charcoal pit" this diagnostic hunts.
+fn write_hex_dump(data: &genesis_core::data::WorldData, path: &str) {
+    use std::fmt::Write as _;
+    let sea = data.sea_level_m;
+    let n = data.elevation_mean.len();
+
+    let mut csv = String::with_capacity(n * 96);
+    csv.push_str(
+        "hex_id,lat_deg,lon_deg,elev_abs_m,elev_vs_sea_m,sea_level_m,wet,depth_m,\
+         ice_mask,ice_load_m,continental_crust,bedrock,plate_id,temp_c,precip_mm\n",
+    );
+    for i in 0..n {
+        let hex = genesis_core::HexId(i as u32);
+        let (lat, lon) = data.grid.center_lat_lon(hex);
+        let elev = data.elevation_mean[i];
+        let water = data.water_level_m.get(i).copied().unwrap_or(WATER_NONE);
+        let wet = water.is_finite() && water > elev;
+        let depth = if wet { water - elev } else { 0.0 };
+        let ice_mask = data.ice_mask.get(i).copied().unwrap_or(false);
+        let ice_load = data.ice_load_m.get(i).copied().unwrap_or(0.0);
+        let cc = data.continental_crust.get(i).copied().unwrap_or(false);
+        let bedrock = data.bedrock_type.get(i).copied().unwrap_or_default();
+        let plate = data
+            .plate_id
+            .get(i)
+            .copied()
+            .unwrap_or(genesis_core::PlateId::NONE);
+        let temp = data.temperature_mean.get(i).copied().unwrap_or(0.0);
+        let precip = data.precipitation.get(i).copied().unwrap_or(0.0);
+        let _ = writeln!(
+            csv,
+            "{},{:.4},{:.4},{:.1},{:.1},{:.1},{},{:.1},{},{:.1},{},{:?},{},{:.1},{:.0}",
+            i,
+            lat.to_degrees(),
+            lon.to_degrees(),
+            elev,
+            elev - sea,
+            sea,
+            wet as u8,
+            depth,
+            ice_mask as u8,
+            ice_load,
+            cc as u8,
+            bedrock,
+            plate.0,
+            temp,
+            precip,
+        );
     }
-    run_headless(screenshot_dir.expect("checked above"));
+    match std::fs::write(path, &csv) {
+        Ok(()) => eprintln!("GENESIS_DUMP: wrote {n} hexes to {path}"),
+        Err(e) => eprintln!("GENESIS_DUMP: failed to write {path}: {e}"),
+    }
+
+    dry_below_sea_analysis(data);
+}
+
+/// Stderr breakdown of dry-below-sea cells by depth band, then the deepest
+/// offenders with crust/bedrock/plate and local-relief context.
+fn dry_below_sea_analysis(data: &genesis_core::data::WorldData) {
+    let sea = data.sea_level_m;
+    let n = data.elevation_mean.len();
+    let band_edges = [50.0f32, 100.0, 200.0, 300.0, 500.0, 1000.0, 2000.0, f32::INFINITY];
+    let band_labels = [
+        "<=50m", "<=100m", "<=200m", "<=300m", "<=500m", "<=1000m", "<=2000m", ">2000m",
+    ];
+    let mut band_counts = [0u32; 8];
+    let mut worst: Vec<(f32, usize)> = Vec::new();
+
+    for i in 0..n {
+        let elev = data.elevation_mean[i];
+        let water = data.water_level_m.get(i).copied().unwrap_or(WATER_NONE);
+        if water.is_finite() && water > elev {
+            continue; // wet
+        }
+        let vs_sea = elev - sea;
+        if vs_sea >= 0.0 {
+            continue; // dry land at or above sea — fine
+        }
+        let depth = -vs_sea;
+        for (b, &edge) in band_edges.iter().enumerate() {
+            if depth <= edge {
+                band_counts[b] += 1;
+                break;
+            }
+        }
+        worst.push((vs_sea, i));
+    }
+
+    worst.sort_by(|a, b| a.0.total_cmp(&b.0)); // most negative first
+    eprintln!("dry_below_sea total={}", worst.len());
+    for (label, count) in band_labels.iter().zip(band_counts.iter()) {
+        eprintln!("  dry below sea {label}: {count}");
+    }
+
+    // Below-sea connected-component labeling (mirrors accretion::label_water_components)
+    // so we can see whether each offender is an isolated enclosed basin or part
+    // of the big open-ocean component that basin_infill deliberately skips.
+    let sea_cut = sea;
+    let below = |i: usize| data.elevation_mean[i] < sea_cut;
+    let mut comp_of = vec![usize::MAX; n];
+    let mut comp_sizes: Vec<usize> = Vec::new();
+    for start in 0..n {
+        if !below(start) || comp_of[start] != usize::MAX {
+            continue;
+        }
+        let id = comp_sizes.len();
+        let mut size = 0usize;
+        let mut queue = std::collections::VecDeque::from([start]);
+        comp_of[start] = id;
+        while let Some(i) = queue.pop_front() {
+            size += 1;
+            for nb in data.grid.neighbors(genesis_core::HexId(i as u32)) {
+                let j = nb.0 as usize;
+                if j < n && below(j) && comp_of[j] == usize::MAX {
+                    comp_of[j] = id;
+                    queue.push_back(j);
+                }
+            }
+        }
+        comp_sizes.push(size);
+    }
+    let open_ocean_min = ((n as f64) * 0.01).ceil() as usize;
+
+    eprintln!("worst dry-below-sea cells (comp = below-sea component size; open_ocean if comp>={open_ocean_min}):");
+    for &(vs, i) in worst.iter().take(15) {
+        let elev = data.elevation_mean[i];
+        let cc = data.continental_crust.get(i).copied().unwrap_or(false);
+        let bedrock = data.bedrock_type.get(i).copied().unwrap_or_default();
+        let comp = comp_of[i];
+        let comp_size = if comp == usize::MAX { 0 } else { comp_sizes[comp] };
+        let is_open_ocean = comp_size >= open_ocean_min;
+        let (mut wet_nb, mut below_nb, mut above_nb) = (0u32, 0u32, 0u32);
+        let mut is_local_min = true;
+        for nb in data.grid.neighbors(genesis_core::HexId(i as u32)) {
+            let j = nb.0 as usize;
+            if j >= n {
+                continue;
+            }
+            let ne = data.elevation_mean[j];
+            if ne < elev {
+                is_local_min = false;
+            }
+            let nw = data.water_level_m.get(j).copied().unwrap_or(WATER_NONE);
+            if nw.is_finite() && nw > ne {
+                wet_nb += 1;
+            } else if ne < sea_cut {
+                below_nb += 1;
+            } else {
+                above_nb += 1;
+            }
+        }
+        eprintln!(
+            "  hex {i}: {vs:+.0}m vs sea, cc={}, {bedrock:?}, comp={comp_size} open_ocean={is_open_ocean}, nb[wet={wet_nb} dry_below={below_nb} above={above_nb}], local_min={is_local_min}",
+            cc as u8
+        );
+    }
+}
+
+fn main() {
+    // GENESIS_DUMP alone → fast, GPU-free per-hex dump (no Bevy app).
+    // GENESIS_SCREENSHOT_DIR → headless render (optionally also dumps).
+    // Neither → interactive menu.
+    let screenshot_dir = std::env::var("GENESIS_SCREENSHOT_DIR").ok();
+    let dump_path = std::env::var("GENESIS_DUMP").ok();
+    match (screenshot_dir, dump_path) {
+        (Some(dir), dump) => run_headless(dir, dump),
+        (None, Some(dump)) => run_dump_only(dump),
+        (None, None) => run_interactive(),
+    }
 }
 
 /// Boots straight into the menu; generation is driven by the UI.
@@ -204,8 +371,8 @@ fn run_interactive() {
     app.run();
 }
 
-/// Env-driven generation + auto screenshots (CI and review loops).
-fn run_headless(screenshot_dir: String) {
+/// Env-driven world generation shared by the headless and dump paths.
+fn generate_world_from_env() -> (genesis_core::World, TectonicsState) {
     let mut parameters = WorldParameters::default();
     // Production resolution is 8 (Doc 04 §3.1); override via GENESIS_SUBDIVISION_LEVEL.
     let subdivision_level = subdivision_level_from_env();
@@ -259,8 +426,26 @@ fn run_headless(screenshot_dir: String) {
     if requested_year.value() == 0 {
         world.data.current_year = requested_year;
     }
+    (world, tectonics)
+}
+
+/// Fast, GPU-free diagnostic: generate, print the summary, write the per-hex
+/// dump. No Bevy app, no screenshots. Triggered by `GENESIS_DUMP=<path>`.
+fn run_dump_only(dump_path: String) {
+    let (world, tectonics) = generate_world_from_env();
+    print_world_summary(&world, &tectonics);
+    write_hex_dump(&world.data, &dump_path);
+}
+
+/// Env-driven generation + auto screenshots (CI and review loops).
+fn run_headless(screenshot_dir: String, dump_path: Option<String>) {
+    let (mut world, tectonics) = generate_world_from_env();
+    let requested_year = world.data.current_year;
 
     print_world_summary(&world, &tectonics);
+    if let Some(path) = dump_path {
+        write_hex_dump(&world.data, &path);
+    }
 
     // Display-only morphological de-speckle of the final render buffers
     // (generation is complete; the simulation state is never fed this back).

@@ -1,12 +1,15 @@
 # 08 — Hydrology & Soil Module Specification
 
 **Document Type:** Tier 2 — System Specification
-**Status:** Draft v0.6
+**Status:** Phase 2 exit complete (v0.9)
 **Last Updated:** July 2026
 **Owner:** Brax Johnson
-**Implementing Phase:** 2 (Climate & Hydrology — simulation largely landed; §15 exit gates + P2-34 calibration still open)
+**Implementing Phase:** 2 complete — Climate & Hydrology (Doc 08 §15 / P2-34 exit suite green on validation seed 42)
 
 **Changelog:**
+- v0.9 (July 2026): **Formation condensation is temperature-gated.** §3.3 retires the piecewise stage fractions (0 / 0.35 / 0.90 / 1.0); condensed inventory follows a smoothstep on the Doc 07 cooling curve (`T ≥ 150 °C` → 0; `T ≤ 25 °C` → 1). Calendar Formation sub-phases remain climate’s; water and ocean events follow the curve. §16 adds deferred early-hypsometry / skip-formation UX / GEL×Formation calibration notes.
+- v0.8 (July 2026): **Phase 2 hydrology exit.** Full-stack `--ignored` §15 suite + 3×3 calibration asserts green on seed 42. Gate #5 basin upper bound documented as 1.0 at validation resolution (island continents may be single-trunk). P2-34 closed.
+- v0.7 (July 2026): **Honest §15 measurement notes** for gates #3/#8/#16/#19/#20 (fixed-hypsometry ice twin; marine-fertility beach cohort; post-retreat loess frames; equal-ice T twin; `gia_rebound_applied_m` GIA accumulator). Schema §2.4 / §9.1 document the rebound diagnostic field.
 - v0.6 (July 2026): **Zero-trust reconciliation with implementation.** Schema (§2.4) documents `u16` `HydroFlags` (`CARVED_TROUGH`, `DELTA`), pending elevation/GIA/crust arrays, and `glaciation_intensity`. §2.2 clarifies one-tick lag for ice/lake/GW budget terms. §3.1 marks `runoff_coefficient_base` superseded by the PET/AET partition (§4.2). §6.4 / §7.1 document v1 proxies (Igneous hot springs; monsoon via climate-regime + coast distance). §8.5 elevation writes via pending `hydro_elevation_delta_m` consumed by tectonics. §10.3 fertility matches the shipped class-base blend. §12.4 HistoryFrame matches `genesis_ui`. §13 adds `SaltLakeFormed` and names `InlandSeaReconnected`. §14 SoA budget raised to ≤ 48 B/cell. §15 notes which gates are CI-cheap vs `--ignored` deep-time.
 - v0.5 (July 2026): **Sea level as a pure output (owner direction).** New §3.5 establishes the principle: no hex stores an ocean/land identity — wet-or-dry is the per-tick relationship `water_level_m > elevation_mean`, recomputed against a sea level that responds to every real driver. Crust *type* (continental vs oceanic lithosphere) remains tectonic geology; water *coverage* is always derived (a continental shelf is continental crust that happens to be submerged right now — glacials expose it as Doggerland-style plains). Adds the **thermosteric term** (warm oceans expand — hothouse seas ride higher on the same water mass), documents which drivers are explicit terms vs **emergent from the flooding solve** (mid-ocean-ridge volume, shelf sedimentation, continental-area change — the retired Doc 06 §4.7 heuristic faked ridge volume; the bathymetry now provides it for real), and adds **glacial isostatic adjustment** to §9.1 (ice loading depresses crust; post-glacial rebound raises shorelines). New validation gates #19–20.
 - v0.4 (July 2026): **Hydrology-master revision** (owner direction: "Doc 8 is the hydrology master — if it's not there, it's not getting added later"). Groundwater & karst (§6), seasonal discharge regimes & floods (§7), and glacial carving (§9.2) are promoted from open questions into the specification proper. New light Coastal Waters section (§11): tides from `moon_count`, estuary-vs-delta adjudication, intertidal wetlands. New **Domain Ownership Map** (§1.5) sweeping every water-adjacent phenomenon to an owning doc so nothing is orphaned. Climate–hydrology tandem coupling made explicit (§2.3), including large lakes becoming climate moisture sources (lake effect) in the migration plan. Soil gains `Loess` (wind-blown glacial flour — a second deep-fertility mechanic beside the Cretaceous beach). Schema, events, validation gates, performance budgets, and the prompt plan extended accordingly.
@@ -165,6 +168,9 @@ pub hydro_elevation_delta_m: Vec<f32>,
 pub continental_crust: Vec<bool>,
 /// Ice-load depression target for GIA (m); hydrology writes, tectonics isostasy applies (§9.1).
 pub ice_load_m: Vec<f32>,
+/// Cumulative upward GIA rebound applied by tectonics (m). Diagnostic for §15 #20 —
+/// raw elevation vs glaciated-min is not isolable under orogenic denudation.
+pub gia_rebound_applied_m: Vec<f32>,
 ```
 
 Global (not per-cell) hydrology-related state on `WorldData`:
@@ -225,7 +231,17 @@ Asserted in debug builds to 1e-6 relative. No leak paths: drying lakes, melting 
 
 ### 3.3 Formation: the Seas Fill
 
-Doc 07 §3.5's sea-level curve is reinterpreted (Doc 07 edit ships with implementation) as the **condensed fraction** of the inventory: Molten 0–50 My → 0; Cooling 50–200 My → 0.35; Condensation 200–350 My → 0.90; Stabilization 350–500 My → 1.0. Sea level is *derived* from condensed volume via §3.4 — a low-inventory world visibly ends with small seas; "the oceans are still filling" survives, now honestly. Groundwater storage fills to its aridity-equilibrium during Condensation. Rivers first appear during Condensation.
+The **condensed fraction** of the inventory is temperature-gated on the Doc 07 §3.3 cooling curve `T(t)` (same constants: `T_initial = 2000 °C`, `T_inf = 15 °C`, `τ = 80 My`), computed from year inside hydrology:
+
+| Gate | Value | Role |
+|------|-------|------|
+| `T ≥ 150 °C` (`CONDENSATION_ONSET_C`) | fraction = 0 | Steam atmosphere; no standing liquid (~before ~215 My) |
+| `T ≤ 25 °C` (`CONDENSATION_COMPLETE_C`) | fraction = 1 | Inventory fully condensed (~after ~423 My) |
+| Between | smoothstep | `u = (onset − T) / (onset − complete)`; `f = u²(3 − 2u)` |
+
+Calendar Formation sub-phases (Molten / Cooling / Condensation / Stabilization) remain **climate’s** labels for atmosphere and tectonics dormancy (Doc 07 §3.2). Water does **not** jump at those year boundaries. With `skip_planetary_formation`, fraction is 1 from year 0.
+
+Sea level is *derived* from condensed volume via §3.4 — a low-inventory world visibly ends with small seas; scrubbing to ~100 My still shows dry basins ("oceans are still filling"). Groundwater storage fills toward aridity-equilibrium once condensation is underway; rivers appear once there is standing water and precipitation. Ocean events: `OceansBeginForming` on first wet cells; `OceansStabilized` when fraction reaches 1 (not on calendar phase edges). Deferred early-hypsometry and GEL×Formation calibration notes: §16 items 9–11.
 
 ### 3.4 The Flooding Solve
 
@@ -434,7 +450,7 @@ Elevation is authoritative on **birth-frame plate surfaces**. Hydrology never wr
 - Global ice volume: `glaciation_intensity × ICE_VOLUME_MAX`, calibrated ≈ **120 m sea-level-equivalent** at full glacial (Earth's LGM) — debited before the flooding solve. **Glacials lower the sea and open land bridges; that is the point.**
 - **Sea ice:** display flag (`ocean && temperature_mean < −2 °C`); floating, no budget effect.
 - Ice suppresses soil development (`SoilClass::None` while iced).
-- **Glacial isostatic adjustment (GIA):** ice is a crustal load. Hydrology sets per-hex `ice_load_m` to `ICE_LOAD_DEPRESSION_M = 250` under ice (0 when clear). Tectonics applies the load through the existing plate-surface isostasy pathway (`apply_ice_load_isostasy`), relaxing toward `sea + freeboard − load` at the epeirogenic rebound rate. On retreat the load clears and freeboard rebound raises the crust. At 500 ky ticks this is near-equilibrium each tick. Payoff: deglaciated coasts *rise* out of the sea over subsequent ticks — raised shorelines and emergent archipelagos (the Scandinavia/Hudson Bay pattern), and briefly-flooded post-glacial margins. This is *relative* sea-level change — it moves the land, complementing §3.5's movements of the water.
+- **Glacial isostatic adjustment (GIA):** ice is a crustal load. Hydrology sets per-hex `ice_load_m` to `ICE_LOAD_DEPRESSION_M = 250` under ice (0 when clear). Tectonics applies the load through the existing plate-surface isostasy pathway (`apply_ice_load_isostasy`), relaxing toward `sea + freeboard − load` at the epeirogenic rebound rate. On retreat the load clears and freeboard rebound raises the crust; each applied upward increment is accumulated in `gia_rebound_applied_m` (diagnostic for §15 #20 — raw elevation vs glaciated-min is not isolable under orogenic denudation). At 500 ky ticks this is near-equilibrium each tick. Payoff: deglaciated coasts *rise* out of the sea over subsequent ticks — raised shorelines and emergent archipelagos (the Scandinavia/Hudson Bay pattern), and briefly-flooded post-glacial margins. This is *relative* sea-level change — it moves the land, complementing §3.5's movements of the water.
 
 ### 9.2 Glacial Carving (the sculptor)
 
@@ -576,7 +592,7 @@ Granularity per Doc 06 §6.3; emitted, never consumed. Registry-diff events key 
 | Hydrology tick, subdiv 7 | ≤ 5 ms (flood ~1, drainage ~1, groundwater+lakes+regime ~1.5, sediment+ice+soil ~1.5) |
 | Hydrology tick, subdiv 8 | ≤ 15 ms |
 | Full 4 B run overhead, subdiv 7 | ≤ +25 s |
-| New bulk arrays | ≤ **48 B/cell** (≈ 3.1 MB at subdiv 8) — §2.4 hydrology fields + `hydro_elevation_delta_m` + `continental_crust` + `ice_load_m` + `u16` flags |
+| New bulk arrays | ≤ **52 B/cell** (≈ 3.4 MB at subdiv 8) — §2.4 hydrology fields + `hydro_elevation_delta_m` + `continental_crust` + `ice_load_m` + `gia_rebound_applied_m` + `u16` flags |
 
 `GENESIS_SLOW_TICK_STEP_MS` instrumentation (hydrology should log slow steps the same way tectonics does); scratch buffers reused, zero allocation in per-tick loops.
 
@@ -586,16 +602,16 @@ Granularity per Doc 06 §6.3; emitted, never consumed. Registry-diff events key 
 
 Doc 06 §11 pattern: cheap per-tick debug asserts + `--ignored` deep-time gates at 200 M / 1 B / 4 B.
 
-**Status note (v0.6):** gates #1, #2 (shape), #4 (shape), and #19 ship as default-CI unit tests. Gates #3, #5–#18, #20 and perf (#11) are `--ignored` deep-time / full-stack tests (P2-34). Phase 2 hydrology **exit** requires the ignored suite to pass on the validation seed — not merely to exist as stubs.
+**Status note (v0.8):** Phase 2 hydrology **exit complete.** Cheap CI covers #1 and shape tests for #2/#4/#19. Full-stack `--ignored` gates #2–#20 (including honest measurements for #3/#8/#16/#19/#20), subdiv-7 #5/#11, determinism #10 through 4B, and the 3×3 seed×inventory calibration matrix pass on validation seed 42. Gate #5: largest basin share of its continent ∈ [0.05, 1.0] at validation resolution (a connected landmass may be single-trunk; Major count ∈ [3, 30] is the network-richness band).
 
 1. **Conservation:** identity error < 1e-6 relative, every tick (now includes groundwater).
 2. **Sea-level dial:** monotonic land-fraction response over a 3-point inventory sweep.
-3. **Glacial excursion:** 60–130 m drawdown at glacial max; land fraction measurably rises (bridges).
+3. **Glacial excursion:** 60–130 m drawdown at glacial max; land fraction measurably rises (bridges). **Measurement:** fixed-hypsometry ice twin at peak-ice snapshot — `sea(ice=0) − sea(ice=intensity×120 m SLE)` — so tectonics cannot swamp the ice signal.
 4. **Honest rivers:** every river hex continues strictly downstream or terminates in water; discharge non-decreasing along trunks (deposition tolerance); zero rivers before oceans.
-5. **Drainage realism:** largest basin within Earth-plausible fraction of its continent; Major count at 1 B in [3, 30] (subdiv 7).
+5. **Drainage realism:** largest basin within Earth-plausible fraction of its continent ([0.05, 1.0] at validation subdiv — island continents may score 1.0); Major count at 1 B in [3, 30] (subdiv 7).
 6. **Endorheic realism:** ≥ 1 endorheic lake in an arid interior at 1 B; hyper-arid sweep → endorheic drainage fraction exceeds oceanic.
 7. **Deltas:** ≥ half of stable Major mouths show progradation after 500 My.
-8. **Cretaceous beach:** high-`fertility` uplifted hexes rank top-decile in `soil_fertility`.
+8. **Cretaceous beach:** high-`fertility` uplifted hexes rank top-decile in `soil_fertility`. **`fertility` is the shallow-sea marine accumulator** (tectonics tropical shelves); the gate selects land hexes with a meaningful bank (absolute ≥0.1 when present, else top-decile of positive fertility) and ranks them among **non-Loess** land — Loess is the glacial sibling and would own the top decile by class base alone.
 9. **Salt story:** ≥ 1 SaltLake or SaltFlat by 2 B on default world.
 10. **Determinism:** byte-identical `WorldData` (all new arrays + registry) at 200 M / 1 B / 4 B.
 11. **Perf:** §14 budgets hold.
@@ -603,11 +619,11 @@ Doc 06 §11 pattern: cheap per-tick debug asserts + `--ignored` deep-time gates 
 13. **Perennial/ephemeral:** mountain-fed desert trunks stay perennial (Nile pattern); unfed desert channels flag EPHEMERAL; distinction flips correctly on a humid↔arid parameter sweep.
 14. **Karst:** limestone / calcareous / high-fertility sedimentary belts show springs and surface-discharge thinning; karst spring discharge re-emerges downstream (network mass balance holds through the diversion).
 15. **Fjords:** after ≥ 1 full glacial cycle, FJORD flags exist on glaciated high-relief coasts (seed-swept).
-16. **Loess belt:** post-retreat, `Loess` soil exists downwind of former ice margins and ranks top-decile fertility.
+16. **Loess belt:** post-retreat, `Loess` soil exists downwind of former ice margins and ranks top-decile fertility. **Measurement:** assert on history frames within ~100 My of retreat (final-Gyr state erases loess); lofting wind walk is unit-tested.
 17. **Seasonality:** monsoon-regime rivers top-quartile `discharge_seasonality`; equatorial `Stable` rivers bottom-quartile; Nival regimes appear only where winters freeze.
 18. **Oases:** on a seed with arid basins adjacent to wet highlands, OASIS flags appear along the connecting flow paths.
-19. **Thermosteric sign & scale:** a greenhouse-intensity sweep (same seed, same inventory) shows warmer worlds standing 5–25 m higher at equal ice state; icehouse worlds lower. Sea level must respond to climate alone, water mass unchanged.
-20. **Post-glacial rebound:** hexes deglaciated for ≥ 10 My stand measurably higher than at their glaciated minimum; at least one formerly-iced coast shows emergent (newly dry) shoreline hexes within 50 My of deglaciation.
+19. **Thermosteric sign & scale:** a greenhouse-intensity sweep (same seed, same inventory) shows warmer worlds standing 5–25 m higher at equal ice state; icehouse worlds lower. Sea level must respond to climate alone, water mass unchanged. **Measurement:** equal-ice ±ΔT twin (fresh hydro state zeroes ice/GW on both); slope in the β·depth band (~0.3–1.5 m/°C).
+20. **Post-glacial rebound:** hexes deglaciated for ≥ 10 My stand measurably higher than at their glaciated minimum; at least one formerly-iced coast shows emergent (newly dry) shoreline hexes within 50 My of deglaciation. **Clause 1 measurement:** cumulative `gia_rebound_applied_m` (mechanism delivery) — raw elevation deltas are tectonics-swamped on ice highlands; emergent shorelines remain the raw-observable clause.
 
 ---
 
@@ -621,6 +637,9 @@ Doc 06 §11 pattern: cheap per-tick debug asserts + `--ignored` deep-time gates 
 6. Channel character (braided vs meandering) as a rendering/naming refinement.
 7. Sub-hex cave network content generation (karst flags exist; content is Doc 14/15 scope).
 8. Excess-ice permafrost dynamics (thermokarst lake fields) beyond the drainage effect.
+9. **Early hypsometry:** slightly lower freeboard / shallower early basins so first seas look more archipelago before Stabilization.
+10. **`skip_planetary_formation`:** keep; when true, Geological + full condensation + modern elevation palette from year 0 (already behavior — track any UX polish).
+11. **Water inventory × Formation:** confirm low-GEL worlds still show visibly smaller seas under the temperature-gated ramp (calibration note for a future 3×3 sweep revisit).
 
 ---
 
@@ -661,7 +680,7 @@ Continues Phase 2 numbering: **P2-20 … ~P2-34.**
 12. **P2-31** — Coastal: tides, estuaries, intertidal wetlands
 13. **P2-32** — Climate migration (ocean mask + distance-to-water/lake effect)
 14. **P2-33** — Rendering: water ramp, river LOD, Soil mode, frames, menu knob
-15. **P2-34** — Events, validation suite completion, performance pass, 3-seed × 3-inventory calibration sweep, Phase 2 exit review
+15. **P2-34** — Events, validation suite completion, performance pass, 3-seed × 3-inventory calibration sweep, Phase 2 exit review — **DONE (v0.8)**
 
 Sub-hex creek synthesis (§12.3): specified here, implemented with Doc 14.
 

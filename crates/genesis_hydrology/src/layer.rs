@@ -19,7 +19,9 @@ use crate::events::{
 };
 use crate::groundwater::{recharge_and_baseflow, total_groundwater_storage_m3, water_tables};
 use crate::ice::update_ice;
-use crate::lakes::{adjudicate_lakes, apply_returned_surplus, registry_lake_volume_m3};
+use crate::lakes::{
+    adjudicate_lakes, apply_returned_surplus, export_salt, registry_lake_volume_m3,
+};
 use crate::partition::partition_land;
 use crate::regime::classify_regimes;
 use crate::routing::{FlowAccumulation, RoutingSurface, hex_area_m2};
@@ -239,6 +241,7 @@ impl SimulationLayer for HydrologyLayer {
             interval_years,
         );
         apply_returned_surplus(world, lake_outcome.returned_to_ocean_m3);
+        export_salt(world);
 
         // Standing-water partition check: the solve's effective ocean volume
         // is exactly the ocean component plus the candidate bathtub volumes
@@ -433,9 +436,11 @@ mod tests {
         drop(layer);
         let hydrology = HydrologyLayer::detach_state(shared);
 
-        // Condensation stage: 90% of the 1000 GEL inventory stands in the
-        // basin minus groundwater recharge; basin cells wet, plateau dry.
+        // Mid-ramp at 300 My: partial inventory stands in the basin minus
+        // groundwater recharge; basin cells wet, plateau dry.
         assert!(world.data.sea_level_m > -2000.0 && world.data.sea_level_m < 1000.0);
+        let frac = condensed_fraction_at_year(300_000_000, false);
+        assert!(frac > 0.0 && frac < 1.0);
         assert_eq!(
             world.data.water_bodies.len(),
             1,
@@ -456,6 +461,52 @@ mod tests {
         assert_eq!(hydrology.aquifer_storage_m.len(), n);
         assert!(hydrology.oceans_begin_emitted);
         assert!(!hydrology.oceans_stabilized_emitted);
+    }
+
+    /// Doc 08 §3.3: dry at ~100 My; oceans present mid-ramp; full by Formation end.
+    #[test]
+    fn condensation_timeline_matches_temperature_gate() {
+        assert_eq!(condensed_fraction_at_year(100_000_000, false), 0.0);
+
+        let mut params = WorldParameters::default();
+        params.core.hydrology.water_inventory_gel_m = 1000.0;
+        params.core.grid.subdivision_level = 4;
+        let grid = HexGrid::new(4, EARTH_RADIUS_KM).expect("grid");
+        let mut data = WorldData::new(grid, params);
+        let n = data.cell_count() as usize;
+        let basin = connected_basin(&data, n / 2);
+        for (i, &in_basin) in basin.iter().enumerate() {
+            data.elevation_mean[i] = if in_basin { -2000.0 } else { 1000.0 };
+        }
+        data.precipitation.fill(1200.0);
+        data.temperature_mean.fill(10.0);
+        let rng = genesis_core::rng::WorldRng::from_effective_seed(1);
+
+        data.current_year = WorldYear(100_000_000);
+        let mut hydrology = HydrologyState::new();
+        let (mut layer, shared) = HydrologyLayer::attach(&mut hydrology);
+        layer.advance(&mut data, &rng);
+        assert!(
+            data.water_bodies.is_empty(),
+            "no standing water at 100 My while T is above onset"
+        );
+
+        data.current_year = WorldYear(300_000_000);
+        layer.advance(&mut data, &rng);
+        let mid = condensed_fraction_at_year(300_000_000, false);
+        assert!(mid > 0.0 && mid < 1.0);
+        assert!(
+            !data.water_bodies.is_empty(),
+            "oceans present mid Condensation-era ramp"
+        );
+
+        data.current_year = WorldYear(FORMATION_END_YEAR);
+        layer.advance(&mut data, &rng);
+        drop(layer);
+        let hydrology = HydrologyLayer::detach_state(shared);
+        assert_eq!(condensed_fraction_at_year(FORMATION_END_YEAR, false), 1.0);
+        assert!(hydrology.oceans_begin_emitted);
+        assert!(hydrology.oceans_stabilized_emitted);
     }
 
     #[test]
@@ -541,7 +592,7 @@ mod tests {
         }
         data.precipitation.fill(2000.0);
         data.temperature_mean.fill(15.0);
-        data.current_year = WorldYear(10_000_000); // Molten: fraction 0.
+        data.current_year = WorldYear(10_000_000); // Hot Formation: fraction 0.
         let rng = genesis_core::rng::WorldRng::from_effective_seed(1);
 
         let mut hydrology = HydrologyState::new();

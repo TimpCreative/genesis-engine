@@ -10,11 +10,18 @@ use std::sync::Mutex;
 use std::sync::mpsc::{Receiver, channel};
 
 use bevy::prelude::*;
+use bevy::ui::FocusPolicy;
 use genesis_render::{
     ColorsDirty, CurrentRenderMode, HexEntityCache, HexMeshIndex, RiversDirty, WorldDirty,
     WorldResource,
 };
 
+use crate::hex_inspect::{
+    BlocksMapPick, HoveredHex, InspectorTab, InspectorVisible, clear_inspect_on_exit,
+    despawn_hex_inspect_ui, handle_inspector_tabs, handle_map_hex_click, inspector_hotkeys,
+    refresh_tab_colors, spawn_hex_inspect_ui, update_hex_inspector, update_hex_tooltip,
+    update_hovered_hex, viewer_escape,
+};
 use crate::worldgen::{GenEvent, HistoryFrame, WorldGenConfig, generate_world_streaming};
 
 /// Top-level application screen.
@@ -135,14 +142,28 @@ impl Plugin for GenesisUiPlugin {
         app.init_state::<AppScreen>()
             .init_resource::<ActiveConfig>()
             .init_resource::<ScrubRepeat>()
+            .init_resource::<HoveredHex>()
+            .init_resource::<InspectorTab>()
+            .init_resource::<InspectorVisible>()
             .add_systems(OnEnter(AppScreen::MainMenu), spawn_main_menu)
             .add_systems(OnEnter(AppScreen::Setup), spawn_setup_screen)
             .add_systems(OnEnter(AppScreen::Generating), spawn_generating_screen)
-            .add_systems(OnEnter(AppScreen::Viewing), spawn_viewing_hud)
+            .add_systems(
+                OnEnter(AppScreen::Viewing),
+                (spawn_viewing_hud, spawn_hex_inspect_ui),
+            )
             .add_systems(OnExit(AppScreen::MainMenu), despawn_screen)
             .add_systems(OnExit(AppScreen::Setup), despawn_screen)
             .add_systems(OnExit(AppScreen::Generating), despawn_screen)
-            .add_systems(OnExit(AppScreen::Viewing), (despawn_screen, teardown_world))
+            .add_systems(
+                OnExit(AppScreen::Viewing),
+                (
+                    despawn_screen,
+                    despawn_hex_inspect_ui,
+                    clear_inspect_on_exit,
+                    teardown_world,
+                ),
+            )
             .add_systems(
                 Update,
                 (
@@ -150,7 +171,20 @@ impl Plugin for GenesisUiPlugin {
                     handle_actions,
                     refresh_param_values.run_if(in_state(AppScreen::Setup)),
                     poll_generation.run_if(resource_exists::<GenerationTask>),
-                    (timeline_keyboard, timeline_playback, refresh_hud)
+                    (
+                        update_hovered_hex,
+                        handle_map_hex_click,
+                        inspector_hotkeys,
+                        viewer_escape,
+                        handle_inspector_tabs,
+                        refresh_tab_colors,
+                        update_hex_tooltip,
+                        update_hex_inspector,
+                        timeline_keyboard,
+                        timeline_playback,
+                        refresh_hud,
+                    )
+                        .chain()
                         .run_if(in_state(AppScreen::Viewing)),
                     escape_navigation,
                 ),
@@ -168,8 +202,17 @@ const BUTTON_BG_HOVER: Color = Color::srgb(0.25, 0.29, 0.38);
 const ACCENT: Color = Color::srgb(0.35, 0.65, 0.95);
 
 /// Query alias: buttons whose interaction state changed this frame.
-type ChangedButtons<'w, 's, T> =
-    Query<'w, 's, (&'static Interaction, T), (Changed<Interaction>, With<Button>)>;
+/// Inspector tab buttons manage their own colors.
+type ChangedButtons<'w, 's, T> = Query<
+    'w,
+    's,
+    (&'static Interaction, T),
+    (
+        Changed<Interaction>,
+        With<Button>,
+        Without<crate::hex_inspect::InspectorTabButton>,
+    ),
+>;
 
 fn despawn_screen(mut commands: Commands, roots: Query<Entity, With<ScreenRoot>>) {
     for root in &roots {
@@ -192,6 +235,7 @@ fn teardown_world(
     commands.remove_resource::<WorldResource>();
     commands.remove_resource::<WorldTimeline>();
     commands.remove_resource::<GenerationTask>();
+    // Selection outline is despawned when SelectedHex clears.
 }
 
 fn full_screen_root(screen: AppScreen) -> (ScreenRoot, Node, BackgroundColor) {
@@ -591,6 +635,7 @@ fn spawn_viewing_hud(mut commands: Commands) {
     commands
         .spawn((
             ScreenRoot(AppScreen::Viewing),
+            FocusPolicy::Pass,
             Node {
                 width: Val::Percent(100.0),
                 height: Val::Percent(100.0),
@@ -602,6 +647,9 @@ fn spawn_viewing_hud(mut commands: Commands) {
         .with_children(|parent| {
             parent
                 .spawn((
+                    BlocksMapPick,
+                    FocusPolicy::Block,
+                    Interaction::default(),
                     Node {
                         width: Val::Percent(100.0),
                         flex_direction: FlexDirection::Column,
@@ -907,7 +955,9 @@ fn escape_navigation(
         AppScreen::MainMenu => {
             exit.write(AppExit::Success);
         }
-        AppScreen::Setup | AppScreen::Viewing => next_screen.set(AppScreen::MainMenu),
+        AppScreen::Setup => next_screen.set(AppScreen::MainMenu),
+        // Viewing Esc is handled in the viewing chain (`viewer_escape`).
+        AppScreen::Viewing => {}
         AppScreen::Generating => {
             // Generation threads cannot be safely cancelled mid-tick; let the
             // run finish in the background and return to the menu.

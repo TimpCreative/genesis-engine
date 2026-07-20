@@ -34,6 +34,10 @@ pub fn maybe_emit(state: &mut HydrologyState, event: Event, threshold: Significa
 }
 
 /// Emits the formation ocean events (Doc 08 §13).
+///
+/// `OceansBeginForming` fires on the first tick with standing water (wet cells),
+/// not on a calendar Formation sub-phase edge. `OceansStabilized` fires when
+/// the condensed fraction reaches 1.0 (temperature-gated curve, Doc 08 §3.3).
 pub fn maybe_emit_formation_ocean_events(
     state: &mut HydrologyState,
     condensed_fraction: f64,

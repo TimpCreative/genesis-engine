@@ -68,10 +68,12 @@ impl Default for WorldParameters {
                     event_granularity: Significance::Notable,
                     tick_interval_overrides_years: None,
                     base_erosion_rate_per_year: 5e-8,
-                    max_ephemeral_island_hexes: 10,
-                    max_ephemeral_island_height_m: 100.0,
-                    max_ephemeral_island_relief_m: 250.0,
-                    max_artifact_lake_hexes: 20,
+                    max_ephemeral_island_hexes: 80,
+                    // Must clear CONTINENTAL_FREEBOARD_M (~800): otherwise healed
+                    // freeboard speckles permanently refuse submergence.
+                    max_ephemeral_island_height_m: 1200.0,
+                    max_ephemeral_island_relief_m: 800.0,
+                    max_artifact_lake_hexes: 80,
                     min_geologic_lake_depth_m: 400.0,
                 },
                 climate_initial: ClimateInitialParameters {

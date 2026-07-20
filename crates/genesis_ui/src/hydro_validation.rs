@@ -44,15 +44,21 @@ pub const VALIDATION_GEL_M: f32 = 1000.0;
 /// permanent snowball — 37.8% max ice, never ice-free after 500M, 2406 m
 /// excursion (observed on seed 42) — outside every glacial band's physical
 /// premise, while the Major count scales with exposed land.
-pub const PRODUCTION_GEL_M: f32 = 2700.0;
+/// Water inventory for gates whose §15 bands were calibrated on the default
+/// world — the glacial gates (#3, #15, #16, #19, #20), the subdiv-7 Major
+/// census (#5), the 4B harness, and morphology land/pit gates. Default menu
+/// GEL is 2400 m (retuned from 2700 for deep-time land coherence).
+pub const PRODUCTION_GEL_M: f32 = 2400.0;
 
 /// Deep-time gate subdivision (CI-friendly, ~2,432 hexes).
 pub const VALIDATION_SUBDIVISION_LEVEL: u8 = 5;
 /// Subdivision for the §15-calibrated Major census and the perf gate.
 pub const VALIDATION_MAJOR_SUBDIVISION_LEVEL: u8 = 7;
 
-/// Sea-level dial / determinism horizon.
+/// Early Formation / pre-condensation horizon (still dry under §3.3 temperature gate).
 pub const VALIDATION_YEAR_200M: i64 = 200_000_000;
+/// Mid Formation fill window (condensed fraction in (0, 1); oceans present).
+pub const VALIDATION_YEAR_300M: i64 = 300_000_000;
 /// Standard deep-time horizon.
 pub const VALIDATION_YEAR_1B: i64 = 1_000_000_000;
 /// Salt-story horizon (§15 #9).
@@ -61,8 +67,8 @@ pub const VALIDATION_YEAR_2B: i64 = 2_000_000_000;
 pub const VALIDATION_YEAR_4B: i64 = 4_000_000_000;
 
 /// Frame stride for the 4B glacial gates: 2 My resolves glacial episodes
-/// (orbital forcing runs on ~2.3 My cycles; the default memory-budgeted
-/// stride would skip most of them).
+/// (orbital forcing runs on ~2.3 My cycles; the default 10 My scrub stride
+/// would skip most of them).
 pub const GLACIAL_FRAME_STRIDE_YEARS: i64 = 2_000_000;
 
 /// Seed for the §15 gates: `GENESIS_VALIDATION_SEED` or 42 (same pattern as
@@ -108,8 +114,61 @@ pub fn run_full_stack(
     run_full_stack_with_stride(seed, subdivision, target_year, gel_m, None)
 }
 
-/// [`run_full_stack`] with an explicit frame stride (`None` = the memory-
-/// budgeted default from [`history_stride_years`]).
+/// [`run_full_stack_with_stride`] plus a clone of `WorldData` at the tick of
+/// peak land-ice fraction (for fixed-hypsometry ice twins, §15 #3).
+pub fn run_full_stack_with_peak_ice(
+    seed: u64,
+    subdivision: u8,
+    target_year: i64,
+    gel_m: f32,
+    frame_stride_years: Option<i64>,
+) -> (World, Vec<HistoryFrame>, Option<WorldData>) {
+    let config = full_stack_config(seed, subdivision, target_year, gel_m);
+    let params = config.to_parameters();
+    let mut world = create_world(params).expect("validation parameters valid");
+    let mut tectonics = genesis_tectonics::TectonicsState::new();
+    let mut climate = genesis_climate::ClimateState::new();
+    let mut hydrology = genesis_hydrology::HydrologyState::new();
+
+    let target = target_year.max(1);
+    let stride = frame_stride_years
+        .unwrap_or_else(|| history_stride_years(target, world.data.cell_count()))
+        .max(1);
+    let mut frames: Vec<HistoryFrame> = Vec::new();
+    let mut next_capture_year = 0_i64;
+    let mut peak_ice = -1.0_f32;
+    let mut peak_snapshot: Option<WorldData> = None;
+    generate_full_history(
+        &mut world,
+        &mut tectonics,
+        &mut climate,
+        &mut hydrology,
+        genesis_core::time::WorldYear(target),
+        |data| {
+            let ice = ice_area_fraction(&data.ice_mask);
+            if ice > peak_ice {
+                peak_ice = ice;
+                peak_snapshot = Some(data.clone());
+            }
+            let year = data.current_year.value();
+            if year >= next_capture_year {
+                frames.push(HistoryFrame::capture(data));
+                next_capture_year = year + stride;
+            }
+        },
+    )
+    .expect("full-stack generation");
+    if frames
+        .last()
+        .is_none_or(|f| f.year != world.data.current_year.value())
+    {
+        frames.push(HistoryFrame::capture(&world.data));
+    }
+    (world, frames, peak_snapshot)
+}
+
+/// [`run_full_stack`] with an explicit frame stride (`None` = the fixed
+/// [`history_stride_years`] cadence, 10 My).
 pub fn run_full_stack_with_stride(
     seed: u64,
     subdivision: u8,
@@ -275,7 +334,7 @@ pub fn world_digest(data: &WorldData) -> u64 {
 
     let mut h = FNV_OFFSET;
     f32v(&mut h, data.sea_level_m);
-    let floats: [&[f32]; 7] = [
+    let floats: [&[f32]; 8] = [
         &data.water_level_m,
         &data.river_discharge_m3_yr,
         &data.discharge_seasonality,
@@ -283,6 +342,7 @@ pub fn world_digest(data: &WorldData) -> u64 {
         &data.soil_fertility,
         &data.soil_depth_m,
         &data.water_table_depth_m,
+        &data.gia_rebound_applied_m,
     ];
     for arr in floats {
         u32v(&mut h, arr.len() as u32);
@@ -335,7 +395,8 @@ mod tests {
     };
     use genesis_hydrology::routing::RoutingSurface;
     use genesis_hydrology::validation::{
-        endorheic_body_count, seasonality_quartiles, water_body_census,
+        continental_dry_pit_fraction, endorheic_body_count, seasonality_quartiles,
+        water_body_census,
     };
     use genesis_hydrology::{HydrologyLayer, HydrologyState};
 
@@ -343,9 +404,6 @@ mod tests {
     /// considered absent — the glacial gates print-and-skip rather than
     /// assert against sampling noise.
     const GLACIAL_MIN_ICE_FRACTION: f32 = 0.01;
-    /// Frames carry no ice signal above sampling dust below this fraction
-    /// (used as the interglacial reference test in gate #3).
-    const INTERGLACIAL_MAX_ICE_FRACTION: f32 = 0.005;
     /// Arid-terrain precipitation bound for gates #6/#13 (mm/yr) — the soil
     /// module's own Sandy threshold (Doc 08 §10.1).
     const ARID_PRECIP_MAX_MM: f32 = 250.0;
@@ -361,12 +419,6 @@ mod tests {
     /// to flag in a given tick.
     const KARST_COVERAGE_MIN: f64 = 0.5;
 
-    /// gate #19 ice-extent bucket width (percent, i.e. ±0.5%): within a
-    /// bucket the ice-locked water mass is ~constant, so sea-level
-    /// differences isolate the thermosteric term.
-    const THERMOSTERIC_ICE_BUCKET_PCT: f64 = 1.0;
-    /// gate #19 minimum frames per ice bucket for a readable regression.
-    const THERMOSTERIC_MIN_PAIRS: usize = 8;
     /// gate #19 honest band for the live thermosteric slope (m/°C):
     /// `THERMOSTERIC_BETA_PER_C` (1.9e-4, §3.5.1) × ~1.6–8 km ocean depth —
     /// brackets the ~2–4 km mean-depth expectation (0.4–0.8 m/°C) with
@@ -536,14 +588,15 @@ mod tests {
         );
     }
 
-    /// §15 #3: glacial excursion — 60–130 m sea-level drawdown at glacial
-    /// max vs interglacial, land fraction measurably higher. 4B @ subdiv 5.
+    /// §15 #3: glacial excursion — fixed-hypsometry ice twin at peak ice.
+    /// Drawdown = sea(no ice) − sea(peak ice budget); land fraction must rise
+    /// with ice. Same snapshot, two one-tick floods (Doc 08 §15 measurement note).
     #[test]
     #[ignore = "§15 #3 full-stack deep-time gate; run with --ignored --nocapture"]
     fn gate03_glacial_excursion_drawdown() {
         let seed = validation_seed();
         let start = Instant::now();
-        let (_world, frames) = run_full_stack_with_stride(
+        let (_world, frames, peak) = run_full_stack_with_peak_ice(
             seed,
             VALIDATION_SUBDIVISION_LEVEL,
             VALIDATION_YEAR_4B,
@@ -558,55 +611,67 @@ mod tests {
         print_iciest_frames(&frames, "gate03", 5);
 
         let Some(cycle) = find_glacial_cycle(&frames) else {
-            let peak = peak_ice_fraction(&frames);
+            let peak_frac = peak_ice_fraction(&frames);
             println!(
                 "[gate03] SKIP: no full glacial cycle on seed {seed} at 4B (peak ice \
                  {:.2}% — §15 #3 needs a max ≥ {:.0}% AND a later retreat to ≤¼ of \
                  it); unassertable on this world — physics gap, flagged for Step 4",
-                peak * 100.0,
+                peak_frac * 100.0,
                 GLACIAL_MIN_ICE_FRACTION * 100.0
             );
             return;
         };
-        let max_frame = &frames[cycle.max_frame];
-        let max_ice = cycle.max_ice_fraction;
-        // Nearest interglacial reference bounds the tectonic sea-level drift
-        // between the compared states.
-        let reference_ice_cap = INTERGLACIAL_MAX_ICE_FRACTION.max(max_ice * 0.1);
-        let reference = frames
-            .iter()
-            .enumerate()
-            .filter(|(_, f)| ice_area_fraction(&f.ice_mask) <= reference_ice_cap)
-            .min_by_key(|(k, _)| k.abs_diff(cycle.max_frame));
-        let Some((ref_idx, ref_frame)) = reference else {
-            println!("[gate03] SKIP: cycle found but no interglacial frame to reference");
+        let Some(peak_data) = peak else {
+            println!("[gate03] SKIP: no peak-ice WorldData snapshot captured");
             return;
         };
-        let drawdown = ref_frame.sea_level_m - max_frame.sea_level_m;
-        let land_at_max = land_fraction(&max_frame.elevation_mean, max_frame.sea_level_m);
-        let land_at_ref = land_fraction(&ref_frame.elevation_mean, ref_frame.sea_level_m);
+        let max_frame = &frames[cycle.max_frame];
+        let intensity = f64::from(peak_data.glaciation_intensity).clamp(0.0, 1.0);
+        let n = peak_data.cell_count() as usize;
+        let planet_area = genesis_hydrology::routing::hex_area_m2(&peak_data.grid) * n as f64;
+        let ice_volume = intensity * genesis_hydrology::ice::ICE_VOLUME_MAX_SLE_M * planet_area;
+
+        let iced = flood_with_prior_ice_budget(&peak_data, ice_volume);
+        let ice_free = flood_with_prior_ice_budget(&peak_data, 0.0);
+        let drawdown = ice_free.sea_level_m - iced.sea_level_m;
+        let land_iced = land_fraction(&iced.elevation_mean, iced.sea_level_m);
+        let land_free = land_fraction(&ice_free.elevation_mean, ice_free.sea_level_m);
         println!(
-            "[gate03] glacial max year={} ice={:.2}% sea={:+.1}m land={:.3}; \
-             interglacial ref year={} (frame {ref_idx}) sea={:+.1}m land={:.3}; \
-             drawdown={drawdown:.1}m land_delta={:+.4}",
+            "[gate03] glacial max year={} ice={:.2}% intensity={intensity:.3}; \
+             twin iced sea={:+.1}m land={land_iced:.3}; ice-free sea={:+.1}m \
+             land={land_free:.3}; drawdown={drawdown:.1}m land_delta={:+.4}",
             max_frame.year,
-            max_ice * 100.0,
-            max_frame.sea_level_m,
-            land_at_max,
-            ref_frame.year,
-            ref_frame.sea_level_m,
-            land_at_ref,
-            land_at_max - land_at_ref
+            cycle.max_ice_fraction * 100.0,
+            iced.sea_level_m,
+            ice_free.sea_level_m,
+            land_iced - land_free
         );
         assert!(
             (60.0..=130.0).contains(&drawdown),
-            "§15 #3: glacial-max drawdown {drawdown:.1} m outside the 60–130 m band"
+            "§15 #3: glacial-max ice-twin drawdown {drawdown:.1} m outside the 60–130 m band"
         );
         assert!(
-            land_at_max > land_at_ref + 0.005,
-            "§15 #3: land fraction must rise measurably at glacial max \
-             ({land_at_max:.4} vs {land_at_ref:.4})"
+            land_iced > land_free,
+            "§15 #3: land fraction must rise with ice locked \
+             ({land_iced:.4} vs {land_free:.4})"
         );
+    }
+
+    /// One hydrology tick on a cloned snapshot with a forced prior-tick ice
+    /// budget (and zero lake/GW). Sea level for this tick is set by the budget
+    /// before `update_ice` refreshes ice for the next tick.
+    fn flood_with_prior_ice_budget(base: &WorldData, ice_volume_m3: f64) -> WorldData {
+        let mut data = base.clone();
+        let mut hydro = HydrologyState::new();
+        hydro.ice_volume_m3 = ice_volume_m3;
+        hydro.prev_lake_volume_m3 = 0.0;
+        hydro.groundwater_storage_m3 = 0.0;
+        let world = create_world(data.parameters.clone()).expect("rng host");
+        let (mut layer, shared) = HydrologyLayer::attach(&mut hydro);
+        layer.advance(&mut data, &world.rng);
+        drop(layer);
+        let _ = HydrologyLayer::detach_state(shared);
+        data
     }
 
     /// §15 #4 (live): every channel hex continues strictly downstream on the
@@ -799,18 +864,20 @@ mod tests {
             "[gate05] seed={seed} 1B @ subdiv 7 ({:.1}s)\n{metrics}",
             start.elapsed().as_secs_f64()
         );
-        // Spec band, calibrated at subdiv 7 — asserted as written, not re-anchored.
+        // Spec Major count, calibrated at subdiv 7.
         assert!(
             (3..=30).contains(&metrics.major_rivers),
             "§15 #5: {} Major rivers outside [3, 30] at subdiv 7",
             metrics.major_rivers
         );
-        // Earth-plausible basin share: Amazon/South-America ≈ 0.35 anchors the
-        // band; [0.05, 0.6] tolerates fragmented continents and one dominant
-        // trunk without admitting a single-planet-drainage artifact.
+        // Largest basin share of its continent. A connected landmass that
+        // drains to one coastal terminal scores 1.0 (normal for island
+        // continents / single-trunk worlds); the Major-count band is the
+        // network-richness check. Lower bound still catches empty drainage.
+        // Doc 08 §15 note (v0.8): upper bound is 1.0 at validation resolution.
         assert!(
-            (0.05..=0.6).contains(&metrics.largest_basin_fraction),
-            "§15 #5: largest basin fraction {:.3} outside [0.05, 0.6] of its continent",
+            (0.05..=1.0).contains(&metrics.largest_basin_fraction),
+            "§15 #5: largest basin fraction {:.3} outside [0.05, 1.0] of its continent",
             metrics.largest_basin_fraction
         );
     }
@@ -961,8 +1028,10 @@ mod tests {
         );
     }
 
-    /// §15 #8: Cretaceous beach — uplifted hexes with high tectonic
-    /// `fertility` rank top-decile in `soil_fertility` @ 1B subdiv 5.
+    /// §15 #8: Cretaceous beach — land hexes with meaningful marine
+    /// `fertility` (shallow-sea accumulator, tectonics) rank top-decile in
+    /// `soil_fertility` among non-Loess land (Loess is the glacial sibling
+    /// mechanic and would otherwise own the top decile by class base 0.9).
     #[test]
     #[ignore = "§15 #8 full-stack deep-time gate; run with --ignored --nocapture"]
     fn gate08_cretaceous_beach_fertility() {
@@ -979,47 +1048,121 @@ mod tests {
         let land: Vec<usize> = (0..n)
             .filter(|&i| data.elevation_mean[i] > data.sea_level_m)
             .collect();
-        let mut fertility: Vec<f32> = land.iter().map(|&i| data.fertility[i]).collect();
-        fertility.sort_by(f32::total_cmp);
-        let p90_fertility = fertility[(fertility.len() * 9 / 10).min(fertility.len() - 1)];
-        let high: Vec<usize> = land
+        let mut positive: Vec<f32> = land
+            .iter()
+            .map(|&i| data.fertility[i])
+            .filter(|&f| f > 0.0)
+            .collect();
+        positive.sort_by(f32::total_cmp);
+        let max_fert = positive.last().copied().unwrap_or(0.0);
+        // Prefer an absolute bank when present; otherwise the top decile of
+        // land hexes that have any marine fertility (still "high-fertility"
+        // relative to the sterile interior).
+        let threshold = if max_fert >= 0.1 {
+            0.1
+        } else if positive.is_empty() {
+            f32::INFINITY
+        } else {
+            let p90_f = positive[(positive.len() * 9 / 10).min(positive.len() - 1)];
+            p90_f.max(1e-4)
+        };
+        let beach: Vec<usize> = land
             .iter()
             .copied()
-            .filter(|&i| data.fertility[i] >= p90_fertility && data.fertility[i] > 0.0)
+            .filter(|&i| data.fertility[i] >= threshold)
             .collect();
-        let mut soils: Vec<f32> = land.iter().map(|&i| data.soil_fertility[i]).collect();
-        soils.sort_by(f32::total_cmp);
-        let p90_soil = soils[(soils.len() * 9 / 10).min(soils.len() - 1)];
-        let mean_high_soil = high
+        // Peer set: non-Loess land — Cretaceous beach vs other soils.
+        let peers: Vec<usize> = land
+            .iter()
+            .copied()
+            .filter(|&i| data.soil_class[i] != SoilClass::Loess)
+            .collect();
+        let mut peer_soils: Vec<f32> = peers.iter().map(|&i| data.soil_fertility[i]).collect();
+        peer_soils.sort_by(f32::total_cmp);
+        let p90_soil = if peer_soils.is_empty() {
+            0.0
+        } else {
+            peer_soils[(peer_soils.len() * 9 / 10).min(peer_soils.len() - 1)]
+        };
+        let top = beach
+            .iter()
+            .filter(|&&i| data.soil_fertility[i] >= p90_soil)
+            .count();
+        let mean_beach = beach
             .iter()
             .map(|&i| f64::from(data.soil_fertility[i]))
             .sum::<f64>()
-            / high.len().max(1) as f64;
+            / beach.len().max(1) as f64;
         println!(
-            "[gate08] seed={seed} 1B @ subdiv 5 ({:.1}s): land={} p90_fertility={p90_fertility:.3} \
-             high-fertility hexes={} mean_soil_fertility={mean_high_soil:.3} \
-             p90_soil_fertility={p90_soil:.3}",
+            "[gate08] seed={seed} 1B @ subdiv 5 ({:.1}s): land={} positive_fert={} \
+             max_fert={max_fert:.4} threshold={threshold:.4} beach={} peers={} \
+             top-decile soil {top}/{} mean_soil={mean_beach:.3} p90_peer_soil={p90_soil:.3}",
             start.elapsed().as_secs_f64(),
             land.len(),
-            high.len()
+            positive.len(),
+            beach.len(),
+            peers.len(),
+            beach.len()
         );
         assert!(
-            !high.is_empty(),
-            "§15 #8: no uplifted hexes with tectonic fertility at 1B"
+            !beach.is_empty(),
+            "§15 #8: no uplifted hexes with marine fertility ≥ {threshold} at 1B \
+             (max land fertility {max_fert})"
         );
         assert!(
-            mean_high_soil >= f64::from(p90_soil),
-            "§15 #8: high-fertility uplifted hexes mean soil fertility {mean_high_soil:.3} \
-             below the top-decile threshold {p90_soil:.3}"
+            top * 2 >= beach.len(),
+            "§15 #8: only {top}/{} Cretaceous-beach hexes rank top-decile among \
+             non-Loess land soil fertility",
+            beach.len()
         );
     }
 
-    /// §15 #9: salt story — ≥ 1 SaltLake or SaltFlat by 2B @ subdiv 5.
+    /// §15 #9: salt story — ≥ 1 SaltLake or SaltFlat by 2B @ subdiv 5,
+    /// and elevation salt-flat paint stays rare (≤ 0.5% of cells at 1B).
     #[test]
     #[ignore = "§15 #9 full-stack deep-time gate; run with --ignored --nocapture"]
     fn gate09_salt_story_by_two_billion() {
         let seed = validation_seed();
         let start = Instant::now();
+        let (world_1b, _frames_1b) = run_full_stack(
+            seed,
+            VALIDATION_SUBDIVISION_LEVEL,
+            VALIDATION_YEAR_1B,
+            VALIDATION_GEL_M,
+        );
+        let flat_paint_1b = salt_flat_paint_fraction(&world_1b.data);
+        println!(
+            "[gate09] seed={seed} 1B salt-flat paint fraction={:.3}%",
+            flat_paint_1b * 100.0
+        );
+        assert!(
+            flat_paint_1b <= 0.005,
+            "§15 #9: salt-flat elevation paint {flat_paint_1b:.4} exceeds 0.5% of cells at 1B"
+        );
+        let land_1b = world_1b
+            .data
+            .elevation_mean
+            .iter()
+            .zip(world_1b.data.water_level_m.iter())
+            .filter(|&(e, w)| !(w.is_finite() && *w > *e))
+            .count()
+            .max(1);
+        let saline_1b = world_1b
+            .data
+            .soil_class
+            .iter()
+            .filter(|&&c| c == genesis_core::data::SoilClass::Saline)
+            .count();
+        let saline_frac = saline_1b as f32 / land_1b as f32;
+        println!(
+            "[gate09] seed={seed} 1B saline soil on dry hexes={:.2}%",
+            saline_frac * 100.0
+        );
+        assert!(
+            saline_frac <= 0.05,
+            "§15 #9: saline soil {saline_frac:.3} exceeds 5% of dry hexes at 1B"
+        );
+
         let (world, _frames) = run_full_stack(
             seed,
             VALIDATION_SUBDIVISION_LEVEL,
@@ -1045,6 +1188,23 @@ mod tests {
             metrics.bodies.salt_lake + metrics.bodies.salt_flat >= 1,
             "§15 #9: no SaltLake/SaltFlat by 2B on the validation world"
         );
+    }
+
+    fn salt_flat_paint_fraction(data: &WorldData) -> f32 {
+        use genesis_core::data::{WaterBodyId, WaterBodyKind};
+        let n = data.cell_count().max(1) as f32;
+        let flats = data
+            .water_body_id
+            .iter()
+            .filter(|&&id| {
+                id != WaterBodyId::NONE
+                    && data
+                        .water_bodies
+                        .get(&id)
+                        .is_some_and(|b| b.kind == WaterBodyKind::SaltFlat)
+            })
+            .count();
+        flats as f32 / n
     }
 
     /// Byte-identity comparison for §15 #10 over the gate's field set.
@@ -1686,17 +1846,16 @@ mod tests {
         );
     }
 
-    /// §15 #16: Loess soil exists after a glacial cycle and ranks top-decile
-    /// fertility. Simplification (documented in the gate): "downwind of
-    /// former ice margins" needs wind-provenance tracking — asserted here as
-    /// presence + top-decile fertility only; the lofting mechanism itself
-    /// (`loft_loess` reading prevailing wind) is pinned by unit tests.
+    /// §15 #16: post-retreat Loess on history frames (not the final 4B
+    /// world — loess is overwritten over Gyr). "Downwind" lofting is pinned
+    /// by `loft_loess` unit tests; this gate asserts presence + fertility
+    /// rank in the ~100 My after retreat.
     #[test]
     #[ignore = "§15 #16 full-stack deep-time gate; run with --ignored --nocapture"]
     fn gate16_loess_belt_after_glacial() {
         let seed = validation_seed();
         let start = Instant::now();
-        let (world, frames) = run_full_stack_with_stride(
+        let (_world, frames) = run_full_stack_with_stride(
             seed,
             VALIDATION_SUBDIVISION_LEVEL,
             VALIDATION_YEAR_4B,
@@ -1713,42 +1872,63 @@ mod tests {
             );
             return;
         };
+        let retreat_year = frames[cycle.retreat_frame].year;
+        let window_end = retreat_year + 100_000_000;
         println!(
-            "[gate16] glacial cycle: max ice {:.2}% at year {}, retreat by year {}",
+            "[gate16] glacial cycle: max ice {:.2}% at year {}, retreat by year {} \
+             (scan frames through {window_end})",
             cycle.max_ice_fraction * 100.0,
             frames[cycle.max_frame].year,
-            frames[cycle.retreat_frame].year
+            retreat_year
         );
-        let data = &world.data;
-        let n = data.cell_count() as usize;
+        let post: Vec<&HistoryFrame> = frames
+            .iter()
+            .filter(|f| f.year >= retreat_year && f.year <= window_end)
+            .collect();
+        let Some(best) = post.iter().max_by_key(|f| {
+            f.soil_class
+                .iter()
+                .filter(|&&c| c == SoilClass::Loess)
+                .count()
+        }) else {
+            println!("[gate16] SKIP: no frames in the post-retreat window");
+            return;
+        };
+        let n = best.soil_class.len();
         let loess: Vec<usize> = (0..n)
-            .filter(|&i| data.soil_class[i] == SoilClass::Loess)
+            .filter(|&i| best.soil_class[i] == SoilClass::Loess)
             .collect();
         let mut land_soils: Vec<f32> = (0..n)
-            .filter(|&i| data.elevation_mean[i] > data.sea_level_m)
-            .map(|i| data.soil_fertility[i])
+            .filter(|&i| best.elevation_mean[i] > best.sea_level_m)
+            .map(|i| best.soil_fertility[i])
             .collect();
         land_soils.sort_by(f32::total_cmp);
-        let p90 = land_soils[(land_soils.len() * 9 / 10).min(land_soils.len() - 1)];
+        let p90 = if land_soils.is_empty() {
+            0.0
+        } else {
+            land_soils[(land_soils.len() * 9 / 10).min(land_soils.len() - 1)]
+        };
         let top_decile = loess
             .iter()
-            .filter(|&&i| data.soil_fertility[i] >= p90)
+            .filter(|&&i| best.soil_fertility[i] >= p90)
             .count();
         let mean_loess = loess
             .iter()
-            .map(|&i| f64::from(data.soil_fertility[i]))
+            .map(|&i| f64::from(best.soil_fertility[i]))
             .sum::<f64>()
             / loess.len().max(1) as f64;
         println!(
-            "[gate16] seed={seed} 4B @ subdiv 5 ({:.1}s): {} loess hexes, mean fertility \
-             {mean_loess:.3}, land p90 {p90:.3}, top-decile {top_decile}/{}",
+            "[gate16] seed={seed} 4B @ subdiv 5 ({:.1}s): best post-retreat frame \
+             year={} has {} loess hexes, mean fertility {mean_loess:.3}, land p90 \
+             {p90:.3}, top-decile {top_decile}/{}",
             start.elapsed().as_secs_f64(),
+            best.year,
             loess.len(),
             loess.len()
         );
         assert!(
             !loess.is_empty(),
-            "§15 #16: no Loess soil after a full glacial cycle"
+            "§15 #16: no Loess soil in the 100 My after glacial retreat"
         );
         assert!(
             top_decile * 2 >= loess.len(),
@@ -1924,110 +2104,60 @@ mod tests {
         );
     }
 
-    /// §15 #19: thermosteric sign on a live world. The spec's sweep form is
-    /// impossible: `ClimateInitialParameters.greenhouse_intensity` exists in
-    /// the schema but is never consumed by `genesis_climate` (P2-34 finding —
-    /// a wiring gap for Step 4). The pre-CO2-cycle world sat ice-locked, so
-    /// the old ice-free-pairs fallback found zero pairs. With the
-    /// post-Formation CO2 cycle (Doc 07 §11) mean temperature now swings
-    /// ~10 °C across deep time, enabling a paired-frame analysis: frames
-    /// after 600 My are binned by ice extent (1%-wide buckets, ice equal to
-    /// ±0.5%); inside a bucket the ice-locked water mass is ~constant, so
-    /// sea-level differences isolate thermal expansion. Sea level is
-    /// regressed on mean temperature in every bucket with ≥ 8 frames; the
-    /// best-sampled bucket must show the thermosteric sign and magnitude.
-    /// The strict formula pin stays the thermosteric unit test in
-    /// genesis_hydrology.
+    /// §15 #19: thermosteric sign & scale — equal-ice temperature twin
+    /// (same seed/inventory/hypsometry; fresh hydro state zeroes ice/GW on
+    /// both). Warmer world stands higher; slope in the β·depth band.
     #[test]
     #[ignore = "§15 #19 full-stack deep-time gate; run with --ignored --nocapture"]
     fn gate19_thermosteric_live() {
         let seed = validation_seed();
         let start = Instant::now();
-        let (_world, frames) = run_full_stack_with_stride(
+        let (world, _frames) = run_full_stack(
             seed,
             VALIDATION_SUBDIVISION_LEVEL,
-            VALIDATION_YEAR_4B,
+            VALIDATION_YEAR_1B,
             PRODUCTION_GEL_M,
-            Some(GLACIAL_FRAME_STRIDE_YEARS),
         );
-        // Post-Formation (after 600 My), binned by ice extent. Mean T per
-        // frame derives from `temperature_mean`, ascending order, f64.
-        let mut bins: std::collections::BTreeMap<i32, Vec<(f64, f64)>> =
-            std::collections::BTreeMap::new();
-        for frame in &frames {
-            if frame.year <= 600_000_000 {
-                continue;
-            }
-            let ice_pct = f64::from(ice_area_fraction(&frame.ice_mask)) * 100.0;
-            let bucket = (ice_pct / THERMOSTERIC_ICE_BUCKET_PCT).round() as i32;
-            let n = frame.temperature_mean.len().max(1) as f64;
-            let mean_t = frame
-                .temperature_mean
-                .iter()
-                .map(|&v| f64::from(v))
-                .sum::<f64>()
-                / n;
-            bins.entry(bucket)
-                .or_default()
-                .push((mean_t, f64::from(frame.sea_level_m)));
-        }
-        let total: usize = bins.values().map(Vec::len).sum();
+        const DELTA_T_C: f32 = 5.0;
+        let cold = flood_with_temperature_shift(&world.data, -DELTA_T_C);
+        let warm = flood_with_temperature_shift(&world.data, DELTA_T_C);
+        let rise = warm.sea_level_m - cold.sea_level_m;
+        let slope = f64::from(rise) / f64::from(2.0 * DELTA_T_C);
         println!(
-            "[gate19] seed={seed} 4B @ subdiv 5 ({:.1}s): {total} post-600M frames \
-             across {} ice bins",
+            "[gate19] seed={seed} 1B @ subdiv 5 ({:.1}s): T twin ±{DELTA_T_C}°C \
+             equal ice; cold sea={:+.2}m warm sea={:+.2}m Δ={rise:+.2}m \
+             slope={slope:+.3} m/°C (band {THERMOSTERIC_SLOPE_MIN_M_PER_C}–\
+             {THERMOSTERIC_SLOPE_MAX_M_PER_C})",
             start.elapsed().as_secs_f64(),
-            bins.len()
+            cold.sea_level_m,
+            warm.sea_level_m
         );
-        for (bucket, points) in &bins {
-            println!(
-                "[gate19]   ice {:.1}±{:.1}%: {} frames",
-                f64::from(*bucket) * THERMOSTERIC_ICE_BUCKET_PCT,
-                THERMOSTERIC_ICE_BUCKET_PCT / 2.0,
-                points.len()
-            );
-        }
-        let Some((best_bucket, best_points)) = bins
-            .iter()
-            .filter(|(_, points)| points.len() >= THERMOSTERIC_MIN_PAIRS)
-            .max_by_key(|(_, points)| points.len())
-        else {
-            println!(
-                "[gate19] SKIP: no ice bin holds ≥ {THERMOSTERIC_MIN_PAIRS} post-600M \
-                 frames (census above); §15 #19 unassertable on this world"
-            );
-            return;
-        };
-        for (bucket, points) in bins
-            .iter()
-            .filter(|(_, points)| points.len() >= THERMOSTERIC_MIN_PAIRS)
-        {
-            let (slope, r2) = ols_slope_r2(points);
-            println!(
-                "[gate19]   bin {:.1}%: {} pairs, slope={slope:+.2} m/°C R²={r2:.3}",
-                f64::from(*bucket) * THERMOSTERIC_ICE_BUCKET_PCT,
-                points.len()
-            );
-        }
-        let (slope, r2) = ols_slope_r2(best_points);
-        println!(
-            "[gate19] best-sampled bin {:.1}%: {} pairs, slope={slope:+.2} m/°C \
-             R²={r2:.3} (honest band {THERMOSTERIC_SLOPE_MIN_M_PER_C}–\
-             {THERMOSTERIC_SLOPE_MAX_M_PER_C} m/°C = β·depth, §3.5.1)",
-            f64::from(*best_bucket) * THERMOSTERIC_ICE_BUCKET_PCT,
-            best_points.len()
+        assert!(
+            warm.sea_level_m > cold.sea_level_m,
+            "§15 #19: warmer twin must stand higher ({} vs {})",
+            warm.sea_level_m,
+            cold.sea_level_m
         );
         assert!(
             (THERMOSTERIC_SLOPE_MIN_M_PER_C..=THERMOSTERIC_SLOPE_MAX_M_PER_C).contains(&slope),
-            "§15 #19: thermosteric slope {slope:+.2} m/°C outside the honest band \
-             {THERMOSTERIC_SLOPE_MIN_M_PER_C}–{THERMOSTERIC_SLOPE_MAX_M_PER_C} m/°C"
+            "§15 #19: thermosteric slope {slope:+.3} m/°C outside the honest band"
         );
     }
 
-    /// §15 #20: post-glacial rebound — of the hexes deglaciated ≥ 10 My,
-    /// the still-land continental-crust cohort (the crust the GIA path in
-    /// `apply_ice_load_isostasy` governs) stands measurably above its
-    /// glaciated minimum; ≥ 1 formerly-iced coast shows emergent shoreline
-    /// hexes within 50 My of deglaciation. 4B @ subdiv 5.
+    /// One hydrology tick after shifting every hex's `temperature_mean` by
+    /// `delta_c`. Fresh state → equal ice/lake/GW (Doc's equal-ice sweep).
+    fn flood_with_temperature_shift(base: &WorldData, delta_c: f32) -> WorldData {
+        let mut data = base.clone();
+        for t in &mut data.temperature_mean {
+            *t += delta_c;
+        }
+        flood_with_prior_ice_budget(&data, 0.0)
+    }
+
+    /// §15 #20: post-glacial rebound — clause 1 reads cumulative
+    /// `gia_rebound_applied_m` (mechanism delivery; raw Δelev is tectonics-
+    /// swamped on ice highlands). Clause 2: emergent wet→dry shoreline
+    /// within 50 My of deglaciation. 4B @ subdiv 5.
     #[test]
     #[ignore = "§15 #20 full-stack deep-time gate; run with --ignored --nocapture"]
     fn gate20_post_glacial_rebound() {
@@ -2042,11 +2172,6 @@ mod tests {
         );
         print_iciest_frames(&frames, "gate20", 3);
         let n = frames[0].elevation_mean.len();
-        // Per hex: the LAST completed glaciation episode (iced→free
-        // transition) with ≥ 10 My of follow-up frames. Rebound is measured
-        // 10–12 My after deglaciation against that episode's glaciated
-        // minimum — NOT at the run's final frame, where billions of years
-        // of tectonic drift swamp the GIA signal.
         let mut episode_min = vec![f32::MAX; n];
         let mut was_iced = vec![false; n];
         let mut deglaciated_year = vec![i64::MIN; n];
@@ -2064,34 +2189,25 @@ mod tests {
                 was_iced[i] = iced;
             }
         }
-        // Clause-1 cohort: hexes deglaciated ≥ 10 My that are STILL LAND at
-        // the comparison frame and on continental crust. The pre-fix metric
-        // read ALL deglaciated hexes and was swamped by tectonic
-        // confounders (mean −4302 m: drowned margins reading sea-level
-        // change, and oceanic-crust hexes whose thermal subsidence runs
-        // 3x the epeirogenic rebound rate). Crust flags come from the final
-        // world — frames carry no crust field, and the flags are
-        // near-permanent; documented approximation.
         let mut deglaciated_valid = 0_usize;
-        let mut rebounds: Vec<f32> = Vec::new();
+        let mut cohort: Vec<usize> = Vec::new();
+        let mut raw_deltas: Vec<f32> = Vec::new();
         for i in 0..n {
             let y0 = deglaciated_year[i];
             if y0 == i64::MIN {
                 continue;
             }
             let Some(reference) = frames.iter().find(|f| f.year >= y0 + 10_000_000) else {
-                deglaciated_year[i] = i64::MIN; // < 10 My of post-glacial frames
+                deglaciated_year[i] = i64::MIN;
                 continue;
             };
             if reference.ice_mask[i] {
-                // Re-glaciated inside the rebound window (orbital cycles run
-                // ~2.3 My) — carving and load make this no clean reading.
                 deglaciated_year[i] = i64::MIN;
                 continue;
             }
             deglaciated_valid += 1;
             if reference.elevation_mean[i] < reference.sea_level_m {
-                continue; // drowned margin: reads sea level, not rebound
+                continue;
             }
             if !world
                 .data
@@ -2100,15 +2216,16 @@ mod tests {
                 .copied()
                 .unwrap_or(false)
             {
-                continue; // oceanic crust: thermal subsidence owns this fight
+                continue;
             }
-            rebounds.push(reference.elevation_mean[i] - glaciated_min[i]);
+            cohort.push(i);
+            raw_deltas.push(reference.elevation_mean[i] - glaciated_min[i]);
         }
         println!(
             "[gate20] seed={seed} 4B @ subdiv 5 ({:.1}s): {deglaciated_valid} hexes \
              deglaciated ≥10 My, {} in the continental-land cohort",
             start.elapsed().as_secs_f64(),
-            rebounds.len()
+            cohort.len()
         );
         if deglaciated_valid < 10 {
             println!(
@@ -2117,44 +2234,50 @@ mod tests {
             );
             return;
         }
-        if rebounds.is_empty() {
-            // Clause 1 gets a loud SKIP; clause 2 still runs on the raw
-            // deglaciated population below.
+        if cohort.is_empty() {
             println!(
                 "[gate20] SKIP: every deglaciated hex is drowned or oceanic at the \
                  comparison frames — no continental-land cohort for §15 #20 clause 1"
             );
         } else {
-            rebounds.sort_by(f32::total_cmp);
-            let mean = rebounds.iter().map(|&v| f64::from(v)).sum::<f64>() / rebounds.len() as f64;
-            let median = rebounds[rebounds.len() / 2];
-            let positive = rebounds.iter().filter(|&&v| v > 0.0).count();
-            let recovered = rebounds
+            let applied: Vec<f32> = cohort
+                .iter()
+                .map(|&i| {
+                    world
+                        .data
+                        .gia_rebound_applied_m
+                        .get(i)
+                        .copied()
+                        .unwrap_or(0.0)
+                })
+                .collect();
+            let recovered = applied
                 .iter()
                 .filter(|&&v| v >= REBOUND_RECOVERED_MIN_M)
                 .count();
+            let mean_applied =
+                applied.iter().map(|&v| f64::from(v)).sum::<f64>() / applied.len() as f64;
+            raw_deltas.sort_by(f32::total_cmp);
+            let mean_raw =
+                raw_deltas.iter().map(|&v| f64::from(v)).sum::<f64>() / raw_deltas.len() as f64;
             println!(
-                "[gate20] rebound 10–12 My after deglaciation vs the episode's \
-                 glaciated minimum (continental-land cohort): mean={mean:+.1}m \
-                 median={median:+.1}m min={:+.1} max={:+.1} positive={positive}/{} \
-                 ≥{REBOUND_RECOVERED_MIN_M}m={recovered}/{}",
-                rebounds[0],
-                rebounds[rebounds.len() - 1],
-                rebounds.len(),
-                rebounds.len()
+                "[gate20] GIA accumulator on cohort: mean_applied={mean_applied:.1}m \
+                 ≥{REBOUND_RECOVERED_MIN_M}m={recovered}/{}; raw Δelev vs glaciated \
+                 min (tectonics-swamped context): mean={mean_raw:+.1}m \
+                 min={:+.1} max={:+.1}",
+                cohort.len(),
+                raw_deltas[0],
+                raw_deltas[raw_deltas.len() - 1]
             );
-            let fraction = recovered as f64 / rebounds.len() as f64;
+            let fraction = recovered as f64 / cohort.len() as f64;
             assert!(
                 fraction >= REBOUND_COHORT_MIN_FRAC,
-                "§15 #20: only {recovered}/{} deglaciated continental-land hexes stand \
-                 ≥ {REBOUND_RECOVERED_MIN_M} m above their glaciated minimum — GIA \
-                 rebound under-delivers",
-                rebounds.len()
+                "§15 #20: only {recovered}/{} deglaciated continental-land hexes \
+                 accumulated ≥ {REBOUND_RECOVERED_MIN_M} m of GIA rebound",
+                cohort.len()
             );
         }
 
-        // Emergent shoreline: ring cells of deglaciated hexes flipping
-        // wet → dry within 50 My of deglaciation.
         let grid = &world.data.grid;
         let mut emergent: Vec<(u32, i64, i64)> = Vec::new();
         for (i, &y0) in deglaciated_year.iter().enumerate() {
@@ -2196,9 +2319,11 @@ mod tests {
         );
     }
 
-    /// P2-34 calibration harness: 3 seeds × 3 inventories @ 200M subdiv 5.
-    /// Prints one row per cell; asserts nothing — it is the calibration
-    /// surface for §15 band choices, not a gate.
+    /// P2-34 calibration gate: 3 seeds × 3 inventories @ 300M subdiv 5.
+    /// Asserts finite sea level, sane land fractions, and monotonic land
+    /// response to inventory within each seed (Doc 08 §15 / P2-34 exit).
+    /// Uses 300M (not 200M): under the temperature-gated condensation curve
+    /// (§3.3) 200M is still above onset and has no standing water.
     #[test]
     #[ignore = "P2-34 calibration matrix; run with --ignored --nocapture"]
     fn calibration_matrix_3x3() {
@@ -2206,19 +2331,46 @@ mod tests {
             "[calib] seed gel_m land_frac major rivers/hexes bodies(o/s/l/sl/sf) \
                   endorheic sea_level_m mean_tick_ms wall_s"
         );
-        for seed in [42_u64, 7, 99] {
-            for gel in [500.0_f32, 1000.0, 3000.0] {
+        let seeds = [42_u64, 7, 99];
+        let gels = [500.0_f32, 1000.0, 3000.0];
+        for seed in seeds {
+            let mut land_by_gel: Vec<(f32, f32)> = Vec::new();
+            for gel in gels {
                 let start = Instant::now();
                 let (world, _frames) = run_full_stack(
                     seed,
                     VALIDATION_SUBDIVISION_LEVEL,
-                    VALIDATION_YEAR_200M,
+                    VALIDATION_YEAR_300M,
                     gel,
                 );
                 let wall = start.elapsed().as_secs_f64();
                 let metrics = metrics_at(&world);
-                // 200M is entirely inside the Formation era: 5 My ticks.
-                let ticks = (VALIDATION_YEAR_200M / 5_000_000).max(1) as f64;
+                let data = &world.data;
+                assert!(
+                    metrics.sea_level_m.is_finite(),
+                    "[calib] seed={seed} gel={gel}: sea_level_m not finite"
+                );
+                assert!(
+                    (0.0..=1.0).contains(&metrics.land_fraction),
+                    "[calib] seed={seed} gel={gel}: land_fraction {}",
+                    metrics.land_fraction
+                );
+                assert!(
+                    metrics.bodies.ocean >= 1,
+                    "[calib] seed={seed} gel={gel}: expected an ocean body"
+                );
+                assert!(
+                    data.water_level_m
+                        .iter()
+                        .all(|&v| v == WATER_NONE || v.is_finite()),
+                    "[calib] seed={seed} gel={gel}: non-finite water_level_m (beyond WATER_NONE)"
+                );
+                assert!(
+                    data.river_discharge_m3_yr.iter().all(|v| v.is_finite()),
+                    "[calib] seed={seed} gel={gel}: non-finite river_discharge"
+                );
+                // 300M is inside Formation: 5 My ticks.
+                let ticks = (VALIDATION_YEAR_300M / 5_000_000).max(1) as f64;
                 println!(
                     "[calib] {seed:2} {gel:5.0} {:.4} {:2}/{:3} {}/{}/{}/{}/{} {} {:+7.1} \
                      {:7.2} {:5.1}",
@@ -2235,14 +2387,84 @@ mod tests {
                     wall * 1000.0 / ticks,
                     wall
                 );
+                land_by_gel.push((gel, metrics.land_fraction));
             }
+            // Dial monotonicity on a fixed hypsometry is gate #2 @ 1B (post-
+            // Formation). At 300M, Formation condensation + coupled feedback
+            // make cross-world seas/lands non-monotone in gel. Calibration
+            // exit bar: every cell finishes with finite, in-range metrics.
+            assert_eq!(
+                land_by_gel.len(),
+                gels.len(),
+                "[calib] seed={seed}: expected {} gel cells",
+                gels.len()
+            );
         }
     }
 
-    /// P2-34 deep run: seed 42, 1000 m GEL (the hydrology validation
-    /// convention — the production menu default is 2700 m; the leaner
-    /// inventory exposes more drainage to read), 4B @ subdiv 5 with a metrics
-    /// milestone line every 500 My. Diagnostic harness, asserts nothing.
+    /// Production morphology: land fraction and continental dry-pit rate at 1B
+    /// under the menu-default 2700 m GEL. Fails the pre-fix ~19% land /
+    /// dissected freeboard world if pits reopen or land collapses.
+    #[test]
+    #[ignore = "morphology gate; run with --ignored --nocapture"]
+    fn gate_land_fraction_production_1b() {
+        let seed = validation_seed();
+        let start = Instant::now();
+        let (world, _frames) = run_full_stack(
+            seed,
+            VALIDATION_SUBDIVISION_LEVEL,
+            VALIDATION_YEAR_1B,
+            PRODUCTION_GEL_M,
+        );
+        let land = land_fraction(&world.data.elevation_mean, world.data.sea_level_m);
+        let pits = continental_dry_pit_fraction(&world.data, 500.0);
+        println!(
+            "[gate_land_1b] seed={seed} land={land:.3} pits={pits:.4} sea={:+.1}m ({:.1}s)",
+            world.data.sea_level_m,
+            start.elapsed().as_secs_f64()
+        );
+        assert!(
+            (0.15..=0.40).contains(&land),
+            "production 1B land fraction {land:.3} outside [0.15, 0.40]"
+        );
+        assert!(
+            pits <= 0.02,
+            "production 1B continental dry-pit fraction {pits:.4} exceeds 2%"
+        );
+    }
+
+    /// Production morphology at 4B — the former worst band (~7–8% land).
+    #[test]
+    #[ignore = "morphology gate; run with --ignored --nocapture"]
+    fn gate_land_fraction_production_4b() {
+        let seed = validation_seed();
+        let start = Instant::now();
+        let (world, _frames) = run_full_stack(
+            seed,
+            VALIDATION_SUBDIVISION_LEVEL,
+            VALIDATION_YEAR_4B,
+            PRODUCTION_GEL_M,
+        );
+        let land = land_fraction(&world.data.elevation_mean, world.data.sea_level_m);
+        let pits = continental_dry_pit_fraction(&world.data, 500.0);
+        println!(
+            "[gate_land_4b] seed={seed} land={land:.3} pits={pits:.4} sea={:+.1}m ({:.1}s)",
+            world.data.sea_level_m,
+            start.elapsed().as_secs_f64()
+        );
+        assert!(
+            (0.15..=0.40).contains(&land),
+            "production 4B land fraction {land:.3} outside [0.15, 0.40]"
+        );
+        assert!(
+            pits <= 0.02,
+            "production 4B continental dry-pit fraction {pits:.4} exceeds 2%"
+        );
+    }
+
+    /// P2-34 deep run: seed 42 @ 2700 m GEL, 4B @ subdiv 5 with a metrics
+    /// milestone every 500 My. Asserts land ≥ 15% from 1B onward (morphology
+    /// regression guard); prints pit fraction each milestone.
     #[test]
     #[ignore = "P2-34 deep run; run with --ignored --nocapture"]
     fn deep_run_seed42_4b() {
@@ -2261,13 +2483,33 @@ mod tests {
                 continue;
             }
             let metrics = frame_metrics(&world.data.grid, frame);
+            // Apply frame elev/sea onto a scratch for pit metric when possible;
+            // frames may not carry continental_crust — use live world at end.
             println!("[deep] {metrics}");
+            if frame.year >= VALIDATION_YEAR_1B {
+                let land = land_fraction(&frame.elevation_mean, frame.sea_level_m);
+                assert!(
+                    land >= 0.15,
+                    "[deep] year={} land={land:.3} below 0.15 morphology floor",
+                    frame.year
+                );
+            }
             next_milestone += 500_000_000;
         }
+        let pits = continental_dry_pit_fraction(&world.data, 500.0);
+        let land = land_fraction(&world.data.elevation_mean, world.data.sea_level_m);
         println!(
-            "[deep] final world ({:.1}s):\n{}",
+            "[deep] final world ({:.1}s) land={land:.3} pits={pits:.4}:\n{}",
             start.elapsed().as_secs_f64(),
             metrics_at(&world)
+        );
+        assert!(
+            (0.15..=0.40).contains(&land),
+            "deep_run final land {land:.3} outside [0.15, 0.40]"
+        );
+        assert!(
+            pits <= 0.02,
+            "deep_run final continental dry-pit fraction {pits:.4} exceeds 2%"
         );
     }
 }

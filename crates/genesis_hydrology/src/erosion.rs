@@ -20,10 +20,25 @@ pub const K_CHANNEL_PER_YEAR: f64 = 2.0e-7;
 pub const DISCHARGE_NORM_M3_YR: f64 = 1.0e11;
 /// Freeboard land erodes toward (m above sea) — live tectonics constant, mirrored.
 pub const CONTINENTAL_FREEBOARD_M: f32 = 800.0;
+/// Shallow-valley allowance below freeboard for fluvial incision on continental
+/// crust (m). Morphology deviation from Doc 08 §8.2 water-floor: interiors may
+/// not dissect into floodable multi-km pits. Floor = sea + freeboard − this.
+pub const CONTINENTAL_INCISION_ALLOWANCE_M: f32 = 100.0;
 /// Cumulative alluvium before bedrock flips to Sedimentary (§8.3).
 pub const DEPOSITION_THRESHOLD_M: f32 = 500.0;
 /// Relative mass-conservation tolerance (§8.4).
 pub const MASS_CONSERVATION_TOLERANCE_REL: f64 = 1.0e-6;
+
+/// Continental-crust fluvial/glacial floor (m absolute), or `None` for oceanic
+/// crust (caller keeps water-floor incision).
+pub fn continental_fluvial_floor_m(data: &WorldData, hex_i: usize) -> Option<f64> {
+    if !data.continental_crust.get(hex_i).copied().unwrap_or(false) {
+        return None;
+    }
+    Some(f64::from(
+        data.sea_level_m + CONTINENTAL_FREEBOARD_M - CONTINENTAL_INCISION_ALLOWANCE_M,
+    ))
+}
 
 /// Precipitation baseline for the climate erosion modifier (Doc 06 §8.2).
 const EROSION_PRECIPITATION_BASELINE_MM: f32 = 800.0;
@@ -133,15 +148,20 @@ pub fn apply_erosion(
             let slope = channel_slope(data, surface, i);
             let discharge_norm = (discharge / DISCHARGE_NORM_M3_YR).sqrt();
             incision = K_CHANNEL_PER_YEAR * mult * discharge_norm * slope * tick_years;
-            // Floor at downstream water level.
+            // Floor at downstream water level, further clamped by the
+            // continental freeboard floor when present (Kansas interiors).
+            let mut max_cut = f64::INFINITY;
             if let Some(target) = surface.flow_target[i] {
                 let floor = water_floor_m(data, target as usize);
-                let max_cut = f64::from(elev) - floor;
-                if max_cut > 0.0 {
-                    incision = incision.min(max_cut);
-                } else {
-                    incision = 0.0;
-                }
+                max_cut = f64::from(elev) - floor;
+            }
+            if let Some(cont_floor) = continental_fluvial_floor_m(data, i) {
+                max_cut = max_cut.min(f64::from(elev) - cont_floor);
+            }
+            if max_cut > 0.0 && max_cut.is_finite() {
+                incision = incision.min(max_cut);
+            } else {
+                incision = 0.0;
             }
         }
 
@@ -420,5 +440,111 @@ mod tests {
             b.data.hydro_elevation_delta_m
         );
         assert!(oa.is_conserved());
+    }
+
+    /// Minimal land hex with Stream+ discharge; routing derives flow from elev.
+    fn freeboard_chain_world(
+        land_elev: f32,
+        continental: bool,
+        discharge: f32,
+    ) -> genesis_core::World {
+        let mut world = fixture();
+        let n = world.data.cell_count() as usize;
+        world.data.continental_crust = vec![false; n];
+        world.data.continental_crust[1] = continental;
+        world.data.elevation_mean[1] = land_elev;
+        world.data.river_discharge_m3_yr.fill(0.0);
+        world.data.river_discharge_m3_yr[1] = discharge;
+        world.data.precipitation[1] = 800.0;
+        world.data.temperature_mean[1] = 15.0;
+        world.data.bedrock_type[1] = BedrockType::Sedimentary;
+        world.data.hydro_elevation_delta_m = vec![0.0; n];
+        world
+    }
+
+    #[test]
+    fn freeboard_plateau_resists_fluvial_dissection() {
+        let sea = 0.0_f32;
+        let floor = sea + CONTINENTAL_FREEBOARD_M - CONTINENTAL_INCISION_ALLOWANCE_M;
+        let mut world = freeboard_chain_world(sea + CONTINENTAL_FREEBOARD_M, true, 5.0e10);
+        let surface = RoutingSurface::build(&world.data, &[]);
+        let n = world.data.cell_count() as usize;
+        let mut alluvium = vec![0.0; n];
+        let glacial = vec![0.0; n];
+        // One oversized tick that would otherwise carve hundreds of meters.
+        apply_erosion(
+            &mut world.data,
+            &surface,
+            &mut alluvium,
+            &glacial,
+            50_000_000.0,
+        );
+        let elev_after = world.data.elevation_mean[1] + world.data.hydro_elevation_delta_m[1];
+        assert!(
+            elev_after >= floor - 1e-3,
+            "freeboard plateau must not cut below continental floor {floor}, got {elev_after}"
+        );
+    }
+
+    #[test]
+    fn mountain_still_incises_toward_floor() {
+        let sea = 0.0_f32;
+        let floor = sea + CONTINENTAL_FREEBOARD_M - CONTINENTAL_INCISION_ALLOWANCE_M;
+        let mut world = freeboard_chain_world(sea + 3000.0, true, 5.0e10);
+        let surface = RoutingSurface::build(&world.data, &[]);
+        let n = world.data.cell_count() as usize;
+        let mut alluvium = vec![0.0; n];
+        let glacial = vec![0.0; n];
+        apply_erosion(
+            &mut world.data,
+            &surface,
+            &mut alluvium,
+            &glacial,
+            500_000.0,
+        );
+        assert!(
+            world.data.hydro_elevation_delta_m[1] < 0.0,
+            "mountain should lose elevation to incision"
+        );
+        let elev_after = world.data.elevation_mean[1] + world.data.hydro_elevation_delta_m[1];
+        assert!(
+            elev_after >= floor - 1e-3,
+            "mountain incision must still respect continental floor"
+        );
+    }
+
+    #[test]
+    fn oceanic_island_may_cut_below_freeboard_toward_water() {
+        let sea = 0.0_f32;
+        let mut world = freeboard_chain_world(sea + 100.0, false, 5.0e10);
+        let n = world.data.cell_count() as usize;
+        // Silence the rest of the land so only the island erodes/deposits.
+        for i in 2..n {
+            world.data.elevation_mean[i] = -500.0;
+            world.data.river_discharge_m3_yr[i] = 0.0;
+            world.data.water_body_id[i] = WaterBodyId(0);
+            world.data.water_level_m[i] = 0.0;
+        }
+        world.data.bedrock_type[1] = BedrockType::Igneous;
+        assert!(
+            continental_fluvial_floor_m(&world.data, 1).is_none(),
+            "oceanic crust must not receive a continental fluvial floor"
+        );
+        let surface = RoutingSurface::build(&world.data, &[]);
+        let mut alluvium = vec![0.0; n];
+        let glacial = vec![0.0; n];
+        apply_erosion(
+            &mut world.data,
+            &surface,
+            &mut alluvium,
+            &glacial,
+            50_000_000.0,
+        );
+        let elev_after = world.data.elevation_mean[1] + world.data.hydro_elevation_delta_m[1];
+        let cont_floor = sea + CONTINENTAL_FREEBOARD_M - CONTINENTAL_INCISION_ALLOWANCE_M;
+        assert!(
+            elev_after < cont_floor,
+            "oceanic crust must not be blocked by continental freeboard floor; got {elev_after}"
+        );
     }
 }

@@ -5,6 +5,11 @@
 //! lakes equilibrate thousands of times over. Glacials cutting evaporation
 //! and shifting precipitation therefore swell arid-basin lakes into pluvial
 //! lakes and shrink them back to salt lakes and flats with no special code.
+//!
+//! Salt banks only on true endorheic continental floors. Candidate-sea
+//! drawdown returns water (and salt) to the ocean without leaving shelf
+//! crust. [`export_salt`] clears salt under standing water and flushes
+//! residue along drainage that reaches the ocean.
 
 use genesis_core::data::{WaterBody, WaterBodyId, WaterBodyKind, WorldData};
 
@@ -26,6 +31,14 @@ pub const SALT_LOAD_FACTOR: f64 = 1.0e-4;
 /// Salinity at which an endorheic Lake becomes a SaltLake (§5.3, units of
 /// [`SALT_LOAD_FACTOR`] — ≈ brackish-to-saline).
 pub const SALT_LAKE_SALINITY_THRESHOLD: f64 = 10.0;
+/// Fraction of `salt_accumulated` exported per tick once a hex drains to the
+/// ocean (Geological ticks ≈ 500 kyr — a few ticks clears coastal residue).
+pub const SALT_EXPORT_RATE: f32 = 0.35;
+/// Hop cap when tracing `flow_direction` to the ocean for salt export.
+pub const SALT_EXPORT_HOP_CAP: u32 = 512;
+/// Minimum banked salt for [`SoilClass::Saline`](genesis_core::data::SoilClass::Saline)
+/// (soil mode), well above a single-tick dust deposit so saline soil stays uncommon.
+pub const SALINE_SOIL_SALT_MIN: f32 = 10.0;
 
 /// §5.1 open-water evaporation rate, mm/yr.
 pub fn open_water_evap_mm(temperature_mean_c: f64, open_water_evap_factor: f64) -> f64 {
@@ -167,7 +180,8 @@ pub struct LakeStepOutcome {
 
 /// §5.1–§5.3: adjudicates every retained depression bottom-up (descending
 /// spill level — children before parents — tie: ascending bottom `HexId`),
-/// then every candidate sea (§5.2), banking salt on endorheic floors.
+/// then every candidate sea (§5.2). Salt banks only on true endorheic
+/// floors; candidate-sea drawdown returns water (and salt) to the ocean.
 ///
 /// `acc.discharge_m3_yr` is updated where exorheic surplus rides the channel
 /// downstream of a spill; inflow credits to downstream depressions and
@@ -283,18 +297,7 @@ pub fn adjudicate_lakes(
             // Total drying: a SaltFlat body and its soil penalty (Slice 3).
             // (Zero inflow bisects to the basin floor with only bisection
             // dust standing — that is a flat, not a lake.)
-            data.water_bodies.insert(
-                id,
-                WaterBody {
-                    id,
-                    kind: WaterBodyKind::SaltFlat,
-                    surface_m: level_m as f32,
-                    area_km2: 0.0,
-                    volume_km3: 0.0,
-                    salinity: 0.0,
-                    outlet: None,
-                },
-            );
+            register_salt_flat_floor(data, id, &floor_cells, level_m as f32);
             continue;
         }
         let salinity = banked_salt(data, cells) / volume_m3;
@@ -353,8 +356,9 @@ pub fn adjudicate_lakes(
             continue;
         }
 
-        // Unsustainable: draw down to the evaporation balance, bank the
-        // stranded salt, and return the surplus to the ocean term.
+        // Unsustainable: draw down to the evaporation balance and return the
+        // surplus (and stranded marine salt) to the ocean — do not bank crust
+        // on shelf / orphaned-ocean floors.
         let level_m = solve_endorheic_level_m(
             cells,
             elevations,
@@ -370,49 +374,109 @@ pub fn adjudicate_lakes(
             .copied()
             .filter(|&c| f64::from(elevations[c as usize]) < level_m)
             .collect();
-        let floor_cells: Vec<u32> = if wet_cells.is_empty() {
-            vec![candidate.lowest_hex]
-        } else {
-            wet_cells.clone()
-        };
-        bank_salt(data, &floor_cells, inflow * SALT_LOAD_FACTOR * tick_years);
         outcome.returned_to_ocean_m3 += candidate.bathtub_volume_m3 - kept_volume_m3;
         outcome.candidate_kept_m3 += kept_volume_m3;
 
         if inflow <= 0.0 || kept_volume_m3 <= 0.0 {
-            data.water_bodies.insert(
-                id,
-                WaterBody {
-                    id,
-                    kind: WaterBodyKind::SaltFlat,
-                    surface_m: level_m as f32,
-                    area_km2: 0.0,
-                    volume_km3: 0.0,
-                    salinity: 0.0,
-                    outlet: None,
-                },
-            );
+            // Fully drained orphan basin: dry shelf, not a continental SaltFlat.
             continue;
         }
-        let salinity = banked_salt(data, cells) / kept_volume_m3;
-        let kind = if salinity > SALT_LAKE_SALINITY_THRESHOLD {
-            WaterBodyKind::SaltLake
-        } else {
-            WaterBodyKind::Lake
-        };
         write_body(
             data,
             id,
-            kind,
+            WaterBodyKind::Lake,
             level_m as f32,
             &wet_cells,
             kept_volume_m3,
-            salinity as f32,
+            0.0,
             None,
             hex_area_m2,
         );
     }
     outcome
+}
+
+/// Marks dry SaltFlat floor cells in the registry membership arrays without
+/// wetting them (`water_level_m` stays dry).
+fn register_salt_flat_floor(
+    data: &mut WorldData,
+    id: WaterBodyId,
+    floor_cells: &[u32],
+    surface_m: f32,
+) {
+    data.water_bodies.insert(
+        id,
+        WaterBody {
+            id,
+            kind: WaterBodyKind::SaltFlat,
+            surface_m,
+            area_km2: 0.0,
+            volume_km3: 0.0,
+            salinity: 0.0,
+            outlet: None,
+        },
+    );
+    for &cell in floor_cells {
+        data.water_body_id[cell as usize] = id;
+    }
+}
+
+/// §5.3 export: redissolve salt into the open ocean / seas; flush a fraction
+/// along `flow_direction` when drainage reaches an Ocean body. Endorheic
+/// lakes keep banked salt so salinity and SaltFlat drying still work.
+pub fn export_salt(data: &mut WorldData) {
+    use genesis_core::data::WATER_NONE;
+
+    let n = data.cell_count() as usize;
+    for i in 0..n {
+        let salt = data.salt_accumulated[i];
+        if salt <= 0.0 {
+            continue;
+        }
+        let elev = data.elevation_mean[i];
+        let water = data.water_level_m[i];
+        let id = data.water_body_id[i];
+        if water.is_finite() && water > elev && water != WATER_NONE {
+            let open_marine = data
+                .water_bodies
+                .get(&id)
+                .is_some_and(|b| matches!(b.kind, WaterBodyKind::Ocean | WaterBodyKind::Sea));
+            if open_marine {
+                data.salt_accumulated[i] = 0.0;
+            }
+            continue;
+        }
+        if drains_to_ocean(data, i as u32) {
+            let next = salt * (1.0 - SALT_EXPORT_RATE);
+            data.salt_accumulated[i] = if next < 1e-6 { 0.0 } else { next };
+        }
+    }
+}
+
+fn drains_to_ocean(data: &WorldData, start: u32) -> bool {
+    let n = data.cell_count() as usize;
+    let mut current = start;
+    for _ in 0..SALT_EXPORT_HOP_CAP {
+        let id = data.water_body_id[current as usize];
+        if id != WaterBodyId::NONE {
+            return data
+                .water_bodies
+                .get(&id)
+                .is_some_and(|b| b.kind == WaterBodyKind::Ocean);
+        }
+        let Some(dir) = data.flow_direction[current as usize] else {
+            return false;
+        };
+        let neighbors = data.grid.neighbors(genesis_core::HexId(current));
+        let Some(next) = neighbors.get(dir.index()).copied() else {
+            return false;
+        };
+        if next.0 as usize >= n {
+            return false;
+        }
+        current = next.0;
+    }
+    false
 }
 
 /// §5.1: an exorheic lake's surplus (`I − E` at spill) continues downstream
@@ -783,16 +847,26 @@ mod tests {
             "surplus returns to the ocean term"
         );
         let id = WaterBodyId(cells.iter().copied().min().unwrap());
-        let body = &world.data.water_bodies[&id];
         assert!(
-            matches!(body.kind, WaterBodyKind::SaltLake | WaterBodyKind::SaltFlat),
-            "drawdown leaves salt: {:?}",
-            body.kind
+            !world.data.water_bodies.contains_key(&id)
+                || world.data.water_bodies[&id].kind == WaterBodyKind::Lake,
+            "candidate drawdown must not create coastal SaltFlat/SaltLake: {:?}",
+            world.data.water_bodies.get(&id).map(|b| b.kind)
         );
+        let salt_on_basin: f32 = cells
+            .iter()
+            .map(|&c| world.data.salt_accumulated[c as usize])
+            .sum();
         assert!(
-            body.surface_m < sea_level_before,
-            "drawn down below the ocean"
+            salt_on_basin <= 0.0,
+            "candidate drawdown must not bank salt on shelf floors"
         );
+        if let Some(body) = world.data.water_bodies.get(&id) {
+            assert!(
+                body.surface_m < sea_level_before,
+                "drawn down below the ocean"
+            );
+        }
         // The closed-form ΔL correction raises the written sea level.
         apply_returned_surplus(&mut world.data, outcome.returned_to_ocean_m3);
         assert!(world.data.sea_level_m > sea_level_before);
@@ -836,6 +910,55 @@ mod tests {
         assert!(
             (evaporation - expected_inflow).abs() <= cell_evap,
             "E(level) ≈ I within one cell of area: E={evaporation} I={expected_inflow}"
+        );
+    }
+
+    #[test]
+    fn export_salt_clears_wet_and_flushes_ocean_drainage() {
+        let mut world = base_world();
+        // Seed an ocean body on hex 0.
+        let ocean_id = WaterBodyId(0);
+        world.data.water_bodies.insert(
+            ocean_id,
+            WaterBody {
+                id: ocean_id,
+                kind: WaterBodyKind::Ocean,
+                surface_m: 0.0,
+                area_km2: 1.0,
+                volume_km3: 1.0,
+                salinity: 0.0,
+                outlet: None,
+            },
+        );
+        world.data.water_body_id[0] = ocean_id;
+        world.data.water_level_m[0] = 0.0;
+        world.data.elevation_mean[0] = -100.0;
+        world.data.salt_accumulated[0] = 50.0;
+
+        // Land neighbor that flows into the ocean.
+        let land = 1_u32;
+        world.data.elevation_mean[land as usize] = 10.0;
+        world.data.water_level_m[land as usize] = genesis_core::data::WATER_NONE;
+        world.data.salt_accumulated[land as usize] = 20.0;
+        world.data.water_body_id[land as usize] = WaterBodyId::NONE;
+        // Point flow toward hex 0 if it is a neighbor.
+        let neighbors = world.data.grid.neighbors(genesis_core::HexId(land));
+        if let Some(slot) = neighbors.iter().position(|n| n.0 == 0) {
+            world.data.flow_direction[land as usize] =
+                genesis_core::grid::Direction::from_index(slot);
+        } else {
+            // Fallback: clear wet cell only if adjacency is awkward on this grid.
+            export_salt(&mut world.data);
+            assert_eq!(world.data.salt_accumulated[0], 0.0);
+            return;
+        }
+
+        export_salt(&mut world.data);
+        assert_eq!(world.data.salt_accumulated[0], 0.0, "wet ocean clears salt");
+        let expected = 20.0 * (1.0 - SALT_EXPORT_RATE);
+        assert!(
+            (world.data.salt_accumulated[land as usize] - expected).abs() < 1e-4,
+            "ocean-draining land exports at SALT_EXPORT_RATE"
         );
     }
 }

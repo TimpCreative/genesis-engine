@@ -81,7 +81,8 @@ fn classify_soil(data: &WorldData, surface: &RoutingSurface, i: usize, alluv: f6
         .water_bodies
         .get(&data.water_body_id[i])
         .is_some_and(|b| b.kind == WaterBodyKind::SaltFlat)
-        || (data.salt_accumulated[i] > 1.0 && data.water_body_id[i] == WaterBodyId::NONE);
+        || (data.salt_accumulated[i] >= crate::lakes::SALINE_SOIL_SALT_MIN
+            && data.water_body_id[i] == WaterBodyId::NONE);
     if on_salt_flat {
         return SoilClass::Saline;
     }

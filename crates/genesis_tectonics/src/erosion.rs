@@ -574,11 +574,20 @@ fn apply_ice_load_isostasy(
                 // Deglaciated: rebound toward the unloaded freeboard.
                 let target = sea + freeboard;
                 let hex = HexId(i as u32);
+                let mut applied = 0.0_f32;
                 modify_surface_at_world_hex(registry, data, cache, hex, tick_value, |feature| {
                     if feature.elevation_m < target {
-                        feature.elevation_m += (target - feature.elevation_m) * fraction;
+                        let delta = (target - feature.elevation_m) * fraction;
+                        feature.elevation_m += delta;
+                        applied = delta;
                     }
                 });
+                if applied > 0.0 {
+                    if data.gia_rebound_applied_m.len() < n {
+                        data.gia_rebound_applied_m.resize(n, 0.0);
+                    }
+                    data.gia_rebound_applied_m[i] += applied;
+                }
             }
         }
     }

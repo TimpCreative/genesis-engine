@@ -20,13 +20,22 @@ use genesis_tectonics::{
     TectonicsLayer, TectonicsState, flush_events_to_branch as flush_tectonic_events,
 };
 
-/// Memory budget for buffered history frames (Doc 05 §A).
+/// Memory budget for buffered history frames (Doc 05 §A). Advisory only —
+/// scrub cadence is fixed at [`HISTORY_STRIDE_YEARS`], so long high-resolution
+/// runs can exceed this budget.
 pub const FRAME_MEMORY_BUDGET_BYTES: usize = 256 << 20;
 
 /// Approximate bytes per cell in a [`HistoryFrame`] (Doc 08 §12.4 + polish fields).
 const FRAME_BYTES_PER_CELL: usize = 40;
 
-/// Frame cap for a grid size, from the memory budget.
+/// Fixed timeline scrub cadence: one history frame every 10 My.
+///
+/// Scrubbing and playback step by frame index; a constant stride keeps the
+/// year jump identical at 1 By and 4.5 By (unlike the old
+/// `target_year / max_frames` thinning).
+pub const HISTORY_STRIDE_YEARS: i64 = 10_000_000;
+
+/// Soft frame cap for a grid size from the memory budget (advisory / tests).
 pub fn max_history_frames(cell_count: u32) -> usize {
     (FRAME_MEMORY_BUDGET_BYTES / (cell_count as usize * FRAME_BYTES_PER_CELL).max(1)).clamp(16, 256)
 }
@@ -157,9 +166,12 @@ impl HistoryFrame {
     }
 }
 
-/// Snapshot stride for a run: budgeted frame count, at least one Geological tick.
-pub fn history_stride_years(target_year: i64, cell_count: u32) -> i64 {
-    (target_year / max_history_frames(cell_count) as i64).max(500_000)
+/// Snapshot stride for a run: always [`HISTORY_STRIDE_YEARS`].
+///
+/// `target_year` and `cell_count` are kept for call-site compatibility; they
+/// no longer change the cadence.
+pub fn history_stride_years(_target_year: i64, _cell_count: u32) -> i64 {
+    HISTORY_STRIDE_YEARS
 }
 
 /// Advances simulation to `target_year` with tectonics, climate, and hydrology
@@ -339,12 +351,18 @@ mod tests {
 
         assert!(reports > 0, "progress must fire");
         assert!(!frames.is_empty());
-        let cap = max_history_frames(world.data.cell_count());
-        assert!(frames.len() <= cap + 2, "{} > {cap}", frames.len());
         assert!(
             frames.windows(2).all(|w| w[0].year < w[1].year),
             "frames strictly ordered"
         );
+        for window in frames.windows(2) {
+            let gap = window[1].year - window[0].year;
+            assert!(
+                gap <= HISTORY_STRIDE_YEARS,
+                "scrub gap {gap} exceeds {} My stride",
+                HISTORY_STRIDE_YEARS / 1_000_000
+            );
+        }
         assert_eq!(
             frames.last().unwrap().year,
             world.data.current_year.value(),
@@ -352,6 +370,22 @@ mod tests {
         );
         let n = world.data.cell_count() as usize;
         assert_eq!(frames[0].elevation_mean.len(), n);
+    }
+
+    #[test]
+    fn history_stride_is_constant_across_targets_and_grid_sizes() {
+        assert_eq!(
+            history_stride_years(1_000_000_000, 10_242),
+            HISTORY_STRIDE_YEARS
+        );
+        assert_eq!(
+            history_stride_years(4_500_000_000, 10_242),
+            HISTORY_STRIDE_YEARS
+        );
+        assert_eq!(
+            history_stride_years(4_500_000_000, 655_362),
+            HISTORY_STRIDE_YEARS
+        );
     }
 
     #[test]

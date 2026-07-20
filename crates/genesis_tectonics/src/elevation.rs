@@ -22,7 +22,7 @@ pub const MAX_ELEVATION_M: f32 = 9_000.0;
 pub const MAX_RELIEF_M: f32 = 5_000.0;
 
 /// Equilibrium depth for normal oceanic seafloor (m). Divergent subsidence asymptotes here.
-pub const OCEAN_FLOOR_BASELINE_M: f32 = -4000.0;
+pub const OCEAN_FLOOR_BASELINE_M: f32 = -4500.0;
 
 /// Equilibrium height for continental orogeny (m). Uplift slows as elevation approaches this.
 pub const MOUNTAIN_EQUILIBRIUM_M: f32 = 7000.0;

@@ -12,7 +12,7 @@ use crate::projection::ProjectionCache;
 /// Matches [`crate::initial_terrain::CONTINENTAL_BASE_ELEVATION_M`].
 const CONTINENTAL_BASELINE_M: f32 = 800.0;
 /// Matches [`crate::initial_terrain::OCEANIC_BASE_ELEVATION_M`].
-const OCEANIC_BASELINE_M: f32 = -3500.0;
+const OCEANIC_BASELINE_M: f32 = -4000.0;
 
 /// A single feature stored on a plate's surface by birth world-HexId.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

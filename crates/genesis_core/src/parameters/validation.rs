@@ -172,7 +172,7 @@ impl WorldParameters {
             geo.max_ephemeral_island_height_m,
             "geology.max_ephemeral_island_height_m",
             0.0,
-            500.0,
+            2000.0,
         )?;
         validate_non_negative_finite(
             geo.max_ephemeral_island_relief_m,
@@ -180,10 +180,10 @@ impl WorldParameters {
             0.0,
             5000.0,
         )?;
-        if geo.max_artifact_lake_hexes == 0 || geo.max_artifact_lake_hexes > 50 {
+        if geo.max_artifact_lake_hexes == 0 || geo.max_artifact_lake_hexes > 100 {
             return Err(ParameterValidationError::InvalidField {
                 field: "geology.max_artifact_lake_hexes".into(),
-                message: "must be in 1..=50".into(),
+                message: "must be in 1..=100".into(),
             });
         }
         validate_non_negative_finite(

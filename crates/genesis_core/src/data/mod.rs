@@ -87,7 +87,8 @@ pub struct WorldData {
     pub discharge_seasonality: Vec<f32>,
     /// Depth to the saturated zone, meters. 0 = water table at surface.
     pub water_table_depth_m: Vec<f32>,
-    /// Accumulated salt (monotonic, arbitrary units). Nonzero + dry = salt flat.
+    /// Accumulated salt (endorheic bank; exported when ocean-connected).
+    /// Elevation tint uses SaltFlat bodies; SoilClass::Saline uses a threshold.
     pub salt_accumulated: Vec<f32>,
     /// Land-ice mask (sheets + alpine glaciers thick enough to budget).
     pub ice_mask: Vec<bool>,
@@ -107,6 +108,10 @@ pub struct WorldData {
     /// Ice-load depression target for GIA, meters (Doc 08 §9.1). Written by
     /// hydrology; consumed by tectonics isostasy.
     pub ice_load_m: Vec<f32>,
+    /// Cumulative upward GIA rebound applied by tectonics isostasy (m).
+    /// Diagnostic / §15 #20 — monotonic per hex; not a physical state needed
+    /// for replay (derived from the ice-load path).
+    pub gia_rebound_applied_m: Vec<f32>,
     /// Standing-water body registry, rebuilt each hydrology tick (§2.4).
     pub water_bodies: BTreeMap<WaterBodyId, WaterBody>,
 
@@ -177,6 +182,7 @@ impl WorldData {
             hydro_elevation_delta_m: vec![0.0; n],
             continental_crust: vec![false; n],
             ice_load_m: vec![0.0; n],
+            gia_rebound_applied_m: vec![0.0; n],
             water_bodies: BTreeMap::new(),
             sea_level_m: 0.0,
             global_temperature_c: 15.0,
@@ -271,6 +277,7 @@ mod tests {
         assert_eq!(world.hydro_elevation_delta_m.len(), n);
         assert_eq!(world.continental_crust.len(), n);
         assert_eq!(world.ice_load_m.len(), n);
+        assert_eq!(world.gia_rebound_applied_m.len(), n);
         assert_eq!(world.biome.len(), n);
         assert_eq!(world.biomass.len(), n);
         assert_eq!(world.fertility.len(), n);

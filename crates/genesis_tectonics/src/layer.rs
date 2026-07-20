@@ -339,6 +339,24 @@ impl SimulationLayer for TectonicsLayer {
                 );
                 rebuild_world_from_plate_surfaces_cached(world, &s.registry, &s.projection);
             });
+
+            // Closed-depression sediment infill: oceanic/accreted interior
+            // pits heal skipped. Recompute the open-ocean mask after heal
+            // raised continental crust (tick-start mask at label_water is stale).
+            timed_tick_step("basin_infill", tick_year, || {
+                let s = &mut *state;
+                let water = crate::accretion::label_water_components(world);
+                let open_ocean = water.open_ocean_mask();
+                crate::basin_infill::fill_closed_depressions(
+                    world,
+                    &mut s.registry,
+                    &s.projection,
+                    &open_ocean,
+                    tick_year.value(),
+                    interval_years,
+                );
+                rebuild_world_from_plate_surfaces_cached(world, &s.registry, &s.projection);
+            });
             state.boundaries = boundaries;
 
             timed_tick_step("clamp", tick_year, || {

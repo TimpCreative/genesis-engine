@@ -5,7 +5,9 @@
 //! salt flats pale; land uses the terrain ramp.
 
 use bevy::prelude::*;
-use genesis_core::data::{HydroFlags, SoilClass, WATER_NONE, WaterBodyId, WorldData};
+use genesis_core::data::{
+    HydroFlags, SoilClass, WATER_NONE, WaterBodyId, WaterBodyKind, WorldData,
+};
 
 use crate::render_mode::RenderMode;
 
@@ -13,16 +15,19 @@ use crate::render_mode::RenderMode;
 pub const MIN_ELEVATION_M: f32 = -11_000.0;
 pub const MAX_ELEVATION_M: f32 = 9_000.0;
 
+/// Matches hydrology/climate Formation end (Doc 07 §3.2 / Doc 08 §3.3).
+pub const FORMATION_END_YEAR: i64 = 500_000_000;
+
 struct ColorStop {
-    /// Absolute elevation in meters.
+    /// Elevation relative to sea level (m): `elev − sea_level_m`.
     elev_m: f32,
     rgb: [f32; 3],
 }
 
-/// Piecewise-linear ramp in absolute elevation. The whole planet renders as
-/// terrain: deep basins read as dark rock, the 0 m datum is a subtle coast
-/// cue, and land runs plain → lowland → piedmont → upland → tan → brown →
-/// white. No water colors anywhere (Doc 08 will reintroduce them properly).
+/// Piecewise-linear ramp in **sea-relative** elevation. Deep dry basins read as
+/// dark rock, the 0 m freeboard datum is the coast cue, and land runs plain →
+/// lowland → piedmont → upland → tan → brown → white. Freeboard (~+800 m) lands
+/// in the green/olive band regardless of absolute sea level.
 fn elevation_stops() -> Vec<ColorStop> {
     vec![
         ColorStop {
@@ -77,6 +82,57 @@ fn elevation_stops() -> Vec<ColorStop> {
     ]
 }
 
+/// Barren Formation-era dry ramp: charcoal basins → slate continents → tan
+/// highlands → white peaks. No grass greens (life has not arrived).
+fn formation_elevation_stops() -> Vec<ColorStop> {
+    vec![
+        ColorStop {
+            elev_m: MIN_ELEVATION_M,
+            rgb: [0.07, 0.06, 0.06],
+        },
+        ColorStop {
+            elev_m: -4_000.0,
+            rgb: [0.16, 0.14, 0.13],
+        },
+        ColorStop {
+            elev_m: -1_000.0,
+            rgb: [0.28, 0.26, 0.24],
+        },
+        ColorStop {
+            elev_m: 0.0,
+            rgb: [0.38, 0.36, 0.34],
+        },
+        ColorStop {
+            elev_m: 10.0,
+            rgb: [0.42, 0.40, 0.37],
+        },
+        ColorStop {
+            elev_m: 200.0,
+            rgb: [0.48, 0.45, 0.41],
+        },
+        ColorStop {
+            elev_m: 600.0,
+            rgb: [0.52, 0.48, 0.42],
+        },
+        ColorStop {
+            elev_m: 1_200.0,
+            rgb: [0.58, 0.52, 0.44],
+        },
+        ColorStop {
+            elev_m: 2_000.0,
+            rgb: [0.62, 0.54, 0.44],
+        },
+        ColorStop {
+            elev_m: 4_000.0,
+            rgb: [0.55, 0.50, 0.46],
+        },
+        ColorStop {
+            elev_m: MAX_ELEVATION_M,
+            rgb: [0.92, 0.92, 0.94],
+        },
+    ]
+}
+
 fn clamp_elevation(elevation_m: f32) -> f32 {
     elevation_m.clamp(MIN_ELEVATION_M, MAX_ELEVATION_M)
 }
@@ -116,15 +172,32 @@ fn sample_stops(stops: &[ColorStop], elevation_m: f32) -> [f32; 3] {
     stops[last].rgb
 }
 
-/// Pure elevation → color mapping for terrain visualization.
+/// Pure elevation → color mapping for the modern (post-Formation) terrain ramp.
 ///
-/// `_sea_level_m` is retained for the Doc 08 water re-introduction; the dry
-/// ramp does not use it.
-pub fn elevation_color(elevation_m: f32, _sea_level_m: f32) -> Color {
-    let elev = clamp_elevation(elevation_m);
+/// Samples the dry ramp at `elevation_m − sea_level_m` so freeboard interiors
+/// read as Kansas green/olive when sea sits at deeply negative absolute levels.
+pub fn elevation_color(elevation_m: f32, sea_level_m: f32) -> Color {
+    let relative = clamp_elevation(elevation_m - sea_level_m);
     let stops = elevation_stops();
-    let rgb = sample_stops(&stops, elev);
+    let rgb = sample_stops(&stops, relative);
     Color::srgb(rgb[0], rgb[1], rgb[2])
+}
+
+/// Barren Formation-era elevation → color (no grass greens).
+///
+/// Also sea-relative so early continents above a falling/rising sea still read
+/// as continental platforms rather than absolute charcoal.
+pub fn formation_elevation_color(elevation_m: f32, sea_level_m: f32) -> Color {
+    let relative = clamp_elevation(elevation_m - sea_level_m);
+    let stops = formation_elevation_stops();
+    let rgb = sample_stops(&stops, relative);
+    Color::srgb(rgb[0], rgb[1], rgb[2])
+}
+
+/// True while the world is still in Formation and formation was not skipped.
+pub fn use_formation_elevation_palette(data: &WorldData) -> bool {
+    !data.parameters.core.climate.skip_planetary_formation
+        && data.current_year.value() < FORMATION_END_YEAR
 }
 
 /// Fill color for a hex or pentagon cell (same ramp; geometry distinguishes pentagons).
@@ -242,16 +315,9 @@ fn water_aware_elevation_color(data: &WorldData, hex_idx: usize, is_pentagon: bo
     if data.ice_mask.get(hex_idx).copied().unwrap_or(false) || flags.contains(HydroFlags::SEA_ICE) {
         return Color::srgb(0.92, 0.95, 0.98);
     }
-    if data.salt_accumulated.get(hex_idx).copied().unwrap_or(0.0) > 0.0
-        && data
-            .water_body_id
-            .get(hex_idx)
-            .copied()
-            .unwrap_or(WaterBodyId::NONE)
-            == WaterBodyId::NONE
-    {
-        return Color::srgb(0.85, 0.82, 0.72);
-    }
+    // Standing water must win over salt-flat tint. Timeline scrubbing restores
+    // `water_level_m` from HistoryFrame; salt on a currently wet hex is residue
+    // under the water column, not a salt flat (§5.3 / §12.1).
     let water_level = data
         .water_level_m
         .get(hex_idx)
@@ -268,8 +334,26 @@ fn water_aware_elevation_color(data: &WorldData, hex_idx: usize, is_pentagon: bo
         }
         return c;
     }
+    // Elevation tint only for true SaltFlat bodies — mild saline soil stays
+    // on the hypsometric ramp and shows in Soil mode instead.
+    let body_id = data
+        .water_body_id
+        .get(hex_idx)
+        .copied()
+        .unwrap_or(WaterBodyId::NONE);
+    if body_id != WaterBodyId::NONE
+        && data
+            .water_bodies
+            .get(&body_id)
+            .is_some_and(|b| b.kind == WaterBodyKind::SaltFlat)
+    {
+        return Color::srgb(0.85, 0.82, 0.72);
+    }
     if flags.contains(HydroFlags::OASIS) {
         return Color::srgb(0.25, 0.55, 0.35);
+    }
+    if use_formation_elevation_palette(data) {
+        return formation_elevation_color(elev, sea_level);
     }
     hex_fill_color(elev, sea_level, is_pentagon)
 }
@@ -508,5 +592,164 @@ mod tests {
     #[test]
     fn precipitation_color_is_deterministic() {
         colors_approx_equal(precipitation_to_color(800.0), precipitation_to_color(800.0));
+    }
+
+    #[test]
+    fn formation_lowland_is_not_grass_green() {
+        use genesis_core::parameters::WorldParameters;
+        use genesis_core::{HexGrid, WorldYear};
+
+        let mut params = WorldParameters::default();
+        params.core.grid.subdivision_level = 5;
+        let grid = HexGrid::new(5, 6371.0).expect("grid");
+        let mut data = WorldData::new(grid, params);
+        data.current_year = WorldYear(100_000_000);
+        data.elevation_mean[0] = 200.0;
+        data.water_level_m[0] = WATER_NONE;
+        data.sea_level_m = -3000.0;
+
+        let formation = color_to_rgb(hex_color_for_mode(&data, 0, RenderMode::Elevation, false));
+        let modern = color_to_rgb(elevation_color(200.0, 0.0));
+        assert!(
+            modern[1] > modern[0] && modern[1] > modern[2],
+            "modern +200 m should be grass-green dominant, got {modern:?}"
+        );
+        assert!(
+            !(formation[1] > formation[0] + 0.05 && formation[1] > formation[2] + 0.05),
+            "Formation +200 m must not read as grass green, got {formation:?}"
+        );
+
+        data.current_year = WorldYear(FORMATION_END_YEAR);
+        let post = color_to_rgb(hex_color_for_mode(&data, 0, RenderMode::Elevation, false));
+        colors_approx_equal(
+            Color::srgb(post[0], post[1], post[2]),
+            elevation_color(200.0, data.sea_level_m),
+        );
+    }
+
+    #[test]
+    fn freeboard_above_deep_negative_sea_reads_green() {
+        let sea = -2000.0_f32;
+        let freeboard = sea + 800.0;
+        let rgb = color_to_rgb(elevation_color(freeboard, sea));
+        assert!(
+            rgb[1] > rgb[0] && rgb[1] > rgb[2] * 0.9,
+            "sea-relative freeboard (+800) must read green/olive, got {rgb:?} at sea={sea}"
+        );
+        let dry_pit = color_to_rgb(elevation_color(sea - 2000.0, sea));
+        assert!(
+            dry_pit[0] < 0.4 && dry_pit[1] < 0.4,
+            "dry pit 2000 m below sea must stay dark, got {dry_pit:?}"
+        );
+    }
+
+    #[test]
+    fn skip_formation_uses_modern_palette_at_year_zero() {
+        use genesis_core::parameters::WorldParameters;
+        use genesis_core::{HexGrid, WorldYear};
+
+        let mut params = WorldParameters::default();
+        params.core.climate.skip_planetary_formation = true;
+        params.core.grid.subdivision_level = 5;
+        let grid = HexGrid::new(5, 6371.0).expect("grid");
+        let mut data = WorldData::new(grid, params);
+        data.current_year = WorldYear(0);
+        data.elevation_mean[0] = 200.0;
+        data.water_level_m[0] = WATER_NONE;
+
+        let rgb = color_to_rgb(hex_color_for_mode(&data, 0, RenderMode::Elevation, false));
+        let modern = color_to_rgb(elevation_color(200.0, 0.0));
+        for i in 0..3 {
+            assert!((rgb[i] - modern[i]).abs() < EPS);
+        }
+    }
+
+    #[test]
+    fn standing_water_beats_salt_flat_tint() {
+        use genesis_core::parameters::WorldParameters;
+        use genesis_core::{HexGrid, WorldYear};
+
+        let mut params = WorldParameters::default();
+        params.core.grid.subdivision_level = 5;
+        let grid = HexGrid::new(5, 6371.0).expect("grid");
+        let mut data = WorldData::new(grid, params);
+        data.current_year = WorldYear(864_000_000);
+        data.elevation_mean[0] = -2000.0;
+        data.water_level_m[0] = -500.0;
+        data.salt_accumulated[0] = 5.0;
+        data.water_body_id[0] = WaterBodyId::NONE;
+        data.sea_level_m = -500.0;
+
+        let color = hex_color_for_mode(&data, 0, RenderMode::Elevation, false);
+        let rgb = color_to_rgb(color);
+        assert!(
+            rgb[2] > rgb[0] + 0.05 && rgb[2] > rgb[1],
+            "wet+salt with NONE body id must render water blue, got {rgb:?}"
+        );
+    }
+
+    #[test]
+    fn dry_salt_flat_stays_pale_tan() {
+        use genesis_core::data::WaterBody;
+        use genesis_core::parameters::WorldParameters;
+        use genesis_core::{HexGrid, WorldYear};
+
+        let mut params = WorldParameters::default();
+        params.core.grid.subdivision_level = 5;
+        let grid = HexGrid::new(5, 6371.0).expect("grid");
+        let mut data = WorldData::new(grid, params);
+        data.current_year = WorldYear(864_000_000);
+        data.elevation_mean[0] = 100.0;
+        data.water_level_m[0] = WATER_NONE;
+        data.salt_accumulated[0] = 5.0;
+        let id = WaterBodyId(0);
+        data.water_body_id[0] = id;
+        data.water_bodies.insert(
+            id,
+            WaterBody {
+                id,
+                kind: WaterBodyKind::SaltFlat,
+                surface_m: 100.0,
+                area_km2: 0.0,
+                volume_km3: 0.0,
+                salinity: 0.0,
+                outlet: None,
+            },
+        );
+        data.sea_level_m = 0.0;
+
+        let color = hex_color_for_mode(&data, 0, RenderMode::Elevation, false);
+        let rgb = color_to_rgb(color);
+        assert!(
+            (rgb[0] - 0.85).abs() < 0.05 && (rgb[1] - 0.82).abs() < 0.05,
+            "SaltFlat body must stay pale tan, got {rgb:?}"
+        );
+    }
+
+    #[test]
+    fn residual_salt_without_flat_uses_terrain_ramp() {
+        use genesis_core::parameters::WorldParameters;
+        use genesis_core::{HexGrid, WorldYear};
+
+        let mut params = WorldParameters::default();
+        params.core.grid.subdivision_level = 5;
+        let grid = HexGrid::new(5, 6371.0).expect("grid");
+        let mut data = WorldData::new(grid, params);
+        data.current_year = WorldYear(864_000_000);
+        data.elevation_mean[0] = 100.0;
+        data.water_level_m[0] = WATER_NONE;
+        data.salt_accumulated[0] = 5.0;
+        data.water_body_id[0] = WaterBodyId::NONE;
+        data.sea_level_m = 0.0;
+
+        let color = hex_color_for_mode(&data, 0, RenderMode::Elevation, false);
+        let rgb = color_to_rgb(color);
+        let ramp = color_to_rgb(elevation_color(100.0, 0.0));
+        for i in 0..3 {
+            assert!(
+                (rgb[i] - ramp[i]).abs() < EPS,
+                "residual salt without SaltFlat must use terrain ramp, got {rgb:?} vs {ramp:?}"
+            );
+        }
     }
 }

@@ -6,7 +6,6 @@ pub fn project(lat_rad: f64, lon_rad: f64) -> (f32, f32) {
 }
 
 /// Inverse of [`project`] for 2D world coordinates.
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn unproject(x: f32, y: f32) -> (f64, f64) {
     (y as f64, x as f64)
 }
