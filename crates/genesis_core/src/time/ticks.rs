@@ -17,6 +17,12 @@ pub trait SimulationLayer {
     fn advance(&mut self, world: &mut WorldData, rng: &WorldRng) -> Vec<()>;
 }
 
+/// How often a layer reporting `tick_interval == 0` (dormant) is re-polled to
+/// see whether world state has since given it work — e.g. biology waking when
+/// oceans first form. Coarse, so idle re-polls are cheap; the layer still does no
+/// `advance` work until it reports a positive interval.
+const DORMANT_REPOLL_YEARS: i64 = 1_000_000;
+
 struct LayerState {
     layer: Box<dyn SimulationLayer>,
     next_tick_year: WorldYear,
@@ -90,9 +96,10 @@ impl TickCoordinator {
                         let _ = state.layer.advance(world, rng);
                         state.next_tick_year = world.current_year + interval;
                     } else {
-                        // Layer is dormant at this year; skip it past the target to
-                        // prevent the coordinator stalling on a layer with no work.
-                        state.next_tick_year = WorldYear(i64::MAX);
+                        // Dormant at this year — do no work, but re-poll later
+                        // rather than park forever, so a layer can wake once world
+                        // state gives it work (Doc 09 §3; limitation 3).
+                        state.next_tick_year = world.current_year + DORMANT_REPOLL_YEARS;
                     }
                 }
             }
@@ -108,10 +115,12 @@ impl TickCoordinator {
     fn init_next_ticks(&mut self, start: WorldYear, params: &WorldParameters) {
         for state in &mut self.layers {
             let interval = state.layer.tick_interval(start, params);
+            // Active layers tick immediately at `start`; dormant ones are re-polled
+            // on the coarse cadence rather than parked forever (limitation 3).
             state.next_tick_year = if interval > 0 {
                 start
             } else {
-                WorldYear(i64::MAX)
+                start + DORMANT_REPOLL_YEARS
             };
         }
     }
@@ -179,6 +188,35 @@ impl SimulationLayer for DormantLayer {
 
     fn advance(&mut self, _world: &mut WorldData, _rng: &WorldRng) -> Vec<()> {
         panic!("dormant layer must not advance");
+    }
+}
+
+/// Dormant until `wake_year`, then ticks — models biology (no work before oceans
+/// exist, active afterward) to prove the coordinator re-polls dormant layers.
+#[cfg(test)]
+struct WakingLayer {
+    wake_year: i64,
+    interval: i64,
+    tick_years: Arc<Mutex<Vec<WorldYear>>>,
+}
+
+#[cfg(test)]
+impl SimulationLayer for WakingLayer {
+    fn name(&self) -> &str {
+        "waking"
+    }
+
+    fn tick_interval(&self, current_time: WorldYear, _params: &WorldParameters) -> i64 {
+        if current_time.value() >= self.wake_year {
+            self.interval
+        } else {
+            0
+        }
+    }
+
+    fn advance(&mut self, world: &mut WorldData, _rng: &WorldRng) -> Vec<()> {
+        self.tick_years.lock().unwrap().push(world.current_year);
+        Vec::new()
     }
 }
 
@@ -290,5 +328,36 @@ mod tests {
         coord.advance_to(target, &mut world, &rng, &params);
 
         assert_eq!(world.current_year, target);
+    }
+
+    #[test]
+    fn dormant_at_start_layer_wakes_when_it_gets_work() {
+        // A layer that reports 0 at world start (dormant) must still be re-polled
+        // and tick once world state gives it work — not parked at i64::MAX forever
+        // (limitation 3).
+        let waker = WakingLayer {
+            wake_year: 3_000_000,
+            interval: 500_000,
+            tick_years: Arc::new(std::sync::Mutex::new(Vec::new())),
+        };
+        let log = Arc::clone(&waker.tick_years);
+
+        let mut coord = TickCoordinator::new();
+        coord.add_layer(Box::new(waker));
+
+        let mut world = world_at(WorldYear::FORMATION);
+        let rng = WorldRng::from_effective_seed(1);
+        let params = WorldParameters::default();
+        coord.advance_to(WorldYear(5_000_000), &mut world, &rng, &params);
+
+        let years = log.lock().unwrap();
+        assert!(
+            !years.is_empty(),
+            "a dormant-at-start layer must wake and tick once it has work"
+        );
+        assert!(
+            years.iter().all(|y| y.value() >= 3_000_000),
+            "no ticks before the wake year: {years:?}"
+        );
     }
 }

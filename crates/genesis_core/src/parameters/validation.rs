@@ -99,6 +99,18 @@ impl WorldParameters {
             "biology.extinction_scale",
         )?;
         validate_scale(
+            self.core.biology.biogenesis_rate_scale,
+            "biology.biogenesis_rate_scale",
+        )?;
+        validate_scale(
+            self.core.biology.novelty_temperature,
+            "biology.novelty_temperature",
+        )?;
+        validate_scale(
+            self.core.biology.complexity_pressure,
+            "biology.complexity_pressure",
+        )?;
+        validate_scale(
             self.core.civilization.tech_rate_scale,
             "civilization.tech_rate_scale",
         )?;

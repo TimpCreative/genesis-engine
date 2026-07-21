@@ -133,6 +133,13 @@ pub struct GeologyParameters {
     pub volcanism_scale: f32,
     /// Plate reorganization and general geological activity scale. Default 1.0 (Doc 06 §4.5).
     pub geology_activity_scale: f32,
+    /// Number of separate continental clusters (landmasses) to seed at world
+    /// formation. `0` = the seed decides (rolls 1..=3) — one supercontinent or
+    /// several dispersed continents, per world. `N` >= 1 forces exactly `N`
+    /// (clamped to the available major plates). Default 0. Dispersed continents
+    /// sample latitude more evenly than a single blob, which otherwise engulfs a
+    /// pole by pure geometry (a 30%-area cap has ~66° radius).
+    pub continent_cluster_count: u8,
     /// Number of major (large) plates at world formation. Default 7. Valid range 6-9.
     pub initial_major_plate_count: u8,
     /// Number of minor (smaller) plates at world formation. Default 8. Valid range 6-10.
@@ -297,12 +304,28 @@ pub struct ClimateInitialParameters {
 /// Biology system activation and rates.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BiologyParameters {
-    /// Year when biology activates. Default 500_000_000. Immutable.
+    /// Ramp **target / expected value** for biogenesis, not a hard switch: the
+    /// realized emergence year is an *output* of the biogenesis ramp (Doc 09
+    /// §3.1). Default 500_000_000.
     pub life_emergence_year: WorldYear,
     /// Mutation rate scale. Immutable.
     pub mutation_rate_scale: f32,
     /// Extinction event probability scale. Immutable.
     pub extinction_scale: f32,
+    /// Biogenesis tempo dial; 1.0 = Earth-like (Doc 09 §3.1).
+    pub biogenesis_rate_scale: f32,
+    /// Chaos: allow independent, unrelated trees of life. Default false (Doc 09 §3.1).
+    pub multiple_origins: bool,
+    /// Exploration "temperature" of the trait walk: 0 = Earth-like clustering,
+    /// 1.0 = alien (default), ~2.0 = weird (Doc 09 §2.6).
+    pub novelty_temperature: f32,
+    /// Thumb on the scale for the walk toward complexity; 1.0 = unbiased (Doc 09 §3.3).
+    pub complexity_pressure: f32,
+    /// Whether sapience can emerge at all. Default true (Doc 09 §10.3).
+    pub sapience_enabled: bool,
+    /// Constrain sapient morphology to upright/bilateral/four-limbed. Default
+    /// false (the Star-Trek dial, Doc 09 §10.3).
+    pub humanoid_sapients: bool,
 }
 
 /// Civilization emergence and rates.

@@ -56,8 +56,13 @@ pub struct TreeNodePeek {
     pub id: u64,
     pub parent: Option<u64>,
     pub name: String,
-    /// Taxonomic rank label (e.g. "kingdom", "class", "species").
+    /// Linnaean rank by **nesting depth** (kingdom → phylum → … → species), for
+    /// the hover tooltip — monotonic, unlike the trait-tier rank.
     pub rank: String,
+    /// Depth from the root (0 = LUCA), for indentation.
+    pub depth: u32,
+    /// The species id (`SpeciesPeek::species_id`) so a node opens its detail.
+    pub species_id: u64,
     pub defining_trait: String,
     pub origin_year: i64,
     /// `None` while extant; a year once the branch is extinct.
@@ -91,6 +96,35 @@ pub struct LifeEventPip {
     pub category: LifeEventCategory,
 }
 
+/// Full detail for one species (its detail panel), including the Linnaean
+/// **classification** ladder — the separate-from-phylogeny classification view.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SpeciesDetail {
+    pub name: String,
+    pub guild: String,
+    pub family: String,
+    pub description: String,
+    pub trait_chips: Vec<String>,
+    /// Each visible trait as `(display name, plain-English definition)` — for
+    /// hover tooltips on the trait chips.
+    pub trait_details: Vec<(String, String)>,
+    /// Classification from a deep rank down to this species: `(rank, clade name)`
+    /// pairs, e.g. `[("kingdom","Animals"), ("class","…"), … ("species","…")]`.
+    pub classification: Vec<(String, String)>,
+}
+
+/// A species' trophic neighborhood — the "who eats whom" web (Doc 09 §5.3),
+/// materialized on demand for its region.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FoodWeb {
+    /// What this species eats (the guild one trophic level below, in-region).
+    pub prey: Vec<SpeciesPeek>,
+    /// What eats this species (the guild one level above, in-region).
+    pub predators: Vec<SpeciesPeek>,
+    /// Others sharing its guild in the same region (competitors).
+    pub competitors: Vec<SpeciesPeek>,
+}
+
 /// Read-only contract the presentation consumes for "life". Pure reads — never
 /// mutates world state. Spatial queries take `&WorldData` so the view is a pure
 /// function of `(its own state, world, query)` (Prep-09 §11), which is what
@@ -120,4 +154,29 @@ pub trait BiologyView: Send + Sync {
 
     /// Life-relevant events overlapping `[from, to]` for timeline pips (§5).
     fn life_events(&self, from: WorldYear, to: WorldYear) -> Vec<LifeEventPip>;
+
+    /// Full detail for a species by its id (a `SpeciesPeek::species_id`), incl.
+    /// its classification ladder. Default `None`; the Doc 09 adapter overrides it.
+    fn species_detail(&self, _species_id: u64) -> Option<SpeciesDetail> {
+        None
+    }
+
+    /// The species' trophic neighbors (prey / predators / competitors) in its
+    /// region, generated on demand (Doc 09 §5.3). Default empty.
+    fn food_web(&self, _species_id: u64, _year: WorldYear) -> FoodWeb {
+        FoodWeb::default()
+    }
+
+    /// The whole living catalog at `year` — every extant species across regions,
+    /// ordered most-prominent-first (the global Bestiary, no hex needed). Default
+    /// empty.
+    fn species_catalog(&self, _year: WorldYear) -> Vec<SpeciesPeek> {
+        Vec::new()
+    }
+
+    /// The name of the era's dominant clade at `year` — e.g. "Age of the
+    /// Ventopus" (Doc 09 §9). Default `None`.
+    fn dominant_clade(&self, _year: WorldYear) -> Option<String> {
+        None
+    }
 }

@@ -60,6 +60,7 @@ impl Default for WorldParameters {
                 },
                 geology: GeologyParameters {
                     initial_continental_fraction: 0.30,
+                    continent_cluster_count: 0, // 0 = seed decides (1..=3)
                     plate_velocity_scale: 1.0,
                     volcanism_scale: 1.0,
                     geology_activity_scale: 1.0,
@@ -89,6 +90,12 @@ impl Default for WorldParameters {
                     life_emergence_year: WorldYear(500_000_000),
                     mutation_rate_scale: 1.0,
                     extinction_scale: 1.0,
+                    biogenesis_rate_scale: 1.0,
+                    multiple_origins: false,
+                    novelty_temperature: 1.0,
+                    complexity_pressure: 1.0,
+                    sapience_enabled: true,
+                    humanoid_sapients: false,
                 },
                 civilization: CivilizationParameters {
                     sapience_emergence_year: None,

@@ -15,8 +15,8 @@ pub mod time;
 pub mod world;
 
 pub use biology_view::{
-    Assemblage, BiologyView, GuildSummary, LifeEventCategory, LifeEventPip, SpeciesPeek, TreeNodePeek,
-    TreePeek,
+    Assemblage, BiologyView, FoodWeb, GuildSummary, LifeEventCategory, LifeEventPip, SpeciesDetail,
+    SpeciesPeek, TreeNodePeek, TreePeek,
 };
 pub use branches::{Branch, BranchError, BranchId, BranchTree};
 pub use data::{

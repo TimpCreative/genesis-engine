@@ -2,7 +2,7 @@
 
 mod kinds;
 
-pub use kinds::{BoundaryType, EventKind, PlateReorgAction};
+pub use kinds::{BoundaryType, EventKind, InnovationKind, PlateReorgAction};
 
 use serde::{Deserialize, Serialize};
 
