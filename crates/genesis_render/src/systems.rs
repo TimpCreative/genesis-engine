@@ -114,8 +114,7 @@ pub fn sync_camera(
             // Flat map is world-fixed: the camera translates over it.
             let (cx, cy) = project(camera_state.center_lat_rad, camera_state.center_lon_rad);
             transform.translation = Vec3::new(cx, cy, CAMERA_Z);
-            let (viewport_width, viewport_height) =
-                viewport_world_size(aspect, camera_state.zoom);
+            let (viewport_width, viewport_height) = viewport_world_size(aspect, camera_state.zoom);
             if let Projection::Orthographic(ref mut ortho) = *projection {
                 ortho.scale = 1.0;
                 ortho.scaling_mode = if aspect > WORLD_ASPECT {
@@ -155,6 +154,7 @@ pub struct CameraDragState {
     pub just_clicked_map: bool,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn handle_camera_input(
     mouse_buttons: Res<ButtonInput<MouseButton>>,
     mouse_motion: Res<AccumulatedMouseMotion>,
@@ -162,9 +162,17 @@ pub fn handle_camera_input(
     projection_mode: Res<CurrentProjection>,
     mut camera_state: ResMut<CameraState>,
     mut drag: ResMut<CameraDragState>,
+    ui_capture: Res<crate::resources::PointerCapturedByUi>,
     window_query: Query<&Window, With<PrimaryWindow>>,
 ) {
     drag.just_clicked_map = false;
+    // A full-screen overlay owns the pointer — don't pan/zoom the map underneath
+    // it (the wheel scrolls the overlay instead). Still drain the wheel so it does
+    // not accumulate and jump when the overlay closes.
+    if ui_capture.0 {
+        mouse_wheel.clear();
+        return;
+    }
     let Ok(window) = window_query.single() else {
         return;
     };
@@ -418,8 +426,7 @@ pub fn render_world_if_dirty(
 
         // Flat map drops the self-crossing polar caps entirely; the globe keeps
         // every hex (far-side ones are collapsed to a degenerate point below).
-        if !projection.hex_visible(center_dir, view)
-            && projection == MapProjection::Equirectangular
+        if !projection.hex_visible(center_dir, view) && projection == MapProjection::Equirectangular
         {
             skipped += 1;
             continue;
@@ -531,8 +538,11 @@ pub fn refresh_projected_positions(
             for k in 0..count as usize {
                 let vi = b + k;
                 positions[vi] = if visible {
-                    let (x, y) =
-                        MapProjection::Orthographic.project(chunk.vertex_dirs[vi].as_dvec3(), center_dir, view);
+                    let (x, y) = MapProjection::Orthographic.project(
+                        chunk.vertex_dirs[vi].as_dvec3(),
+                        center_dir,
+                        view,
+                    );
                     [x, y, 0.0]
                 } else {
                     [0.0, 0.0, 0.0]

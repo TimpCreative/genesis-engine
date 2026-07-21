@@ -90,8 +90,9 @@ mod tests {
         let mut window = Window::default();
         window.resolution.set(800.0, 600.0);
         let cursor = Vec2::new(400.0, 300.0);
-        let (lat, lon) = screen_to_lat_lon(&window, &camera, MapProjection::Equirectangular, cursor)
-            .expect("center");
+        let (lat, lon) =
+            screen_to_lat_lon(&window, &camera, MapProjection::Equirectangular, cursor)
+                .expect("center");
         assert!((lat - camera.center_lat_rad).abs() < 1e-4);
         assert!((lon - camera.center_lon_rad).abs() < 1e-4);
     }
@@ -124,9 +125,13 @@ mod tests {
         };
         let mut window = Window::default();
         window.resolution.set(800.0, 800.0);
-        let (lat, lon) =
-            screen_to_lat_lon(&window, &camera, MapProjection::Orthographic, Vec2::new(400.0, 400.0))
-                .expect("disc center");
+        let (lat, lon) = screen_to_lat_lon(
+            &window,
+            &camera,
+            MapProjection::Orthographic,
+            Vec2::new(400.0, 400.0),
+        )
+        .expect("disc center");
         assert!((lat - camera.center_lat_rad).abs() < 1e-4, "lat {lat}");
         assert!((lon - camera.center_lon_rad).abs() < 1e-4, "lon {lon}");
         // And a corner (outside the inscribed disc) rejects.

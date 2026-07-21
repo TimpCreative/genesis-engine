@@ -285,10 +285,22 @@ mod tests {
             lat_rad: 0.0,
             lon_rad: 0.0,
         };
-        assert!(MapProjection::Orthographic.unproject(1.5, 0.0, view).is_none());
-        assert!(MapProjection::Orthographic.unproject(0.8, 0.8, view).is_none());
+        assert!(
+            MapProjection::Orthographic
+                .unproject(1.5, 0.0, view)
+                .is_none()
+        );
+        assert!(
+            MapProjection::Orthographic
+                .unproject(0.8, 0.8, view)
+                .is_none()
+        );
         // On the disc: valid.
-        assert!(MapProjection::Orthographic.unproject(0.5, 0.5, view).is_some());
+        assert!(
+            MapProjection::Orthographic
+                .unproject(0.5, 0.5, view)
+                .is_some()
+        );
     }
 
     #[test]
@@ -317,10 +329,14 @@ mod tests {
     fn equirect_projection_matches_free_functions() {
         // The enum's Equirectangular arm must agree with the standalone project().
         let dir = lat_lon_to_dir(0.4, 1.1);
-        let (x, y) = MapProjection::Equirectangular.project(dir, dir, ViewCenter {
-            lat_rad: 0.0,
-            lon_rad: 0.0,
-        });
+        let (x, y) = MapProjection::Equirectangular.project(
+            dir,
+            dir,
+            ViewCenter {
+                lat_rad: 0.0,
+                lon_rad: 0.0,
+            },
+        );
         let (fx, fy) = project(0.4, 1.1);
         assert!((x - fx).abs() < 1e-6 && (y - fy).abs() < 1e-6);
     }

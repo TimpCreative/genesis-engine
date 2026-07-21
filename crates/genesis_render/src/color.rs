@@ -746,7 +746,13 @@ mod tests {
         data.water_level_m[0] = WATER_NONE;
         data.sea_level_m = -3000.0;
 
-        let formation = color_to_rgb(hex_color_for_mode(&data, 0, RenderMode::Elevation, false, None));
+        let formation = color_to_rgb(hex_color_for_mode(
+            &data,
+            0,
+            RenderMode::Elevation,
+            false,
+            None,
+        ));
         let modern = color_to_rgb(elevation_color(200.0, 0.0));
         assert!(
             modern[1] > modern[0] && modern[1] > modern[2],
@@ -758,7 +764,13 @@ mod tests {
         );
 
         data.current_year = WorldYear(FORMATION_END_YEAR);
-        let post = color_to_rgb(hex_color_for_mode(&data, 0, RenderMode::Elevation, false, None));
+        let post = color_to_rgb(hex_color_for_mode(
+            &data,
+            0,
+            RenderMode::Elevation,
+            false,
+            None,
+        ));
         colors_approx_equal(
             Color::srgb(post[0], post[1], post[2]),
             elevation_color(200.0, data.sea_level_m),
@@ -795,7 +807,13 @@ mod tests {
         data.elevation_mean[0] = 200.0;
         data.water_level_m[0] = WATER_NONE;
 
-        let rgb = color_to_rgb(hex_color_for_mode(&data, 0, RenderMode::Elevation, false, None));
+        let rgb = color_to_rgb(hex_color_for_mode(
+            &data,
+            0,
+            RenderMode::Elevation,
+            false,
+            None,
+        ));
         let modern = color_to_rgb(elevation_color(200.0, 0.0));
         for i in 0..3 {
             assert!((rgb[i] - modern[i]).abs() < EPS);

@@ -5,6 +5,7 @@
 //! viewer can scrub the timeline without re-simulating. Frames hold only the
 //! renderable per-hex fields (~0.5 MB at subdivision 7), not the grid.
 
+use genesis_biology::{BiologyLayer, BiologyState, flush_events_to_branch as flush_biology_events};
 use genesis_climate::{ClimateLayer, ClimateState, flush_events_to_branch as flush_climate_events};
 use genesis_core::World;
 use genesis_core::data::{
@@ -159,10 +160,10 @@ impl HistoryFrame {
             soil_class: data.soil_class.clone(),
             flow_direction: data.flow_direction.clone(),
             salt_accumulated: data.salt_accumulated.clone(),
-            // Empty until Doc 09 produces biology (Prep-09 §10).
-            biome: Vec::new(),
-            biomass: Vec::new(),
-            biotic_richness: Vec::new(),
+            // Doc 09 biology render fields (filled by the biology layer).
+            biome: data.biome.clone(),
+            biomass: data.biomass.clone(),
+            biotic_richness: data.biotic_richness.clone(),
         }
     }
 
@@ -197,7 +198,80 @@ impl HistoryFrame {
             if data.biomass.len() == self.biomass.len() {
                 data.biomass.copy_from_slice(&self.biomass);
             }
+            if data.biotic_richness.len() == self.biotic_richness.len() {
+                data.biotic_richness.copy_from_slice(&self.biotic_richness);
+            }
         }
+    }
+
+    /// Applies a state interpolated between `self` and `next` at
+    /// `alpha ∈ (0, 1)` — the bottom bar's fine time-stepping. Continuous
+    /// fields lerp (terrain drifts smoothly instead of popping a full
+    /// [`HISTORY_STRIDE_YEARS`] at once); discrete fields (water bodies,
+    /// flags, classes, flow directions) come from the nearer frame, so
+    /// coastlines and rivers switch at the midpoint rather than smearing.
+    pub fn apply_interpolated(&self, next: &Self, alpha: f32, data: &mut WorldData) {
+        let t = alpha.clamp(0.0, 1.0);
+        let near = if t < 0.5 { self } else { next };
+        near.apply(data);
+        data.current_year = genesis_core::WorldYear(
+            self.year + ((next.year - self.year) as f64 * f64::from(t)) as i64,
+        );
+        data.sea_level_m = self.sea_level_m + (next.sea_level_m - self.sea_level_m) * t;
+        lerp_into(
+            &mut data.elevation_mean,
+            &self.elevation_mean,
+            &next.elevation_mean,
+            t,
+        );
+        lerp_into(
+            &mut data.temperature_mean,
+            &self.temperature_mean,
+            &next.temperature_mean,
+            t,
+        );
+        lerp_into(
+            &mut data.precipitation,
+            &self.precipitation,
+            &next.precipitation,
+            t,
+        );
+        lerp_into(
+            &mut data.river_discharge_m3_yr,
+            &self.river_discharge_m3_yr,
+            &next.river_discharge_m3_yr,
+            t,
+        );
+        lerp_into(
+            &mut data.soil_fertility,
+            &self.soil_fertility,
+            &next.soil_fertility,
+            t,
+        );
+        lerp_into(
+            &mut data.salt_accumulated,
+            &self.salt_accumulated,
+            &next.salt_accumulated,
+            t,
+        );
+        lerp_into(&mut data.biomass, &self.biomass, &next.biomass, t);
+        lerp_into(
+            &mut data.biotic_richness,
+            &self.biotic_richness,
+            &next.biotic_richness,
+            t,
+        );
+    }
+}
+
+/// Elementwise lerp, length-guarded like [`HistoryFrame::apply`]'s optional
+/// fields (skips silently on any mismatch, e.g. empty Doc-09 vectors).
+fn lerp_into(out: &mut [f32], a: &[f32], b: &[f32], t: f32) {
+    if out.len() != a.len() || a.len() != b.len() {
+        return;
+    }
+    for ((slot, &x), &y) in out.iter_mut().zip(a).zip(b) {
+        *slot = x + (y - x) * t;
     }
 }
 
@@ -224,7 +298,7 @@ pub fn generate_full_history(
     hydrology: &mut HydrologyState,
     target_year: WorldYear,
     mut progress: impl FnMut(&WorldData),
-) -> Result<(), GenerationError> {
+) -> Result<genesis_biology::Ledger, GenerationError> {
     let current = world.data.current_year;
     if target_year < current {
         return Err(GenerationError::TargetInPast {
@@ -233,16 +307,23 @@ pub fn generate_full_history(
         });
     }
     if target_year == current {
-        return Ok(());
+        return Ok(genesis_biology::Ledger::default());
     }
 
     let (tectonics_layer, tectonics_shared) = TectonicsLayer::attach(tectonics);
     let (climate_layer, climate_shared) = ClimateLayer::attach(climate);
     let (hydrology_layer, hydrology_shared) = HydrologyLayer::attach(hydrology);
+    // Biology (Layer 1) is registered here — always-on, but dormant until P4-3
+    // gives it a non-zero tick interval and real `advance` work (Doc 09 §3).
+    // State is local for now; P4-3 plumbs it through to the caller for
+    // branch-scoped persistence and event flushing.
+    let mut biology = BiologyState::new();
+    let (biology_layer, biology_shared) = BiologyLayer::attach(&mut biology);
     let mut coordinator = TickCoordinator::new();
     coordinator.add_layer(Box::new(tectonics_layer));
     coordinator.add_layer(Box::new(climate_layer));
     coordinator.add_layer(Box::new(hydrology_layer));
+    coordinator.add_layer(Box::new(biology_layer));
 
     advance_with_coordinator_observed(world, &mut coordinator, target_year, |data| {
         progress(data);
@@ -252,6 +333,11 @@ pub fn generate_full_history(
     *tectonics = TectonicsLayer::detach_state(tectonics_shared);
     *climate = ClimateLayer::detach_state(climate_shared);
     *hydrology = HydrologyLayer::detach_state(hydrology_shared);
+    // Recover biology state and flush its events to the branch log, like the
+    // physical layers below. (State is local; caller-owned persistence is a
+    // later slice.)
+    let mut biology = BiologyLayer::detach_state(biology_shared);
+    flush_biology_events(world, &mut biology);
     flush_tectonic_events(world, tectonics);
     flush_climate_events(world, climate);
     flush_hydrology_events(world, hydrology);
@@ -269,7 +355,7 @@ pub fn generate_full_history(
         );
     }
 
-    Ok(())
+    Ok(biology.into_ledger())
 }
 
 /// Events streamed from the generation thread to the UI (Doc 05 §A).
@@ -283,10 +369,56 @@ pub enum GenEvent {
     InitialWorld(Box<World>),
     /// A buffered history frame, in strictly increasing year order.
     Frame(Box<HistoryFrame>),
+    /// The recorded tree of life, sent once generation completes so the viewer
+    /// can build the real `BiologyView` adapter over it (Doc 09 §8.1).
+    BiologyLedger(Box<genesis_biology::Ledger>),
+    /// The real biology chronicle (life emerged, oxygenation, innovations) from
+    /// the branch event log — for the timeline pips, with true years.
+    LifeEvents(Vec<genesis_core::biology_view::LifeEventPip>),
     /// Generation finished; the last emitted frame is the final state.
     Done { final_year: i64 },
     /// Generation failed.
     Failed(String),
+}
+
+/// Converts the branch's biology events into timeline pips (Doc 09 §13).
+fn life_event_pips(world: &World) -> Vec<genesis_core::biology_view::LifeEventPip> {
+    use genesis_core::biology_view::{LifeEventCategory, LifeEventPip};
+    use genesis_core::events::{EventKind, InnovationKind};
+    world
+        .branch_tree
+        .root()
+        .event_log
+        .iter()
+        .filter_map(|e| {
+            let (label, category) = match &e.kind {
+                EventKind::LifeEmerged { .. } => {
+                    ("Life emerges".to_string(), LifeEventCategory::Origin)
+                }
+                EventKind::GreatOxygenation { .. } => (
+                    "Great Oxygenation".to_string(),
+                    LifeEventCategory::Milestone,
+                ),
+                EventKind::EvolutionaryInnovation { innovation } => {
+                    let name = match innovation {
+                        InnovationKind::OxygenicPhotosynthesis => "Oxygenic photosynthesis",
+                        InnovationKind::Eukaryogenesis => "Eukaryogenesis",
+                        InnovationKind::Multicellularity => "Multicellularity",
+                        InnovationKind::LandColonization => "Land colonization",
+                        InnovationKind::Flight => "Flight",
+                        InnovationKind::Endothermy => "Endothermy",
+                    };
+                    (name.to_string(), LifeEventCategory::Innovation)
+                }
+                _ => return None,
+            };
+            Some(LifeEventPip {
+                year: e.year.value(),
+                label,
+                category,
+            })
+        })
+        .collect()
 }
 
 /// Runs a full generation from `config`, streaming [`GenEvent`]s as the world
@@ -339,13 +471,15 @@ pub fn generate_world_streaming(config: &WorldGenConfig, mut emit: impl FnMut(Ge
     );
 
     match result {
-        Ok(()) => {
+        Ok(ledger) => {
             let final_year = world.data.current_year.value();
             if last_frame_year != final_year {
                 emit(GenEvent::Frame(Box::new(HistoryFrame::capture(
                     &world.data,
                 ))));
             }
+            emit(GenEvent::LifeEvents(life_event_pips(&world)));
+            emit(GenEvent::BiologyLedger(Box::new(ledger)));
             emit(GenEvent::Done { final_year });
         }
         Err(e) => emit(GenEvent::Failed(format!("{e:?}"))),
@@ -368,7 +502,10 @@ pub fn generate_world_with_history(
         GenEvent::Frame(frame) => frames.push(*frame),
         GenEvent::Progress { year, target } => on_progress(year, target),
         GenEvent::Failed(e) => failure = Some(e),
-        GenEvent::Stage(_) | GenEvent::Done { .. } => {}
+        GenEvent::Stage(_)
+        | GenEvent::Done { .. }
+        | GenEvent::BiologyLedger(_)
+        | GenEvent::LifeEvents(_) => {}
     });
 
     if let Some(e) = failure {
@@ -420,7 +557,49 @@ mod tests {
         assert_eq!(frames[0].elevation_mean.len(), n);
     }
 
+    /// Fine stepping (Prep-09 bottom bar): continuous fields lerp between
+    /// frames; discrete water fields snap to the nearer frame.
     #[test]
+    fn interpolated_frames_lerp_continuous_and_snap_discrete() {
+        let mut params = genesis_core::parameters::WorldParameters::default();
+        params.core.grid.subdivision_level = 5;
+        let mut world = genesis_core::create_world(params).expect("world");
+        let n = world.data.cell_count() as usize;
+
+        world.data.current_year = genesis_core::WorldYear(100);
+        world.data.elevation_mean.fill(1000.0);
+        world
+            .data
+            .water_level_m
+            .fill(genesis_core::data::WATER_NONE);
+        let a = HistoryFrame::capture(&world.data);
+
+        world.data.current_year = genesis_core::WorldYear(300);
+        world.data.elevation_mean.fill(2000.0);
+        world.data.water_level_m.fill(5.0);
+        world.data.water_body_id.fill(genesis_core::WaterBodyId(3));
+        let b = HistoryFrame::capture(&world.data);
+
+        a.apply_interpolated(&b, 0.25, &mut world.data);
+        assert_eq!(world.data.current_year.value(), 150, "year lerps");
+        assert!(
+            (world.data.elevation_mean[0] - 1250.0).abs() < 1e-3,
+            "elevation lerps: {}",
+            world.data.elevation_mean[0]
+        );
+        assert_eq!(
+            world.data.water_level_m[0],
+            genesis_core::data::WATER_NONE,
+            "alpha < 0.5 takes the earlier frame's water (sentinels never lerp)"
+        );
+
+        a.apply_interpolated(&b, 0.75, &mut world.data);
+        assert!((world.data.elevation_mean[0] - 1750.0).abs() < 1e-3);
+        assert_eq!(world.data.water_level_m[0], 5.0, "alpha > 0.5 takes next");
+        assert_eq!(world.data.water_body_id[0], genesis_core::WaterBodyId(3));
+        assert_eq!(world.data.elevation_mean.len(), n);
+    }
+
     fn history_stride_is_constant_across_targets_and_grid_sizes() {
         assert_eq!(
             history_stride_years(1_000_000_000, 10_242),
@@ -578,5 +757,175 @@ mod tests {
             world_a.data.elevation_mean, world_b.data.elevation_mean,
             "different seed, different world"
         );
+    }
+
+    /// End-to-end: life emerges and climbs the innovation ladder in a full run
+    /// (Doc 09 §3). Uses `generate_full_history` directly because the streaming
+    /// wrapper returns the year-0 clone + render frames, whose event log is
+    /// empty — the chronicle lives on the simulated world (surfacing biology
+    /// events to the viewer is separate event-stream plumbing). Ignored (a 1-By
+    /// generation); run:
+    /// `cargo test -p genesis_ui life_emerges_in_a_full_run -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "full 1-By generation; run explicitly to watch life emerge"]
+    fn life_emerges_in_a_full_run() {
+        use genesis_climate::ClimateState;
+        use genesis_core::create_world;
+        use genesis_core::events::EventKind;
+        use genesis_hydrology::HydrologyState;
+        use genesis_tectonics::TectonicsState;
+
+        let config = WorldGenConfig {
+            seed_text: "genesis".to_string(),
+            subdivision_level: 5,
+            target_year: 1_000_000_000,
+            ..WorldGenConfig::default()
+        };
+        let mut world = create_world(config.to_parameters()).expect("world");
+        let mut tectonics = TectonicsState::new();
+        let mut climate = ClimateState::new();
+        let mut hydrology = HydrologyState::new();
+        generate_full_history(
+            &mut world,
+            &mut tectonics,
+            &mut climate,
+            &mut hydrology,
+            WorldYear(1_000_000_000),
+            |_| {},
+        )
+        .expect("generation");
+
+        let log = &world.branch_tree.root().event_log;
+        let life = log
+            .iter()
+            .find(|e| matches!(e.kind, EventKind::LifeEmerged { .. }))
+            .expect("life should emerge within 1 By");
+        println!(
+            "LIFE EMERGED at {} My ({:?})",
+            life.year.value() / 1_000_000,
+            life.location
+        );
+        for e in log.iter() {
+            match &e.kind {
+                EventKind::GreatOxygenation { o2_fraction } => println!(
+                    "  Great Oxygenation at {} My (O2 {o2_fraction:.2})",
+                    e.year.value() / 1_000_000
+                ),
+                EventKind::EvolutionaryInnovation { innovation } => {
+                    println!("  {innovation:?} at {} My", e.year.value() / 1_000_000)
+                }
+                _ => {}
+            }
+        }
+        let innovations = log
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e.kind,
+                    EventKind::EvolutionaryInnovation { .. } | EventKind::GreatOxygenation { .. }
+                )
+            })
+            .count();
+        assert!(
+            innovations >= 1,
+            "at least one innovation should fire by 1 By"
+        );
+
+        // Timeline pips now use the *real* chronicle years (limitations 2 + 15).
+        let pips = life_event_pips(&world);
+        println!("real life-event pips: {}", pips.len());
+        assert!(
+            pips.iter()
+                .any(|p| p.label == "Life emerges" && p.year == life.year.value()),
+            "the 'Life emerges' pip must carry the true simulated emergence year"
+        );
+    }
+
+    /// End-to-end: after a full run, the biology fields are populated and the
+    /// real `GeneratedBiologyView` adapter reads them into biomes / biomass /
+    /// species / a tree. Run:
+    /// `cargo test -p genesis_ui biology_on_the_map -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "full 1-By generation; shows what the viewer will render"]
+    fn biology_on_the_map() {
+        use genesis_biology::GeneratedBiologyView;
+        use genesis_climate::ClimateState;
+        use genesis_core::HexId;
+        use genesis_core::biology_view::BiologyView;
+        use genesis_core::create_world;
+        use genesis_core::data::BiomeId;
+        use genesis_hydrology::HydrologyState;
+        use genesis_tectonics::TectonicsState;
+
+        let config = WorldGenConfig {
+            seed_text: "genesis".to_string(),
+            subdivision_level: 6,
+            target_year: 1_000_000_000,
+            ..WorldGenConfig::default()
+        };
+        let mut world = create_world(config.to_parameters()).expect("world");
+        let seed = world.data.parameters.core.seed.value;
+        let (mut t, mut c, mut h) = (
+            TectonicsState::new(),
+            ClimateState::new(),
+            HydrologyState::new(),
+        );
+        let ledger = generate_full_history(
+            &mut world,
+            &mut t,
+            &mut c,
+            &mut h,
+            WorldYear(1_000_000_000),
+            |_| {},
+        )
+        .expect("gen");
+        println!("ledger lineages: {}", ledger.len());
+
+        let d = &world.data;
+        let n = d.cell_count() as usize;
+        // Biome distribution.
+        let mut counts: std::collections::BTreeMap<u16, usize> = std::collections::BTreeMap::new();
+        let (mut life_hexes, mut max_biomass, mut max_r) = (0, 0.0f32, 0.0f32);
+        for i in 0..n {
+            *counts.entry(d.biome[i].0).or_default() += 1;
+            if d.biome[i] != BiomeId::NONE && d.biome[i].0 != 12 {
+                life_hexes += 1;
+            }
+            max_biomass = max_biomass.max(d.biomass[i]);
+            max_r = max_r.max(d.biotic_richness[i]);
+        }
+        let view = GeneratedBiologyView::with_ledger(seed, ledger);
+        println!(
+            "biomes present: {} kinds; life-bearing hexes: {life_hexes}/{n}",
+            counts.len()
+        );
+        for (b, ct) in &counts {
+            println!("  {} : {ct}", view.biome_name(BiomeId(*b)));
+        }
+        println!("max biomass {max_biomass:.0}, max richness {max_r:.2}");
+
+        // A sample assemblage from the richest hex.
+        let richest = (0..n)
+            .max_by(|&a, &b| d.biotic_richness[a].total_cmp(&d.biotic_richness[b]))
+            .unwrap();
+        let a = view.assemblage(d, HexId(richest as u32));
+        println!(
+            "richest hex {richest}: {} (R {:.2}), {} guilds, {} species e.g. {:?}",
+            a.biome_name,
+            a.richness,
+            a.occupied_guilds,
+            a.species.len(),
+            a.species.first().map(|s| &s.name)
+        );
+        let tree = view.tree_snapshot(WorldYear(1_000_000_000));
+        println!("tree nodes at 1 By: {}", tree.nodes.len());
+
+        assert!(life_hexes > 0, "some hexes should be life-bearing");
+        assert!(
+            max_biomass > 0.0 && max_r > 0.0,
+            "biomass/richness fields populated"
+        );
+        assert!(!a.species.is_empty(), "richest hex should generate species");
+        assert!(tree.nodes.len() > 1, "tree should have grown");
     }
 }

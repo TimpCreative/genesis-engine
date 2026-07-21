@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 arboard = { version = "3", default-features = false }
 bevy = { workspace = true }
+genesis_biology = { path = "../genesis_biology" }
 genesis_climate = { path = "../genesis_climate" }
 genesis_core = { path = "../genesis_core" }
 genesis_hydrology = { path = "../genesis_hydrology" }

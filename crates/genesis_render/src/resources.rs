@@ -53,6 +53,12 @@ impl Default for WorldDirty {
 #[derive(Resource, Default)]
 pub struct ColorsDirty(pub bool);
 
+/// True while a full-screen UI overlay (Bestiary / Tree of Life / species detail)
+/// has captured the pointer, so map pan/zoom must not also react to the wheel or
+/// drag underneath it. Set by the UI layer each frame from its overlay state.
+#[derive(Resource, Default)]
+pub struct PointerCapturedByUi(pub bool);
+
 /// Pan/zoom state for the 2D equirectangular view.
 #[derive(Resource)]
 pub struct CameraState {

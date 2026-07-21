@@ -9,16 +9,18 @@
 use std::sync::Mutex;
 use std::sync::mpsc::{Receiver, channel};
 
+use bevy::input::mouse::{AccumulatedMouseScroll, MouseScrollUnit};
 use bevy::prelude::*;
-use bevy::ui::FocusPolicy;
+use bevy::ui::{FocusPolicy, RelativeCursorPosition, ScrollPosition};
+use bevy::window::PrimaryWindow;
 use genesis_core::data::BiomeId;
 use genesis_render::{
     ActiveBiologyView, ColorsDirty, CurrentProjection, CurrentRenderMode, HexEntityCache,
-    HexMeshIndex, RenderMode, RiversDirty, SelectedHex, WorldDirty, WorldResource, biome_color,
-    heatmap_color, precipitation_to_color, regime_to_color, soil_class_color, temperature_to_color,
+    HexMeshIndex, PointerCapturedByUi, RenderMode, RiversDirty, SelectedHex, WorldDirty,
+    WorldResource, biome_color, heatmap_color, precipitation_to_color, regime_to_color,
+    soil_class_color, temperature_to_color,
 };
 
-use crate::biology_view::StubBiologyView;
 use crate::hex_inspect::{
     BlocksMapPick, HoveredHex, InspectorTab, InspectorVisible, PendingMenuQuit,
     clear_inspect_on_exit, despawn_hex_inspect_ui, handle_inspector_tabs, handle_map_hex_click,
@@ -60,6 +62,7 @@ pub enum UiAction {
     ToggleBestiary,
     ToggleTree,
     ToggleProjection,
+    ToggleFineStep,
 }
 
 /// Marks the top-bar projection button's label so it can show the active
@@ -89,6 +92,90 @@ pub struct TreeContent;
 /// True while an overlay's content matches the current world/hex/year.
 #[derive(Resource, Default)]
 pub struct OverlayBuilt(pub bool);
+
+/// The species whose detail panel is open (its `species_id`), or `None` when the
+/// panel is closed. Set by clicking a Bestiary card (Doc 09 §9 drill-down).
+#[derive(Resource, Default)]
+pub struct SelectedSpecies(pub Option<u64>);
+/// True while the species detail panel matches `SelectedSpecies`.
+#[derive(Resource, Default)]
+pub struct SpeciesDetailBuilt(pub bool);
+/// A clickable Bestiary species card, carrying its `species_id` for the drill-down.
+#[derive(Component)]
+pub struct SpeciesCard(pub u64);
+/// Root of the species detail modal (absolute; hidden until a card is clicked).
+#[derive(Component)]
+pub struct SpeciesDetailPanel;
+/// Content container of the detail panel, rebuilt when the selection changes.
+#[derive(Component)]
+pub struct SpeciesDetailContent;
+/// The detail panel's "Close" button.
+#[derive(Component)]
+pub struct SpeciesDetailClose;
+/// The detail panel's "Back" button (retraces navigation through clicked species).
+#[derive(Component)]
+pub struct SpeciesDetailBack;
+/// The stack of previously-viewed species, for the detail panel's Back button.
+#[derive(Resource, Default)]
+pub struct SpeciesHistory(pub Vec<u64>);
+/// A generic hover tooltip payload — put on tree rows and trait chips; the
+/// `hover_tooltip` system shows the floating panel for whichever is hovered.
+#[derive(Component)]
+pub struct HoverTip(pub String);
+
+/// Sort order for the global Bestiary list (no hex selected).
+#[derive(Resource, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BestiarySort {
+    /// Most notable / prominent species first (the adapter's default order).
+    #[default]
+    Notable,
+    /// Alphabetical by name.
+    Alpha,
+    /// Reverse alphabetical.
+    ReverseAlpha,
+}
+impl BestiarySort {
+    fn label(self) -> &'static str {
+        match self {
+            BestiarySort::Notable => "Notable first",
+            BestiarySort::Alpha => "A–Z",
+            BestiarySort::ReverseAlpha => "Z–A",
+        }
+    }
+    fn next(self) -> Self {
+        match self {
+            BestiarySort::Notable => BestiarySort::Alpha,
+            BestiarySort::Alpha => BestiarySort::ReverseAlpha,
+            BestiarySort::ReverseAlpha => BestiarySort::Notable,
+        }
+    }
+}
+/// The Bestiary's sort-cycle button + its label.
+#[derive(Component)]
+pub struct BestiarySortButton;
+#[derive(Component)]
+pub struct BestiarySortLabel;
+
+/// A clickable Tree-of-Life row (its lineage id, species id, and whether it has
+/// children — a leaf opens detail, an internal node toggles expand).
+#[derive(Component)]
+pub struct TreeRowButton {
+    pub lineage_id: u64,
+    pub species_id: u64,
+    pub has_children: bool,
+}
+/// Which tree lineage ids are expanded (their children shown). Empty = only the
+/// default top levels are open.
+#[derive(Resource, Default)]
+pub struct TreeExpanded(pub std::collections::BTreeSet<u64>);
+/// Whether the tree has been initialized with its default-expanded roots.
+#[derive(Resource, Default)]
+pub struct TreeExpandInit(pub bool);
+/// Root of the floating tree tooltip; `TreeTooltipText` is its label.
+#[derive(Component)]
+pub struct TreeTooltip;
+#[derive(Component)]
+pub struct TreeTooltipText;
 
 /// Marks a top-bar layer-selector tab for its render mode (active highlight).
 #[derive(Component)]
@@ -237,6 +324,15 @@ pub struct PipStrip;
 #[derive(Resource, Default)]
 pub struct TimelineMarksBuilt(pub bool);
 
+/// The real biology chronicle (true years) for the timeline pips; empty until
+/// generation streams it. Replaces the adapter's fabricated pips.
+#[derive(Resource, Default)]
+pub struct RealLifeEvents(pub Vec<genesis_core::biology_view::LifeEventPip>);
+
+/// Marks a timeline life-event pip so real events can replace fabricated ones.
+#[derive(Component)]
+pub struct LifePip;
+
 /// Pip color by life-event category (Prep-09 §5.1).
 fn pip_color(category: genesis_core::LifeEventCategory) -> Color {
     use genesis_core::LifeEventCategory as C;
@@ -262,6 +358,9 @@ pub struct GenerationTask(pub Mutex<Receiver<GenEvent>>);
 pub struct WorldTimeline {
     pub frames: Vec<HistoryFrame>,
     pub current: usize,
+    /// Interpolation position within [current, current+1) for fine stepping;
+    /// 0.0 = exactly on the buffered frame.
+    pub alpha: f32,
     pub playing: bool,
     pub play_timer: Timer,
     pub target_year: i64,
@@ -291,6 +390,22 @@ impl Default for SeedBackspaceRepeat {
     }
 }
 
+/// Fine time-step, as a fraction of the 10 My frame stride (Prep-09 bottom
+/// bar): 0.2 → 2 My per press. Sub-stride states are interpolated between
+/// the buffered frames ([`HistoryFrame::apply_interpolated`]) — continuous
+/// fields lerp, water/rivers switch at the midpoint — so slow terrain drift
+/// reads as drift instead of a 10 My pop.
+pub const FINE_STEP_FRACTION: f32 = 0.2;
+
+/// Bottom-bar step size: false = one frame (10 My), true = fine
+/// ([`FINE_STEP_FRACTION`] of a frame, 2 My).
+#[derive(Resource, Default)]
+pub struct FineStep(pub bool);
+
+/// Marks the step-size toggle's label ("Step: 10 My" / "Step: 2 My").
+#[derive(Component)]
+pub struct StepSizeLabel;
+
 /// Delay before hold-to-scrub starts repeating (s).
 pub const SCRUB_INITIAL_DELAY_S: f32 = 0.35;
 /// Repeat interval while an arrow key is held (s).
@@ -318,9 +433,17 @@ impl Plugin for GenesisUiPlugin {
             .init_resource::<LegendVisible>()
             .init_resource::<PendingMenuQuit>()
             .init_resource::<TimelineMarksBuilt>()
+            .init_resource::<RealLifeEvents>()
             .init_resource::<OpenOverlay>()
             .init_resource::<OverlayBuilt>()
+            .init_resource::<SelectedSpecies>()
+            .init_resource::<SpeciesDetailBuilt>()
+            .init_resource::<BestiarySort>()
+            .init_resource::<TreeExpanded>()
+            .init_resource::<TreeExpandInit>()
+            .init_resource::<SpeciesHistory>()
             .init_resource::<ScrubRepeat>()
+            .init_resource::<FineStep>()
             .init_resource::<SeedBackspaceRepeat>()
             .init_resource::<HoveredHex>()
             .init_resource::<InspectorTab>()
@@ -372,6 +495,7 @@ impl Plugin for GenesisUiPlugin {
                             update_hex_tooltip,
                             update_hex_inspector,
                             timeline_keyboard,
+                            pause_time_while_inspecting,
                             timeline_playback,
                         )
                             .chain(),
@@ -383,9 +507,18 @@ impl Plugin for GenesisUiPlugin {
                             refresh_mode_tabs,
                             refresh_projection_tab,
                             handle_projection_toggle,
+                            handle_timeline_step_buttons,
                             build_timeline_marks,
+                            refresh_life_pips,
                             overlay_hotkeys,
                             update_overlays,
+                            handle_species_card_clicks,
+                            species_detail_panel,
+                            scroll_overlays,
+                            refresh_ui_scroll_capture,
+                            handle_bestiary_sort,
+                            handle_tree_clicks,
+                            hover_tooltip,
                         )
                             .chain(),
                     )
@@ -405,6 +538,9 @@ const PANEL_BG: Color = Color::srgba(0.08, 0.09, 0.12, 0.92);
 const BUTTON_BG: Color = Color::srgb(0.17, 0.19, 0.24);
 const BUTTON_BG_HOVER: Color = Color::srgb(0.25, 0.29, 0.38);
 const ACCENT: Color = Color::srgb(0.35, 0.65, 0.95);
+/// Bestiary species-card background, and its hover/selected tint.
+const SPECIES_CARD_BG: Color = Color::srgba(0.10, 0.12, 0.16, 0.95);
+const SPECIES_CARD_HOVER: Color = Color::srgba(0.16, 0.20, 0.27, 0.98);
 
 /// Query alias: buttons whose interaction state changed this frame.
 /// Inspector tab buttons manage their own colors.
@@ -416,6 +552,9 @@ type ChangedButtons<'w, 's, T> = Query<
         Changed<Interaction>,
         With<Button>,
         Without<crate::hex_inspect::InspectorTabButton>,
+        // Bestiary cards and tree rows style themselves.
+        Without<SpeciesCard>,
+        Without<TreeRowButton>,
     ),
 >;
 
@@ -1071,15 +1210,19 @@ fn poll_generation(
                 }
             }
             GenEvent::InitialWorld(world) => {
-                // Prep-09 seam: register the stub biology view for this world.
-                // Doc 09 swaps this line for the real `genesis_biology` adapter.
+                // Doc 09: the real `genesis_biology` adapter reads the simulated
+                // biology fields (biome/richness/biomass carried in frames) and
+                // generates species/tree lazily. Replaces the Prep-09 stub.
                 let seed = world.data.parameters.core.seed.value;
-                commands.insert_resource(ActiveBiologyView(Box::new(StubBiologyView::new(seed))));
+                commands.insert_resource(ActiveBiologyView(Box::new(
+                    genesis_biology::GeneratedBiologyView::new(seed),
+                )));
                 commands.insert_resource(WorldResource(*world));
                 world_res = None; // stale handle; re-fetched next frame
                 commands.insert_resource(WorldTimeline {
                     frames: Vec::new(),
                     current: 0,
+                    alpha: 0.0,
                     // Play from year 0 as history streams in (YouTube-style).
                     playing: true,
                     play_timer: Timer::from_seconds(0.25, TimerMode::Repeating),
@@ -1111,6 +1254,19 @@ fn poll_generation(
                         next_screen.set(AppScreen::Viewing);
                     }
                 }
+            }
+            GenEvent::LifeEvents(pips) => {
+                // Real chronicle with true years — replaces the fabricated pips.
+                commands.insert_resource(RealLifeEvents(pips));
+            }
+            GenEvent::BiologyLedger(ledger) => {
+                // The recorded tree of life is ready: upgrade the view to read it,
+                // so the Tree of Life and Bestiary show the real simulated
+                // phylogeny (the map already renders real biology from frames).
+                let seed = config.0.to_parameters().core.seed.value;
+                commands.insert_resource(ActiveBiologyView(Box::new(
+                    genesis_biology::GeneratedBiologyView::with_ledger(seed, *ledger),
+                )));
             }
             GenEvent::Done { .. } => {
                 if let Some(timeline) = timeline.as_mut() {
@@ -1256,16 +1412,32 @@ fn spawn_viewing_hud(
                             b.spawn(label("Close [Esc]", 16.0));
                         });
                     });
-                    let mut content = o.spawn(Node {
-                        flex_direction: FlexDirection::Row,
-                        flex_wrap: FlexWrap::Wrap,
-                        align_content: AlignContent::FlexStart,
-                        column_gap: Val::Px(10.0),
-                        row_gap: Val::Px(10.0),
-                        flex_grow: 1.0,
-                        overflow: Overflow::clip(),
-                        ..default()
-                    });
+                    let mut content = o.spawn((
+                        // Scrollable. `RelativeCursorPosition` detects hover
+                        // geometrically (works even when the cursor is over a child
+                        // button, unlike `Interaction`); `ScrollPosition` holds the
+                        // offset (Bevy 0.18).
+                        RelativeCursorPosition::default(),
+                        ScrollPosition::default(),
+                        Node {
+                            flex_direction: if is_bestiary {
+                                FlexDirection::Row
+                            } else {
+                                FlexDirection::Column
+                            },
+                            flex_wrap: if is_bestiary {
+                                FlexWrap::Wrap
+                            } else {
+                                FlexWrap::NoWrap
+                            },
+                            align_content: AlignContent::FlexStart,
+                            column_gap: Val::Px(10.0),
+                            row_gap: Val::Px(10.0),
+                            flex_grow: 1.0,
+                            overflow: Overflow::scroll_y(),
+                            ..default()
+                        },
+                    ));
                     if is_bestiary {
                         content.insert(BestiaryContent);
                     } else {
@@ -1273,6 +1445,122 @@ fn spawn_viewing_hud(
                     }
                 });
             }
+
+            // Species detail modal — opens over the Bestiary when a card is
+            // clicked (full genome + Linnaean classification ladder, Doc 09 §9).
+            parent
+                .spawn((
+                    SpeciesDetailPanel,
+                    BlocksMapPick,
+                    FocusPolicy::Block,
+                    Interaction::default(),
+                    Node {
+                        position_type: PositionType::Absolute,
+                        width: Val::Percent(100.0),
+                        height: Val::Percent(100.0),
+                        display: Display::None,
+                        flex_direction: FlexDirection::Column,
+                        justify_content: JustifyContent::Center,
+                        align_items: AlignItems::Center,
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.55)),
+                ))
+                .with_children(|panel| {
+                    panel
+                        .spawn((
+                            // Absorbs clicks so the backdrop stays put.
+                            FocusPolicy::Block,
+                            Interaction::default(),
+                            Node {
+                                width: Val::Px(440.0),
+                                max_height: Val::Percent(82.0),
+                                flex_direction: FlexDirection::Column,
+                                padding: UiRect::all(Val::Px(20.0)),
+                                row_gap: Val::Px(8.0),
+                                overflow: Overflow::clip(),
+                                ..default()
+                            },
+                            BackgroundColor(Color::srgba(0.09, 0.11, 0.15, 1.0)),
+                        ))
+                        .with_children(|card| {
+                            card.spawn((
+                                SpeciesDetailContent,
+                                RelativeCursorPosition::default(),
+                                ScrollPosition::default(),
+                                Node {
+                                    flex_direction: FlexDirection::Column,
+                                    row_gap: Val::Px(6.0),
+                                    flex_grow: 1.0,
+                                    overflow: Overflow::scroll_y(),
+                                    ..default()
+                                },
+                            ));
+                            card.spawn(Node {
+                                flex_direction: FlexDirection::Row,
+                                justify_content: JustifyContent::SpaceBetween,
+                                margin: UiRect::top(Val::Px(10.0)),
+                                ..default()
+                            })
+                            .with_children(|footer| {
+                                footer
+                                    .spawn((
+                                        SpeciesDetailBack,
+                                        Button,
+                                        Node {
+                                            padding: UiRect::axes(Val::Px(16.0), Val::Px(7.0)),
+                                            display: Display::None, // shown when history non-empty
+                                            justify_content: JustifyContent::Center,
+                                            align_items: AlignItems::Center,
+                                            ..default()
+                                        },
+                                        BackgroundColor(BUTTON_BG),
+                                    ))
+                                    .with_children(|b| {
+                                        b.spawn(label("‹ Back", 14.0));
+                                    });
+                                footer
+                                    .spawn((
+                                        SpeciesDetailClose,
+                                        Button,
+                                        Node {
+                                            padding: UiRect::axes(Val::Px(16.0), Val::Px(7.0)),
+                                            justify_content: JustifyContent::Center,
+                                            align_items: AlignItems::Center,
+                                            ..default()
+                                        },
+                                        BackgroundColor(BUTTON_BG),
+                                    ))
+                                    .with_children(|b| {
+                                        b.spawn(label("Close", 14.0));
+                                    });
+                            });
+                        });
+                });
+
+            // Floating Tree-of-Life hover tooltip (rank + defining trait).
+            parent
+                .spawn((
+                    TreeTooltip,
+                    Node {
+                        position_type: PositionType::Absolute,
+                        display: Display::None,
+                        max_width: Val::Px(320.0),
+                        padding: UiRect::all(Val::Px(8.0)),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgba(0.05, 0.06, 0.09, 0.97)),
+                    GlobalZIndex(50),
+                    Visibility::Hidden,
+                ))
+                .with_children(|t| {
+                    t.spawn((
+                        TreeTooltipText,
+                        label("", 12.5).0,
+                        label("", 12.5).1,
+                        TextColor(Color::srgb(0.88, 0.9, 0.85)),
+                    ));
+                });
 
             // "Return to menu?" confirm overlay — hidden until Esc; blocks the
             // map so an accidental Esc can't discard the world.
@@ -1411,6 +1699,11 @@ fn spawn_viewing_hud(
                                 .with_children(|b| {
                                     b.spawn(label(">", 16.0));
                                 });
+                            row.spawn(button(UiAction::ToggleFineStep))
+                                .with_children(|b| {
+                                    let (text, font, color) = label("Step: 10 My", 14.0);
+                                    b.spawn((text, font, color, StepSizeLabel));
+                                });
                             row.spawn((
                                 Node {
                                     flex_grow: 1.0,
@@ -1500,6 +1793,17 @@ fn apply_current_frame(
     colors_dirty: &mut ColorsDirty,
     rivers_dirty: &mut RiversDirty,
 ) {
+    if timeline.alpha > 0.0
+        && let (Some(a), Some(b)) = (
+            timeline.frames.get(timeline.current),
+            timeline.frames.get(timeline.current + 1),
+        )
+    {
+        a.apply_interpolated(b, timeline.alpha, &mut world_res.0.data);
+        colors_dirty.0 = true;
+        rivers_dirty.dirty = true;
+        return;
+    }
     if let Some(frame) = timeline.frames.get(timeline.current) {
         frame.apply(&mut world_res.0.data);
         colors_dirty.0 = true;
@@ -1511,6 +1815,7 @@ fn timeline_keyboard(
     keys: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
     mut repeat: ResMut<ScrubRepeat>,
+    fine: Res<FineStep>,
     timeline: Option<ResMut<WorldTimeline>>,
     world_res: Option<ResMut<WorldResource>>,
     mut colors_dirty: ResMut<ColorsDirty>,
@@ -1549,7 +1854,7 @@ fn timeline_keyboard(
 
     if step_now {
         timeline.playing = false;
-        step_timeline(&mut timeline, held);
+        step_timeline_sized(&mut timeline, held, fine.0);
         apply_current_frame(
             &timeline,
             &mut world_res,
@@ -1563,6 +1868,35 @@ fn step_timeline(timeline: &mut WorldTimeline, step: i64) {
     let last = timeline.frames.len().saturating_sub(1) as i64;
     let next = (timeline.current as i64 + step).clamp(0, last);
     timeline.current = next as usize;
+    timeline.alpha = 0.0;
+}
+
+/// Steps by a whole frame (10 My) or a fine fraction of one
+/// ([`FINE_STEP_FRACTION`] → 2 My, interpolated between buffered frames).
+fn step_timeline_sized(timeline: &mut WorldTimeline, step: i64, fine: bool) {
+    if !fine {
+        step_timeline(timeline, step);
+        return;
+    }
+    let last = timeline.frames.len().saturating_sub(1) as f32;
+    let mut pos = timeline.current as f32 + timeline.alpha + step as f32 * FINE_STEP_FRACTION;
+    pos = pos.clamp(0.0, last);
+    let mut index = pos.floor();
+    let mut alpha = pos - index;
+    // Snap floating-point dust onto exact frames so alpha == 0.0 renders the
+    // true buffered state, not a hairline interpolation.
+    if alpha < 1.0e-3 {
+        alpha = 0.0;
+    } else if alpha > 1.0 - 1.0e-3 {
+        index += 1.0;
+        alpha = 0.0;
+    }
+    timeline.current = (index as usize).min(last as usize);
+    timeline.alpha = if timeline.current as f32 >= last {
+        0.0
+    } else {
+        alpha
+    };
 }
 
 fn timeline_playback(
@@ -1591,6 +1925,7 @@ fn timeline_playback(
         return;
     }
     timeline.current += 1;
+    timeline.alpha = 0.0;
     apply_current_frame(
         &timeline,
         &mut world_res,
@@ -1618,6 +1953,13 @@ fn refresh_hud(
     };
     let target = timeline.target_year.max(1) as f32;
     let buffered_year = timeline.frames.last().map(|f| f.year).unwrap_or(0);
+    // Fine stepping sits between frames: show the interpolated year.
+    let display_year = match timeline.frames.get(timeline.current + 1) {
+        Some(next) if timeline.alpha > 0.0 => {
+            frame.year + ((next.year - frame.year) as f64 * f64::from(timeline.alpha)) as i64
+        }
+        _ => frame.year,
+    };
 
     if let Ok(mut text) = hud.single_mut() {
         let generating = if timeline.complete {
@@ -1631,14 +1973,14 @@ fn refresh_hud(
         };
         text.0 = format!(
             "{generating}Year {}  |  Mode: {} [M]  |  [L] legend  |  scrub/hold < >, Space plays, Esc for menu",
-            format_year(frame.year),
+            format_year(display_year),
             mode.0.label(),
         );
     }
     // Year-based positions so everything lines up with the era bands even with
     // uneven frame strides. Played span (0..playhead) shows full era color;
     // buffered-ahead (playhead..buffered) is faded; future (buffered..100) dark.
-    let playhead = (frame.year as f32 / target * 100.0).clamp(0.0, 100.0);
+    let playhead = (display_year as f32 / target * 100.0).clamp(0.0, 100.0);
     let buffered = (buffered_year as f32 / target * 100.0).clamp(0.0, 100.0);
     if let Ok(mut node) = bars.p0().single_mut() {
         node.left = Val::Percent(playhead);
@@ -1790,10 +2132,12 @@ fn update_quit_overlay(
     }
 }
 
-/// Highlights the active layer-selector tab and refreshes the top-bar year/era.
+/// Highlights the active layer-selector tab and refreshes the top-bar year/era —
+/// including the **biological era** named for the dominant clade ("Age of the …").
 fn refresh_mode_tabs(
     mode: Res<CurrentRenderMode>,
     timeline: Option<Res<WorldTimeline>>,
+    biology: Option<Res<ActiveBiologyView>>,
     mut tabs: Query<(&ModeTab, &mut BackgroundColor)>,
     mut status: Query<&mut Text, With<TopBarStatusText>>,
 ) {
@@ -1801,11 +2145,21 @@ fn refresh_mode_tabs(
     for (tab, mut bg) in &mut tabs {
         bg.0 = if tab.0 == mode.0 { active } else { BUTTON_BG };
     }
-    if let Some(tl) = timeline {
-        if let (Ok(mut text), Some(frame)) = (status.single_mut(), tl.frames.get(tl.current)) {
-            let (era, _) = geological_era(frame.year);
-            text.0 = format!("{}  ·  {}", format_year(frame.year), era);
-        }
+    // Only recompute on a frame change (dominant-clade is an O(n) ledger scan).
+    let Some(tl) = timeline else { return };
+    if !tl.is_changed() {
+        return;
+    }
+    let Some(frame) = tl.frames.get(tl.current) else {
+        return;
+    };
+    let (era, _) = geological_era(frame.year);
+    let age = biology
+        .and_then(|b| b.0.dominant_clade(genesis_core::WorldYear(frame.year)))
+        .map(|a| format!("  ·  {a}"))
+        .unwrap_or_default();
+    if let Ok(mut text) = status.single_mut() {
+        text.0 = format!("{}  ·  {}{}", format_year(frame.year), era, age);
     }
 }
 
@@ -1820,6 +2174,44 @@ fn refresh_projection_tab(
     }
     if let Ok(mut text) = label.single_mut() {
         text.0 = projection.0.label().to_string();
+    }
+}
+
+/// Bottom-bar time stepping: `<` / `>` at the selected step size, and the
+/// step-size toggle itself (10 My frame ⇄ 2 My interpolated fine step). Its
+/// own system so `handle_actions` stays under Bevy's 16-param limit.
+#[allow(clippy::type_complexity)]
+fn handle_timeline_step_buttons(
+    interactions: ChangedButtons<&'static UiAction>,
+    mut fine: ResMut<FineStep>,
+    timeline: Option<ResMut<WorldTimeline>>,
+    world_res: Option<ResMut<WorldResource>>,
+    mut colors_dirty: ResMut<ColorsDirty>,
+    mut rivers_dirty: ResMut<RiversDirty>,
+    mut step_label: Query<&mut Text, With<StepSizeLabel>>,
+) {
+    let mut timeline = timeline;
+    let mut world_res = world_res;
+    for (interaction, action) in &interactions {
+        if *interaction != Interaction::Pressed {
+            continue;
+        }
+        match action {
+            UiAction::ToggleFineStep => {
+                fine.0 = !fine.0;
+                if let Ok(mut text) = step_label.single_mut() {
+                    text.0 = if fine.0 { "Step: 2 My" } else { "Step: 10 My" }.to_string();
+                }
+            }
+            UiAction::TimelineStep(step) => {
+                if let (Some(timeline), Some(world_res)) = (timeline.as_mut(), world_res.as_mut()) {
+                    timeline.playing = false;
+                    step_timeline_sized(timeline, *step, fine.0);
+                    apply_current_frame(timeline, world_res, &mut colors_dirty, &mut rivers_dirty);
+                }
+            }
+            _ => {}
+        }
     }
 }
 
@@ -1891,9 +2283,10 @@ fn build_timeline_marks(
     // Life-event pips (stub now; physical event pips join when the event stream
     // is wired, Prep-09 §5.1). Each is a click-to-jump marker.
     if let Some(bio) = biology.as_ref() {
-        let events = bio
-            .0
-            .life_events(genesis_core::time::WorldYear(0), genesis_core::time::WorldYear(target));
+        let events = bio.0.life_events(
+            genesis_core::time::WorldYear(0),
+            genesis_core::time::WorldYear(target),
+        );
         commands.entity(pip_e).with_children(|s| {
             for ev in events {
                 let left = (ev.year as f32 / target as f32 * 100.0).clamp(0.0, 100.0);
@@ -1901,6 +2294,7 @@ fn build_timeline_marks(
                     Button,
                     UiAction::JumpToYear(ev.year),
                     Interaction::default(),
+                    LifePip,
                     Node {
                         position_type: PositionType::Absolute,
                         left: Val::Percent(left),
@@ -1915,6 +2309,50 @@ fn build_timeline_marks(
         });
     }
     built.0 = true;
+}
+
+/// Replaces the fabricated life-event pips with the real chronicle (true years)
+/// once generation streams it (Doc 09 §13; limitations 2 + 15).
+fn refresh_life_pips(
+    mut commands: Commands,
+    real: Res<RealLifeEvents>,
+    timeline: Option<Res<WorldTimeline>>,
+    pip_strip: Query<Entity, With<PipStrip>>,
+    existing: Query<Entity, With<LifePip>>,
+) {
+    if !real.is_changed() || real.0.is_empty() {
+        return;
+    }
+    let Some(tl) = timeline else {
+        return;
+    };
+    let target = tl.target_year.max(1);
+    let Ok(pip_e) = pip_strip.single() else {
+        return;
+    };
+    for e in &existing {
+        commands.entity(e).despawn();
+    }
+    commands.entity(pip_e).with_children(|s| {
+        for ev in &real.0 {
+            let left = (ev.year as f32 / target as f32 * 100.0).clamp(0.0, 100.0);
+            s.spawn((
+                Button,
+                UiAction::JumpToYear(ev.year),
+                Interaction::default(),
+                LifePip,
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Percent(left),
+                    top: Val::Px(-4.0),
+                    width: Val::Px(10.0),
+                    height: Val::Px(10.0),
+                    ..default()
+                },
+                BackgroundColor(pip_color(ev.category)),
+            ));
+        }
+    });
 }
 
 /// The Viewing-screen Esc ladder (Prep-09 §3): a full-screen overlay closes
@@ -1968,6 +2406,8 @@ fn overlay_hotkeys(
 fn update_overlays(
     open: Res<OpenOverlay>,
     selected: Res<SelectedHex>,
+    bestiary_sort: Res<BestiarySort>,
+    tree_expanded: Res<TreeExpanded>,
     mut built: ResMut<OverlayBuilt>,
     mut commands: Commands,
     world_res: Option<Res<WorldResource>>,
@@ -2017,26 +2457,76 @@ fn update_overlays(
         }
     };
 
+    let view_year = timeline
+        .as_deref()
+        .and_then(|t| t.frames.get(t.current))
+        .map(|f| f.year)
+        .unwrap_or(4_500_000_000);
     match *open {
         OpenOverlay::Bestiary => {
             let Ok(content) = bestiary_content.single() else {
                 return;
             };
             clear(&mut commands, content);
-            let assemblage = selected
-                .0
-                .map(|h| bio.0.assemblage(data, h))
-                .unwrap_or_default();
+            // A hex → its local assemblage; no hex → the whole living catalog,
+            // sorted, so the Bestiary works without picking a hex first.
+            let global = selected.0.is_none();
+            let species = match selected.0 {
+                Some(h) => bio.0.assemblage(data, h).species,
+                None => {
+                    let mut c = bio.0.species_catalog(genesis_core::WorldYear(view_year));
+                    match *bestiary_sort {
+                        BestiarySort::Notable => {}
+                        BestiarySort::Alpha => c.sort_by(|a, b| a.name.cmp(&b.name)),
+                        BestiarySort::ReverseAlpha => c.sort_by(|a, b| b.name.cmp(&a.name)),
+                    }
+                    c
+                }
+            };
+            let sort_label = bestiary_sort.label();
             commands.entity(content).with_children(|c| {
-                if assemblage.species.is_empty() {
-                    c.spawn(label(
-                        "Select a land hex on the map, then open the Bestiary.",
-                        18.0,
-                    ));
+                // Global: a full-width sort cycle + count header.
+                if global {
+                    c.spawn(Node {
+                        width: Val::Percent(100.0),
+                        flex_direction: FlexDirection::Row,
+                        align_items: AlignItems::Center,
+                        column_gap: Val::Px(12.0),
+                        ..default()
+                    })
+                    .with_children(|h| {
+                        h.spawn((
+                            BestiarySortButton,
+                            Button,
+                            Node {
+                                padding: UiRect::axes(Val::Px(12.0), Val::Px(6.0)),
+                                ..default()
+                            },
+                            BackgroundColor(BUTTON_BG),
+                        ))
+                        .with_children(|b| {
+                            b.spawn(label(&format!("Sort: {sort_label}  ⟳"), 14.0));
+                        });
+                        h.spawn((
+                            label(&format!("{} living species", species.len()), 14.0).0,
+                            label("", 14.0).1,
+                            TextColor(Color::srgb(0.70, 0.75, 0.82)),
+                        ));
+                    });
+                }
+                if species.is_empty() {
+                    let msg = if global {
+                        "No species yet — advance time until life radiates."
+                    } else {
+                        "This hex has no life yet — try a warmer, wetter hex or advance time."
+                    };
+                    c.spawn(label(msg, 18.0));
                     return;
                 }
-                for sp in &assemblage.species {
+                for sp in &species {
                     c.spawn((
+                        Button,
+                        SpeciesCard(sp.species_id),
                         Node {
                             width: Val::Px(240.0),
                             flex_direction: FlexDirection::Column,
@@ -2044,7 +2534,7 @@ fn update_overlays(
                             row_gap: Val::Px(4.0),
                             ..default()
                         },
-                        BackgroundColor(Color::srgba(0.10, 0.12, 0.16, 0.95)),
+                        BackgroundColor(SPECIES_CARD_BG),
                     ))
                     .with_children(|card| {
                         card.spawn(label(&sp.name, 18.0));
@@ -2063,6 +2553,11 @@ fn update_overlays(
                             label("", 12.0).1,
                             TextColor(Color::srgb(0.80, 0.80, 0.84)),
                         ));
+                        card.spawn((
+                            label("▸ details", 11.0).0,
+                            label("", 11.0).1,
+                            TextColor(ACCENT),
+                        ));
                     });
                 }
             });
@@ -2073,70 +2568,574 @@ fn update_overlays(
                 return;
             };
             clear(&mut commands, content);
-            build_tree_content(&mut commands, content, bio.0.as_ref(), timeline.as_deref());
+            build_tree_content(
+                &mut commands,
+                content,
+                bio.0.as_ref(),
+                timeline.as_deref(),
+                &tree_expanded.0,
+            );
             built.0 = true;
         }
         OpenOverlay::None => {}
     }
 }
 
-/// Builds the Tree-of-Life overlay content: an indented, time-aware branch list
-/// from `tree_snapshot(current_year)` — extinct branches greyed (Prep-09 §7).
+/// Bestiary card interactions: recolor on hover, and open the detail panel for
+/// the clicked species (Doc 09 §9 drill-down).
+#[allow(clippy::type_complexity)]
+fn handle_species_card_clicks(
+    mut cards: Query<
+        (&Interaction, &SpeciesCard, &mut BackgroundColor),
+        (Changed<Interaction>, With<Button>),
+    >,
+    mut selected: ResMut<SelectedSpecies>,
+    mut built: ResMut<SpeciesDetailBuilt>,
+    mut history: ResMut<SpeciesHistory>,
+) {
+    for (interaction, card, mut bg) in &mut cards {
+        match interaction {
+            Interaction::Pressed => {
+                // Record the trail so Back can retrace it.
+                if let Some(old) = selected.0
+                    && old != card.0
+                {
+                    history.0.push(old);
+                }
+                selected.0 = Some(card.0);
+                built.0 = false;
+                bg.0 = SPECIES_CARD_HOVER;
+            }
+            Interaction::Hovered => bg.0 = SPECIES_CARD_HOVER,
+            Interaction::None => bg.0 = SPECIES_CARD_BG,
+        }
+    }
+}
+
+/// Shows/hides and (re)builds the species detail modal from `species_detail`:
+/// the full genome plus the separate Linnaean classification ladder (Doc 09
+/// §9.2). Closes on the Close button or when the Bestiary closes.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
+fn species_detail_panel(
+    mut selected: ResMut<SelectedSpecies>,
+    mut built: ResMut<SpeciesDetailBuilt>,
+    open: Res<OpenOverlay>,
+    timeline: Option<Res<WorldTimeline>>,
+    mut history: ResMut<SpeciesHistory>,
+    close: Query<&Interaction, (Changed<Interaction>, With<SpeciesDetailClose>)>,
+    back: Query<&Interaction, (Changed<Interaction>, With<SpeciesDetailBack>)>,
+    mut back_btn: Query<&mut Node, (With<SpeciesDetailBack>, Without<SpeciesDetailPanel>)>,
+    mut panel: Query<&mut Node, With<SpeciesDetailPanel>>,
+    content_q: Query<Entity, With<SpeciesDetailContent>>,
+    children: Query<&Children>,
+    mut commands: Commands,
+    biology: Option<Res<ActiveBiologyView>>,
+) {
+    // Back: retrace to the previously-viewed species.
+    if back.iter().any(|i| *i == Interaction::Pressed)
+        && let Some(prev) = history.0.pop()
+    {
+        selected.0 = Some(prev);
+        built.0 = false;
+    }
+    // Close on the button, or whenever no overlay is open. (The detail opens from
+    // both the Bestiary and the Tree of Life.)
+    let closed = close.iter().any(|i| *i == Interaction::Pressed);
+    if (closed || *open == OpenOverlay::None) && selected.0.is_some() {
+        selected.0 = None;
+        history.0.clear(); // fresh trail next time
+    }
+
+    let visible = *open != OpenOverlay::None && selected.0.is_some();
+    if (selected.is_changed() || open.is_changed())
+        && let Ok(mut n) = panel.single_mut()
+    {
+        n.display = if visible {
+            Display::Flex
+        } else {
+            Display::None
+        };
+    }
+
+    if built.0 || !visible {
+        return;
+    }
+    // Show the Back button only when there's a trail to retrace.
+    if let Ok(mut n) = back_btn.single_mut() {
+        n.display = if history.0.is_empty() {
+            Display::None
+        } else {
+            Display::Flex
+        };
+    }
+    let (Some(bio), Ok(content)) = (biology, content_q.single()) else {
+        return;
+    };
+    // Clear the previous card's content.
+    if let Ok(kids) = children.get(content) {
+        for k in kids.iter() {
+            commands.entity(k).despawn();
+        }
+    }
+    let detail = selected.0.and_then(|id| bio.0.species_detail(id));
+    let year = timeline
+        .as_deref()
+        .and_then(|t| t.frames.get(t.current))
+        .map(|f| f.year)
+        .unwrap_or(4_500_000_000);
+    let web = selected
+        .0
+        .map(|id| bio.0.food_web(id, genesis_core::WorldYear(year)))
+        .unwrap_or_default();
+    commands.entity(content).with_children(|c| {
+        let Some(d) = detail else {
+            c.spawn(label("This species has no recorded detail.", 15.0));
+            return;
+        };
+        c.spawn(label(&d.name, 24.0));
+        c.spawn((
+            label(&format!("{} · family {}", d.guild, d.family), 14.0).0,
+            label("", 14.0).1,
+            TextColor(Color::srgb(0.70, 0.80, 0.95)),
+        ));
+        c.spawn((
+            label(&d.description, 13.0).0,
+            label("", 13.0).1,
+            TextColor(Color::srgb(0.82, 0.82, 0.86)),
+        ));
+
+        // Traits (full genome) — each a hoverable chip with a plain-English
+        // definition on hover.
+        c.spawn((
+            label("Traits  (hover for meaning)", 13.0).0,
+            label("", 13.0).1,
+            TextColor(ACCENT),
+        ))
+        .insert(Node {
+            margin: UiRect::top(Val::Px(8.0)),
+            ..default()
+        });
+        c.spawn(Node {
+            flex_direction: FlexDirection::Row,
+            flex_wrap: FlexWrap::Wrap,
+            column_gap: Val::Px(6.0),
+            row_gap: Val::Px(4.0),
+            ..default()
+        })
+        .with_children(|row| {
+            for (name, desc) in &d.trait_details {
+                let tip = if desc.is_empty() {
+                    name.clone()
+                } else {
+                    format!("{name} — {desc}")
+                };
+                row.spawn((
+                    Interaction::default(),
+                    HoverTip(tip),
+                    Node {
+                        padding: UiRect::axes(Val::Px(7.0), Val::Px(2.0)),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgba(0.16, 0.18, 0.22, 0.9)),
+                ))
+                .with_children(|chip| {
+                    chip.spawn((
+                        label(name, 12.0).0,
+                        label("", 12.0).1,
+                        TextColor(Color::srgb(0.78, 0.80, 0.86)),
+                    ));
+                });
+            }
+        });
+
+        // Classification ladder — the separate Linnaean view.
+        c.spawn((
+            label("Classification", 13.0).0,
+            label("", 13.0).1,
+            TextColor(ACCENT),
+        ))
+        .insert(Node {
+            margin: UiRect::top(Val::Px(8.0)),
+            ..default()
+        });
+        for (depth, (rank, clade)) in d.classification.iter().enumerate() {
+            c.spawn((
+                label(&format!("{rank}: {clade}"), 12.5).0,
+                label("", 12.5).1,
+                TextColor(Color::srgb(0.86, 0.86, 0.90)),
+            ))
+            .insert(Node {
+                margin: UiRect::left(Val::Px((depth as f32) * 12.0)),
+                ..default()
+            });
+        }
+
+        // Food web — what it eats, what eats it, who it competes with. Each
+        // neighbor is a clickable chip that navigates to that species' detail.
+        let sections: [(&str, &Vec<genesis_core::SpeciesPeek>); 3] = [
+            ("Eats", &web.prey),
+            ("Eaten by", &web.predators),
+            ("Competes with", &web.competitors),
+        ];
+        if sections.iter().any(|(_, v)| !v.is_empty()) {
+            c.spawn((
+                label("Food web", 13.0).0,
+                label("", 13.0).1,
+                TextColor(ACCENT),
+            ))
+            .insert(Node {
+                margin: UiRect::top(Val::Px(10.0)),
+                ..default()
+            });
+            for (title, list) in sections {
+                if list.is_empty() {
+                    continue;
+                }
+                c.spawn((
+                    label(title, 12.0).0,
+                    label("", 12.0).1,
+                    TextColor(Color::srgb(0.70, 0.75, 0.82)),
+                ))
+                .insert(Node {
+                    margin: UiRect::top(Val::Px(4.0)),
+                    ..default()
+                });
+                c.spawn(Node {
+                    flex_direction: FlexDirection::Row,
+                    flex_wrap: FlexWrap::Wrap,
+                    column_gap: Val::Px(6.0),
+                    row_gap: Val::Px(4.0),
+                    ..default()
+                })
+                .with_children(|row| {
+                    for sp in list {
+                        row.spawn((
+                            Button,
+                            SpeciesCard(sp.species_id),
+                            Node {
+                                padding: UiRect::axes(Val::Px(8.0), Val::Px(3.0)),
+                                ..default()
+                            },
+                            BackgroundColor(SPECIES_CARD_BG),
+                        ))
+                        .with_children(|chip| {
+                            chip.spawn((
+                                label(&format!("{} · {}", sp.name, sp.guild), 11.5).0,
+                                label("", 11.5).1,
+                                TextColor(Color::srgb(0.85, 0.9, 0.85)),
+                            ));
+                        });
+                    }
+                });
+            }
+        }
+    });
+    built.0 = true;
+}
+
+/// Mouse-wheel scrolling for whichever overlay/detail scroll container the cursor
+/// is over (Bevy 0.18: `ScrollPosition` is a `Vec2`, vertical offset in `.0.y`).
+/// The map-zoom wheel handler is gated off while an overlay is open (see
+/// `refresh_ui_scroll_capture`), so the wheel affects only one thing at a time.
+fn scroll_overlays(
+    wheel: Res<AccumulatedMouseScroll>,
+    mut containers: Query<(&RelativeCursorPosition, &mut ScrollPosition)>,
+) {
+    if wheel.delta.y == 0.0 {
+        return;
+    }
+    let dy = match wheel.unit {
+        MouseScrollUnit::Line => wheel.delta.y * 24.0,
+        MouseScrollUnit::Pixel => wheel.delta.y,
+    };
+    for (cursor, mut sp) in &mut containers {
+        // Geometric hover (the normalized cursor is within the node's rect), so
+        // scrolling works even with the cursor over a child card/row button.
+        let over = cursor
+            .normalized
+            .is_some_and(|n| (0.0..=1.0).contains(&n.x) && (0.0..=1.0).contains(&n.y));
+        if over {
+            sp.0.y = (sp.0.y - dy).max(0.0);
+        }
+    }
+}
+
+/// Tells the renderer whether a full-screen overlay owns the pointer, so the map
+/// doesn't pan/zoom under the Bestiary / Tree / species detail.
+fn refresh_ui_scroll_capture(
+    open: Res<OpenOverlay>,
+    selected_species: Res<SelectedSpecies>,
+    mut capture: ResMut<PointerCapturedByUi>,
+) {
+    let captured = *open != OpenOverlay::None || selected_species.0.is_some();
+    if capture.0 != captured {
+        capture.0 = captured;
+    }
+}
+
+/// Cycles the global Bestiary's sort order (Notable → A–Z → Z–A) and rebuilds.
+fn handle_bestiary_sort(
+    buttons: Query<&Interaction, (Changed<Interaction>, With<BestiarySortButton>)>,
+    mut sort: ResMut<BestiarySort>,
+    mut built: ResMut<OverlayBuilt>,
+) {
+    if buttons.iter().any(|i| *i == Interaction::Pressed) {
+        *sort = sort.next();
+        built.0 = false;
+    }
+}
+
+/// Tree-row interactions: hover highlight, expand/collapse a branch, or open a
+/// leaf's species detail (the collapsible + clickable family tree).
+#[allow(clippy::type_complexity)]
+fn handle_tree_clicks(
+    mut rows: Query<
+        (&Interaction, &TreeRowButton, &mut BackgroundColor),
+        (Changed<Interaction>, With<Button>),
+    >,
+    mut expanded: ResMut<TreeExpanded>,
+    mut built: ResMut<OverlayBuilt>,
+    mut selected_species: ResMut<SelectedSpecies>,
+    mut detail_built: ResMut<SpeciesDetailBuilt>,
+    mut history: ResMut<SpeciesHistory>,
+) {
+    for (interaction, row, mut bg) in &mut rows {
+        match interaction {
+            Interaction::Pressed => {
+                if row.has_children {
+                    if !expanded.0.remove(&row.lineage_id) {
+                        expanded.0.insert(row.lineage_id);
+                    }
+                    built.0 = false; // re-lay-out the tree
+                } else {
+                    if let Some(old) = selected_species.0
+                        && old != row.species_id
+                    {
+                        history.0.push(old);
+                    }
+                    selected_species.0 = Some(row.species_id);
+                    detail_built.0 = false;
+                }
+            }
+            Interaction::Hovered => bg.0 = Color::srgba(1.0, 1.0, 1.0, 0.08),
+            Interaction::None => bg.0 = Color::NONE,
+        }
+    }
+}
+
+/// Floating tooltip for any hovered `HoverTip` node — a tree row's Linnaean rank,
+/// or a trait chip's plain-English definition.
+#[allow(clippy::type_complexity)]
+fn hover_tooltip(
+    tips: Query<(&Interaction, &HoverTip)>,
+    window: Query<&Window, With<PrimaryWindow>>,
+    mut panel: Query<(&mut Node, &mut Visibility), With<TreeTooltip>>,
+    mut text: Query<&mut Text, With<TreeTooltipText>>,
+) {
+    let Ok((mut node, mut vis)) = panel.single_mut() else {
+        return;
+    };
+    let Ok(mut label_text) = text.single_mut() else {
+        return;
+    };
+    let hovered = tips
+        .iter()
+        .find(|(i, _)| **i == Interaction::Hovered)
+        .map(|(_, m)| m.0.clone());
+    match hovered {
+        Some(tip) => {
+            *label_text = Text::new(tip);
+            if let Ok(win) = window.single()
+                && let Some(cur) = win.cursor_position()
+            {
+                node.left = Val::Px((cur.x + 16.0).min((win.width() - 340.0).max(0.0)));
+                node.top = Val::Px((cur.y + 16.0).min((win.height() - 110.0).max(0.0)));
+            }
+            node.display = Display::Flex;
+            *vis = Visibility::Visible;
+        }
+        None => {
+            node.display = Display::None;
+            *vis = Visibility::Hidden;
+        }
+    }
+}
+
+/// Viewing the Bestiary, Tree of Life, or a hex's details **pauses time** — you
+/// study a moment, you don't watch these while history streams past. Time resumes
+/// when the overlay closes / the hex is deselected (Doc 09 UX: real-time species
+/// generation is only affordable while paused).
+fn pause_time_while_inspecting(
+    open: Res<OpenOverlay>,
+    selected: Res<SelectedHex>,
+    timeline: Option<ResMut<WorldTimeline>>,
+) {
+    let inspecting = *open != OpenOverlay::None || selected.0.is_some();
+    if inspecting
+        && let Some(mut tl) = timeline
+        && tl.playing
+    {
+        tl.playing = false;
+    }
+}
+
+/// Builds the Tree-of-Life overlay: a **collapsible, clickable family tree** from
+/// `tree_snapshot(current_year)`. LUCA is open by default; other nodes with
+/// children start collapsed and expand on click (▸/▾). A leaf click opens its
+/// species detail; hovering any row shows its Linnaean rank (Prep-09 §7).
 fn build_tree_content(
     commands: &mut Commands,
     content: Entity,
     view: &dyn genesis_core::BiologyView,
     timeline: Option<&WorldTimeline>,
+    expanded: &std::collections::BTreeSet<u64>,
 ) {
     let year = timeline
         .and_then(|t| t.frames.get(t.current))
         .map(|f| f.year)
         .unwrap_or(4_500_000_000);
     let tree = view.tree_snapshot(genesis_core::time::WorldYear(year));
-    let depth = |rank: &str| match rank {
-        "root" => 0.0,
-        "kingdom" => 1.0,
-        _ => 2.0,
-    };
+
+    let mut children: std::collections::BTreeMap<Option<u64>, Vec<usize>> =
+        std::collections::BTreeMap::new();
+    for (idx, n) in tree.nodes.iter().enumerate() {
+        children.entry(n.parent).or_default().push(idx);
+    }
+    let has_children = |id: u64| children.get(&Some(id)).is_some_and(|v| !v.is_empty());
+    // Open = the root (depth 0), or explicitly expanded. Everything else collapsed,
+    // so the initial view is LUCA + its direct children, not a 400-row wall.
+    let is_open = |id: u64, depth: usize| depth == 0 || expanded.contains(&id);
+
+    // DFS from LUCA, descending only into open nodes, carrying the branch-line
+    // "guides" (for each ancestor level, whether it continues below) so we can draw
+    // real ├─ └─ │ connectors — a literal family tree, not just indentation.
+    // Row = (node index, depth, prefix chars, is-last-child).
+    let mut order: Vec<(usize, usize, Vec<char>, bool)> = Vec::new();
+    // stack item = (idx, depth, is_last, guides)
+    let mut stack: Vec<(usize, usize, bool, Vec<bool>)> = Vec::new();
+    if let Some(roots) = children.get(&None) {
+        let last = roots.last().copied();
+        for &r in roots.iter().rev() {
+            stack.push((r, 0, Some(r) == last, Vec::new()));
+        }
+    }
+    while let Some((idx, depth, is_last, guides)) = stack.pop() {
+        // The row's prefix: a vertical bar for each continuing ancestor, then this
+        // node's elbow (└ last child, ├ otherwise). The root (depth 0) has none.
+        let mut prefix: Vec<char> = guides.iter().map(|&c| if c { '│' } else { ' ' }).collect();
+        if depth > 0 {
+            prefix.push(if is_last { '└' } else { '├' });
+        }
+        let id = tree.nodes[idx].id;
+        order.push((idx, depth, prefix, is_last));
+        if is_open(id, depth)
+            && let Some(kids) = children.get(&Some(id))
+        {
+            // Children inherit this node's guides plus its own continuation (unless
+            // this is the root, whose children start at column 0).
+            let child_guides = if depth == 0 {
+                Vec::new()
+            } else {
+                let mut g = guides.clone();
+                g.push(!is_last);
+                g
+            };
+            let last_k = kids.last().copied();
+            for &k in kids.iter().rev() {
+                stack.push((k, depth + 1, Some(k) == last_k, child_guides.clone()));
+            }
+        }
+    }
+
+    let living = tree
+        .nodes
+        .iter()
+        .filter(|n| n.extinction_year.is_none())
+        .count();
+    const MAX_ROWS: usize = 1200;
+    let guide_color = Color::srgb(0.40, 0.45, 0.42);
     commands.entity(content).with_children(|c| {
         c.spawn(Node {
             flex_direction: FlexDirection::Column,
-            row_gap: Val::Px(3.0),
+            row_gap: Val::Px(1.0),
             ..default()
         })
         .with_children(|col| {
             col.spawn(label(
                 &format!(
-                    "As of {}  ·  {} living branches",
+                    "As of {}  ·  {living} living of {} lineages, back to LUCA  ·  ▸ expand · click a leaf for detail",
                     format_year(year),
-                    tree.nodes.iter().filter(|n| n.extinction_year.is_none()).count()
+                    tree.nodes.len()
                 ),
-                15.0,
+                14.0,
             ));
-            for node in &tree.nodes {
+            for (row, (idx, _d, prefix, _is_last)) in order.iter().enumerate() {
+                if row >= MAX_ROWS {
+                    col.spawn((
+                        label(&format!("… and {} more lineages", order.len() - MAX_ROWS), 13.0).0,
+                        label("", 13.0).1,
+                        TextColor(Color::srgb(0.55, 0.6, 0.65)),
+                    ));
+                    break;
+                }
+                let node = &tree.nodes[*idx];
                 let extinct = node.extinction_year.is_some();
                 let color = if extinct {
-                    Color::srgb(0.48, 0.48, 0.52)
+                    Color::srgb(0.5, 0.5, 0.55)
                 } else {
-                    Color::srgb(0.85, 0.92, 0.86)
+                    Color::srgb(0.86, 0.93, 0.87)
                 };
-                let suffix = if extinct { "  (extinct)" } else { "" };
+                let hc = has_children(node.id);
+                let arrow = if hc {
+                    if is_open(node.id, *_d) { "▾ " } else { "▸ " }
+                } else {
+                    ""
+                };
+                let dagger = if extinct { "  †" } else { "" };
+                let extinct_note = node
+                    .extinction_year
+                    .map(|e| format!(", extinct {}", format_year(e)))
+                    .unwrap_or_default();
+                let tip = format!(
+                    "{} — {}\ndistinguished by {}\noriginated {}{}",
+                    node.name, node.rank, node.defining_trait, format_year(node.origin_year), extinct_note,
+                );
+                let prefix = prefix.clone();
                 col.spawn((
-                    label(
-                        &format!(
-                            "{} · {} · {}{}",
-                            node.name, node.rank, node.defining_trait, suffix
-                        ),
-                        14.0,
-                    )
-                    .0,
-                    label("", 14.0).1,
-                    TextColor(color),
+                    Button,
+                    TreeRowButton {
+                        lineage_id: node.id,
+                        species_id: node.species_id,
+                        has_children: hc,
+                    },
+                    HoverTip(tip),
                     Node {
-                        margin: UiRect::left(Val::Px(depth(&node.rank) * 22.0)),
+                        flex_direction: FlexDirection::Row,
+                        align_items: AlignItems::Center,
+                        padding: UiRect::axes(Val::Px(2.0), Val::Px(1.0)),
                         ..default()
                     },
-                ));
+                    BackgroundColor(Color::NONE),
+                ))
+                .with_children(|r| {
+                    // Fixed-width branch-line cells (aligned regardless of font).
+                    for ch in &prefix {
+                        r.spawn((
+                            label(&ch.to_string(), 13.0).0,
+                            label("", 13.0).1,
+                            TextColor(guide_color),
+                            Node {
+                                width: Val::Px(13.0),
+                                ..default()
+                            },
+                        ));
+                    }
+                    r.spawn((
+                        label(&format!(" {arrow}{}{dagger}", node.name), 13.0).0,
+                        label("", 13.0).1,
+                        TextColor(color),
+                    ));
+                });
             }
         });
     });
@@ -2250,6 +3249,8 @@ fn handle_actions(
             // Handled by `handle_projection_toggle` (a dedicated system keeps
             // `handle_actions` under Bevy's 16-param limit).
             UiAction::ToggleProjection => {}
+            // Handled by `handle_timeline_step_buttons` (same reason).
+            UiAction::ToggleFineStep => {}
             UiAction::JumpToYear(year) => {
                 if let (Some(tl), Some(wr), Some(cd), Some(rd)) = (
                     timeline.as_mut(),
@@ -2265,22 +3266,15 @@ fn handle_actions(
                     {
                         tl.playing = false;
                         tl.current = idx;
+                        tl.alpha = 0.0;
                         apply_current_frame(tl, wr, cd, rd);
                     }
                 }
             }
-            UiAction::TimelineStep(step) => {
-                if let (Some(timeline), Some(world_res), Some(colors_dirty), Some(rivers_dirty)) = (
-                    timeline.as_mut(),
-                    world_res.as_mut(),
-                    colors_dirty.as_mut(),
-                    rivers_dirty.as_mut(),
-                ) {
-                    timeline.playing = false;
-                    step_timeline(timeline, step);
-                    apply_current_frame(timeline, world_res, colors_dirty, rivers_dirty);
-                }
-            }
+            // Handled by `handle_timeline_step_buttons` (dedicated system:
+            // needs the FineStep resource; keeps `handle_actions` under
+            // Bevy's param limit).
+            UiAction::TimelineStep(_) => {}
             UiAction::PlayPause => {
                 if let Some(timeline) = timeline.as_mut() {
                     timeline.playing = !timeline.playing;
@@ -2311,5 +3305,52 @@ fn escape_navigation(
             // run finish in the background and return to the menu.
             next_screen.set(AppScreen::MainMenu);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn timeline_with(frames: usize) -> WorldTimeline {
+        let mut params = genesis_core::parameters::WorldParameters::default();
+        params.core.grid.subdivision_level = 5;
+        let world = genesis_core::create_world(params).expect("world");
+        let frame = HistoryFrame::capture(&world.data);
+        WorldTimeline {
+            frames: vec![frame; frames],
+            current: 0,
+            alpha: 0.0,
+            playing: false,
+            play_timer: Timer::from_seconds(0.25, TimerMode::Repeating),
+            target_year: 1,
+            complete: true,
+            needs_apply: false,
+        }
+    }
+
+    #[test]
+    fn fine_steps_accumulate_and_cross_frames() {
+        let mut tl = timeline_with(3);
+        for _ in 0..4 {
+            step_timeline_sized(&mut tl, 1, true);
+        }
+        assert_eq!(tl.current, 0);
+        assert!((tl.alpha - 0.8).abs() < 1e-3, "four fine steps = 0.8");
+        step_timeline_sized(&mut tl, 1, true);
+        assert_eq!(tl.current, 1, "fifth fine step lands exactly on frame 1");
+        assert_eq!(tl.alpha, 0.0, "exact frames render un-interpolated");
+        // Backward across the boundary.
+        step_timeline_sized(&mut tl, -1, true);
+        assert_eq!(tl.current, 0);
+        assert!((tl.alpha - 0.8).abs() < 1e-3);
+        // Coarse step snaps to whole frames and clears alpha.
+        step_timeline_sized(&mut tl, 1, false);
+        assert_eq!((tl.current, tl.alpha), (1, 0.0));
+        // Clamped at the ends, alpha cleared at the last frame.
+        for _ in 0..20 {
+            step_timeline_sized(&mut tl, 1, true);
+        }
+        assert_eq!((tl.current, tl.alpha), (2, 0.0), "clamps at history's end");
     }
 }

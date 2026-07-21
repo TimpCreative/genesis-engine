@@ -301,7 +301,9 @@ impl BiologyView for StubBiologyView {
             id: 0,
             parent: None,
             name: "Life".to_string(),
-            rank: "root".to_string(),
+            rank: "life".to_string(),
+            depth: 0,
+            species_id: 0,
             defining_trait: "self-replication".to_string(),
             origin_year: 500_000_000,
             extinction_year: None,
@@ -323,6 +325,8 @@ impl BiologyView for StubBiologyView {
                 parent: Some(0),
                 name: FAMILIES[(kid as usize) % FAMILIES.len()].to_string(),
                 rank: "kingdom".to_string(),
+                depth: 1,
+                species_id: kid,
                 defining_trait: TRAITS[(self.h(&[kid, 4]) % TRAITS.len() as u64) as usize]
                     .to_string(),
                 origin_year: origin,
@@ -339,6 +343,8 @@ impl BiologyView for StubBiologyView {
                     parent: Some(kid),
                     name: name_from(self.h(&[cid, 6])),
                     rank: "class".to_string(),
+                    depth: 2,
+                    species_id: cid,
                     defining_trait: TRAITS[(self.h(&[cid, 7]) % TRAITS.len() as u64) as usize]
                         .to_string(),
                     origin_year: corigin,
@@ -403,7 +409,10 @@ mod tests {
         let b = StubBiologyView::new(42);
         let h = HexId(10);
         assert_eq!(a.assemblage(&data, h), b.assemblage(&data, h));
-        assert_eq!(a.tree_snapshot(WorldYear(3_000_000_000)), b.tree_snapshot(WorldYear(3_000_000_000)));
+        assert_eq!(
+            a.tree_snapshot(WorldYear(3_000_000_000)),
+            b.tree_snapshot(WorldYear(3_000_000_000))
+        );
         assert_eq!(a.richness_at(&data, h), b.richness_at(&data, h));
     }
 
@@ -413,7 +422,10 @@ mod tests {
         let a = StubBiologyView::new(1);
         let b = StubBiologyView::new(2);
         // Physical-derived fields (biome/richness) may match; fabricated species differ.
-        assert_ne!(a.assemblage(&data, HexId(10)), b.assemblage(&data, HexId(10)));
+        assert_ne!(
+            a.assemblage(&data, HexId(10)),
+            b.assemblage(&data, HexId(10))
+        );
     }
 
     #[test]

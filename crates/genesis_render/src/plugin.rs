@@ -2,13 +2,14 @@
 
 use bevy::prelude::*;
 
+use crate::WorldResource;
 use crate::outline::{SelectedHex, sync_selection_outline};
 use crate::render_mode::CurrentRenderMode;
-use crate::resources::{
-    CameraState, ColorsDirty, HexEntityCache, HexMeshIndex, RiversDirty, WorldDirty,
-};
-use crate::WorldResource;
 use crate::resources::CurrentProjection;
+use crate::resources::{
+    CameraState, ColorsDirty, HexEntityCache, HexMeshIndex, PointerCapturedByUi, RiversDirty,
+    WorldDirty,
+};
 use crate::rivers::update_river_overlay;
 use crate::systems::{
     CameraDragState, cycle_projection_on_keypress, cycle_render_mode_on_keypress,
@@ -31,6 +32,7 @@ impl Plugin for GenesisRenderPlugin {
             .init_resource::<HexMeshIndex>()
             .init_resource::<CurrentRenderMode>()
             .init_resource::<CurrentProjection>()
+            .init_resource::<PointerCapturedByUi>()
             .add_systems(Startup, setup_camera)
             .add_systems(
                 Update,

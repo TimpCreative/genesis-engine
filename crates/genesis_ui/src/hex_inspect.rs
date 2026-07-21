@@ -88,6 +88,8 @@ const INSPECTOR_BG: Color = Color::srgba(0.07, 0.08, 0.11, 0.94);
 const TAB_IDLE: Color = Color::srgb(0.16, 0.18, 0.22);
 const TAB_ACTIVE: Color = Color::srgb(0.28, 0.42, 0.62);
 const INSPECTOR_WIDTH: f32 = 320.0;
+/// Height reserved for the Viewing-screen top bar, so the dock sits below it.
+pub const TOP_BAR_CLEARANCE: f32 = 48.0;
 
 type TabButtonInteraction<'w, 's> = Query<
     'w,
@@ -152,7 +154,9 @@ pub fn spawn_hex_inspect_ui(mut commands: Commands) {
             Node {
                 position_type: PositionType::Absolute,
                 right: Val::Px(0.0),
-                top: Val::Px(0.0),
+                // Clear the top bar (layer tabs + Tree/Bestiary buttons) so the
+                // dock only covers the map, never the fixed chrome.
+                top: Val::Px(TOP_BAR_CLEARANCE),
                 bottom: Val::Px(56.0),
                 width: Val::Px(INSPECTOR_WIDTH),
                 flex_direction: FlexDirection::Column,
@@ -273,8 +277,13 @@ pub fn handle_map_hex_click(
     let Some(cursor) = window.cursor_position() else {
         return;
     };
-    let Some(hex) = screen_to_hex(window, &camera, projection.0, cursor, &world_res.0.data.grid)
-    else {
+    let Some(hex) = screen_to_hex(
+        window,
+        &camera,
+        projection.0,
+        cursor,
+        &world_res.0.data.grid,
+    ) else {
         return;
     };
     if selected.0 == Some(hex) {
@@ -337,6 +346,7 @@ pub fn refresh_tab_colors(
 pub fn update_hex_tooltip(
     hovered: Res<HoveredHex>,
     selected: Res<SelectedHex>,
+    open_overlay: Res<crate::ui::OpenOverlay>,
     world_res: Option<Res<WorldResource>>,
     window_query: Query<&Window, With<PrimaryWindow>>,
     mut root: TooltipRootQuery<'_, '_>,
@@ -349,9 +359,14 @@ pub fn update_hex_tooltip(
         return;
     };
 
-    // Hide tooltip when inspector covers the same hex (less clutter).
+    // Hide tooltip when the inspector covers the same hex, or while a full-screen
+    // overlay is open (less clutter / no stray tooltip over the overlay).
     let show = match (hovered.0, world_res.as_ref()) {
-        (Some(hex), Some(world)) if selected.0 != Some(hex) => Some((hex, world)),
+        (Some(hex), Some(world))
+            if selected.0 != Some(hex) && *open_overlay == crate::ui::OpenOverlay::None =>
+        {
+            Some((hex, world))
+        }
         _ => None,
     };
 
@@ -374,10 +389,12 @@ pub fn update_hex_tooltip(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn update_hex_inspector(
     selected: Res<SelectedHex>,
     visible: Res<InspectorVisible>,
     tab: Res<InspectorTab>,
+    open_overlay: Res<crate::ui::OpenOverlay>,
     world_res: Option<Res<WorldResource>>,
     biology: Option<Res<ActiveBiologyView>>,
     mut root: Query<&mut Node, With<HexInspectorRoot>>,
@@ -387,7 +404,12 @@ pub fn update_hex_inspector(
     let Ok(mut node) = root.single_mut() else {
         return;
     };
-    let show = selected.0.is_some() && visible.0 && world_res.is_some();
+    // Hidden while a full-screen overlay (Bestiary / Tree) is open, so it can't
+    // paint over the overlay's right-hand column.
+    let show = selected.0.is_some()
+        && visible.0
+        && world_res.is_some()
+        && *open_overlay == crate::ui::OpenOverlay::None;
     node.display = if show { Display::Flex } else { Display::None };
     if !show {
         return;
@@ -576,26 +598,42 @@ fn format_life(data: &WorldData, hex: HexId, biology: Option<&dyn BiologyView>) 
         return format!("Habitability {hab:.2}\nSoil fertility {fert:.2}\nNot simulated yet.");
     };
     let a = bio.assemblage(data, hex);
-    let near_cap = if a.richness > 0.85 { "  (near cap)" } else { "" };
     let mut s = format!(
-        "Biome: {}\nRichness R {:.2}{near_cap}\nOccupied guilds {} / {}",
-        a.biome_name, a.richness, a.occupied_guilds, a.guild_capacity,
+        "Biome: {}\nDiversity R {:.2} ({})\nGuilds filled: {} of {}",
+        a.biome_name,
+        a.richness,
+        richness_word(a.richness),
+        a.occupied_guilds,
+        a.guild_capacity,
     );
-    if let Some(dominant) = a.species.first() {
-        s.push_str(&format!(
-            "\n\nDominant: {}\n  {} · {}\n  [{}]",
-            dominant.name,
-            dominant.guild,
-            dominant.family,
-            dominant.trait_chips.join(", "),
-        ));
-        s.push_str(&format!(
-            "\n\nGenerate assemblage ({} guilds) →  [B]",
-            a.occupied_guilds
-        ));
+    if a.species.is_empty() {
+        s.push_str("\n\nNo species here.");
+    } else {
+        s.push_str("\n\nSpecies here (sample):");
+        for sp in a.species.iter().take(3) {
+            s.push_str(&format!(
+                "\n  • {}  —  {}\n     {} · {}",
+                sp.name,
+                sp.guild,
+                sp.family,
+                sp.trait_chips.join(", "),
+            ));
+        }
+        s.push_str("\n\nPress [B] for the full Bestiary →");
     }
     s.push_str(&format!("\n\nHabitability {hab:.2} · Soil fert {fert:.2}"));
     s
+}
+
+/// A plain-language word for a richness scalar.
+fn richness_word(r: f32) -> &'static str {
+    match r {
+        _ if r <= 0.0 => "lifeless",
+        _ if r < 0.2 => "sparse",
+        _ if r < 0.5 => "moderate",
+        _ if r < 0.85 => "rich",
+        _ => "teeming",
+    }
 }
 
 fn format_debug(data: &WorldData, hex: HexId, i: usize) -> String {
@@ -634,7 +672,10 @@ mod tests {
         assert!(text.contains("above sea"));
         let sea_pos = text.find("above sea").unwrap();
         let abs_pos = text.find("abs").unwrap();
-        assert!(sea_pos < abs_pos, "sea-relative height must precede absolute");
+        assert!(
+            sea_pos < abs_pos,
+            "sea-relative height must precede absolute"
+        );
     }
 
     #[test]
@@ -663,7 +704,10 @@ mod tests {
         }
         let text = surface_summary(&world.data, 0);
         assert!(text.starts_with("Land"), "peak is land, got {text}");
-        assert!(text.contains("ice"), "ice must still be flagged, got {text}");
+        assert!(
+            text.contains("ice"),
+            "ice must still be flagged, got {text}"
+        );
     }
 
     #[test]
