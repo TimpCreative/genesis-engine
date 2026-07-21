@@ -2611,6 +2611,14 @@ dependencies = [
 [[package]]
 name = "genesis_biology"
 version = "0.1.0"
+dependencies = [
+ "genesis_core",
+ "genesis_rules",
+ "rand 0.8.6",
+ "serde",
+ "serde_json",
+ "tracing",
+]
 
 [[package]]
 name = "genesis_civilization"
@@ -2666,6 +2674,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "genesis_rules"
+version = "0.1.0"
+dependencies = [
+ "genesis_core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "genesis_tech"
 version = "0.1.0"
 
@@ -2688,6 +2705,7 @@ version = "0.1.0"
 dependencies = [
  "arboard",
  "bevy",
+ "genesis_biology",
  "genesis_climate",
  "genesis_core",
  "genesis_hydrology",

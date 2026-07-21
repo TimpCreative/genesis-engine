@@ -21,3 +21,6 @@ Thumbs.db
 
 # Cursor
 .cursor/cache/
+
+# Diagnostic run logs (build artifacts)
+hydro_exit_*.log
