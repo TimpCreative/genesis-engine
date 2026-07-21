@@ -29,6 +29,13 @@ pub struct SurfaceFeature {
     /// freeboard and never thermally subsides; oceanic crust does the reverse.
     #[serde(default)]
     pub continental_crust: bool,
+    /// Permanent crustal-root floor, meters above the continental baseline —
+    /// the isostatic legacy of every orogeny this crust has survived (thick
+    /// crust is forever until the feature itself is destroyed). Erosion may
+    /// lower the surface to `CONTINENTAL_BASE_ELEVATION_M + root_m` but never
+    /// below: dead belts decay into plateaus, not featureless plain.
+    #[serde(default)]
+    pub root_m: f32,
 }
 
 /// Per-plate surface storage indexed by BIRTH world-HexId.
@@ -114,7 +121,7 @@ pub fn type_baseline(plate_type: PlateType) -> (f32, BedrockType) {
 
 /// Birth hex of the plate material at `world_hex`: projection-cache lookup
 /// when the cache covers this hex, otherwise the direct inverse rotation.
-fn birth_hex_at(
+pub(crate) fn birth_hex_at(
     data: &WorldData,
     plate: &Plate,
     cache: &ProjectionCache,
@@ -218,6 +225,7 @@ pub fn baseline_feature(plate_type: PlateType, age_year: i64) -> SurfaceFeature 
         fertility: 0.0,
         age_year,
         continental_crust: plate_type == PlateType::Continental,
+        root_m: 0.0,
     }
 }
 
@@ -285,6 +293,7 @@ mod tests {
                 fertility: 0.0,
                 age_year: 100,
                 continental_crust: false,
+                root_m: 0.0,
             },
         );
         b.set(
@@ -296,6 +305,7 @@ mod tests {
                 fertility: 0.0,
                 age_year: 200,
                 continental_crust: false,
+                root_m: 0.0,
             },
         );
         a.merge_from(&b);
@@ -310,6 +320,7 @@ mod tests {
                 fertility: 0.0,
                 age_year: 50,
                 continental_crust: false,
+                root_m: 0.0,
             },
         );
         a.merge_from(&b);
@@ -328,6 +339,7 @@ mod tests {
                 fertility: 0.0,
                 age_year: i64::from(i),
                 continental_crust: false,
+                root_m: 0.0,
             };
             a.set(HexId(i), f.clone());
             b.set(HexId(i), f);

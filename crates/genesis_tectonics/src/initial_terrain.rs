@@ -85,12 +85,114 @@ pub fn apply_formation_terrain(data: &mut WorldData, registry: &mut PlateRegistr
                 fertility: 0.0,
                 age_year: 0,
                 continental_crust: plate_type == PlateType::Continental,
+                root_m: 0.0,
             },
         );
     }
 
+    seed_fossil_basement_belts(data, registry, rng);
+
     data.sea_level_m = 0.0;
     rebuild_world_from_plate_surfaces(data, registry);
+}
+
+/// RNG stream for the fossil basement belts (fixed draw order — seed-determined).
+const FOSSIL_BELT_STREAM: &str = "fossil-basement-belts";
+/// Fossil-root amplitude on the belt axis, m. Ancient basement highlands
+/// stand 500–1500 m on Earth (Guiana shield, Baltic/Canadian shield highs),
+/// so the axis banks the middle of that band and calibration maps it into
+/// the highland mid-band, well below the active orogenic tail.
+const FOSSIL_ROOT_AXIS_M: f32 = 900.0;
+/// Neighbor-halo root as a fraction of the axis value.
+const FOSSIL_ROOT_HALO_FRACTION: f32 = 0.5;
+/// Initial surface stands this factor above the root floor — an eroded
+/// ancient belt, not a fresh range.
+const FOSSIL_SURFACE_OVER_ROOT: f32 = 1.15;
+/// Minimum continental plate size (hexes) that receives fossil belts.
+const FOSSIL_BELT_MIN_PLATE_HEXES: usize = 8;
+
+/// Doc 06 §5.2 roots: continents are palimpsests, not blank slates. Every
+/// formation continent is seeded with 1–2 ancient basement belts — wandering
+/// bands of permanent crustal root (plus matching surface) recording the
+/// orogenies that assembled it before year 0. Deterministic per world seed:
+/// one dedicated stream, plates visited in ascending id order.
+fn seed_fossil_basement_belts(data: &WorldData, registry: &mut PlateRegistry, rng: &WorldRng) {
+    let mut belt_rng = rng.stream(FOSSIL_BELT_STREAM);
+    for plate_id in registry.plate_ids() {
+        let hexes: Vec<u32> = (0..data.plate_id.len() as u32)
+            .filter(|&i| data.plate_id[i as usize] == plate_id)
+            .collect();
+        let Some(plate) = registry.plates_mut().get_mut(&plate_id) else {
+            continue;
+        };
+        if plate.plate_type != PlateType::Continental || hexes.len() < FOSSIL_BELT_MIN_PLATE_HEXES {
+            continue;
+        }
+        // Belt count scales with plate area (Earth basement maps carry a
+        // belt every few hundred km): a fragment rifting off a large plate
+        // should usually inherit at least one.
+        let belts = (hexes.len() / 120).clamp(1, 6) + belt_rng.gen_range(0..=1usize);
+        for _ in 0..belts {
+            let start = hexes[belt_rng.gen_range(0..hexes.len())];
+            let mut dir = belt_rng.gen_range(0..6usize);
+            let length = ((hexes.len() as f32).sqrt() as usize).clamp(3, 24);
+            let mut current = start;
+            for _ in 0..length {
+                let axis = FOSSIL_ROOT_AXIS_M * belt_rng.gen_range(0.75..=1.25);
+                bank_fossil_root(plate, HexId(current), axis);
+                let neighbors = data.grid.neighbors(HexId(current));
+                for &neighbor in neighbors {
+                    if data
+                        .plate_id
+                        .get(neighbor.0 as usize)
+                        .is_some_and(|&p| p == plate_id)
+                    {
+                        bank_fossil_root(plate, neighbor, axis * FOSSIL_ROOT_HALO_FRACTION);
+                    }
+                }
+                // Ancient belts curve: wobble the heading now and then.
+                if belt_rng.gen_bool(0.35) {
+                    dir = (dir + if belt_rng.gen_bool(0.5) { 1 } else { 5 }) % 6;
+                }
+                let Some(&next) = neighbors.get(dir % neighbors.len().max(1)) else {
+                    break;
+                };
+                if data
+                    .plate_id
+                    .get(next.0 as usize)
+                    .is_none_or(|&p| p != plate_id)
+                {
+                    break; // the belt ends at the continent edge.
+                }
+                current = next.0;
+            }
+        }
+    }
+}
+
+/// Banks a fossil root on one feature (max, not sum — overlapping halo
+/// visits must not stack a plateau into a false Himalaya) and stands the
+/// initial surface just above the new floor.
+fn bank_fossil_root(plate: &mut crate::plate::Plate, hex: HexId, root_m: f32) {
+    let Some(feature) = plate
+        .surface
+        .features
+        .get_mut(hex.0 as usize)
+        .and_then(|f| f.as_mut())
+    else {
+        return;
+    };
+    if !feature.continental_crust {
+        return;
+    }
+    feature.root_m = feature
+        .root_m
+        .max(root_m)
+        .min(crate::elevation::ROOT_MAX_M);
+    let min_surface = CONTINENTAL_BASE_ELEVATION_M + feature.root_m * FOSSIL_SURFACE_OVER_ROOT;
+    if feature.elevation_m < min_surface {
+        feature.elevation_m = min_surface;
+    }
 }
 
 /// Multi-octave, spatially correlated elevation noise.

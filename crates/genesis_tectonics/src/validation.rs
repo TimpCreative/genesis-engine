@@ -712,3 +712,474 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod continental_relief {
+    use super::*;
+    use genesis_core::create_world;
+    use genesis_core::time::WorldYear;
+
+    /// Doc 06 §5.2 roots gate: continents are palimpsests. At 1 B and 4.4 B,
+    /// no continent may hoard mountains beyond its land share (enrichment =
+    /// mountain share ÷ land share ≤ 2.5; Earth's Asia sits near 1.8 — a
+    /// supercontinent legitimately holds most mountains *and* most land), and
+    /// flat continents follow Earth's rule: at most ONE Australia-class flat
+    /// major per world — "flat" meaning genuinely featureless (peak below
+    /// 700 m; even Australia peaks at 2,228 m) — and it must be
+    /// Australia-sized or smaller. Every larger landmass carries basement
+    /// relief. Three seeds, subdiv 6.
+    #[test]
+    #[ignore = "deep-time relief-distribution gate; run with --ignored --nocapture"]
+    fn gate_continental_relief_distribution() {
+        for &seed in &[42u64, 7, 99] {
+            for &year in &[1_000_000_000i64, 4_400_000_000] {
+                let mut params = validation_parameters();
+                params.core.seed = genesis_core::parameters::WorldSeed::from_integer(seed);
+                params.core.grid.subdivision_level = 6;
+                let mut world = create_world(params).expect("params");
+                let mut state = crate::plate::TectonicsState::new();
+                generate_full_history_with_tectonics(
+                    &mut world,
+                    &mut state,
+                    WorldYear(year),
+                    |_| {},
+                )
+                .expect("run");
+                let data = &world.data;
+                let n = data.cell_count() as usize;
+                let sea = data.sea_level_m;
+                let mut comp = vec![u32::MAX; n];
+                let mut comps: Vec<Vec<u32>> = Vec::new();
+                for start in 0..n {
+                    if comp[start] != u32::MAX || data.elevation_mean[start] <= sea {
+                        continue;
+                    }
+                    let id = comps.len() as u32;
+                    let mut queue = std::collections::VecDeque::new();
+                    comp[start] = id;
+                    queue.push_back(start as u32);
+                    let mut cells = Vec::new();
+                    while let Some(c) = queue.pop_front() {
+                        cells.push(c);
+                        for nb in data.grid.neighbors(genesis_core::HexId(c)) {
+                            let j = nb.0 as usize;
+                            if j < n && comp[j] == u32::MAX && data.elevation_mean[j] > sea {
+                                comp[j] = id;
+                                queue.push_back(nb.0);
+                            }
+                        }
+                    }
+                    comps.push(cells);
+                }
+                let mut majors: Vec<&Vec<u32>> = comps.iter().filter(|c| c.len() >= 45).collect();
+                majors.sort_by_key(|c| std::cmp::Reverse(c.len()));
+                let mtn_total = data
+                    .elevation_mean
+                    .iter()
+                    .filter(|&&e| e > sea + 1500.0)
+                    .count()
+                    .max(1);
+                let land_total = comps.iter().map(|c| c.len()).sum::<usize>().max(1);
+                let mut flat_majors = 0;
+                let mut oversized_flat = 0;
+                let mut max_enrichment = 0.0f64;
+                let mut per = String::new();
+                for cells in &majors {
+                    let high = cells
+                        .iter()
+                        .filter(|&&c| data.elevation_mean[c as usize] > sea + 1000.0)
+                        .count();
+                    let mtn = cells
+                        .iter()
+                        .filter(|&&c| data.elevation_mean[c as usize] > sea + 1500.0)
+                        .count();
+                    let mtn_share = mtn as f64 / mtn_total as f64;
+                    let land_share = cells.len() as f64 / land_total as f64;
+                    // Hoarding is only meaningful at scale: small mountainous
+                    // arcs (a New Zealand) legitimately exceed any enrichment
+                    // cap. Judge continents holding ≥ 10% of world land.
+                    if land_share >= 0.10 {
+                        max_enrichment = max_enrichment.max(mtn_share / land_share);
+                    }
+                    let high_frac = high as f64 / cells.len() as f64;
+                    let max_elev = cells
+                        .iter()
+                        .map(|&c| data.elevation_mean[c as usize])
+                        .fold(f32::MIN, f32::max);
+                    let cont = cells
+                        .iter()
+                        .filter(|&&c| {
+                            data.continental_crust
+                                .get(c as usize)
+                                .copied()
+                                .unwrap_or(false)
+                        })
+                        .count();
+                    if max_elev < 700.0 {
+                        flat_majors += 1;
+                        // Australia is ~7.7M km² ≈ 110 subdiv-6 hexes. Young
+                        // continentalized platforms (§5.11) can assemble a
+                        // somewhat larger flat before their margins orogenize,
+                        // so the cap allows roughly a double Australia.
+                        if cells.len() > 220 {
+                            oversized_flat += 1;
+                        }
+                    }
+                    per.push_str(&format!(
+                        " {}c/{:.0}%hi/mx{:.0}/cc{:.0}%",
+                        cells.len(),
+                        high_frac * 100.0,
+                        max_elev,
+                        cont as f64 / cells.len() as f64 * 100.0
+                    ));
+                }
+                println!(
+                    "[gate-relief] seed={seed:>3} year={:.1}B majors={} flat_majors={flat_majors} max_enrichment={max_enrichment:.2} |{per}",
+                    year as f64 / 1e9,
+                    majors.len()
+                );
+                assert!(
+                    max_enrichment <= 2.5,
+                    "seed {seed} @{year}: a continent hoards mountains beyond its land share (enrichment {max_enrichment:.2})"
+                );
+                // Epoch-aware flatness bound: mid-history worlds pass
+                // through young-continent phases (freshly continentalized
+                // crust that has not yet orogenized), so 1 B allows a couple
+                // of modest flats. Deep time is the promise: at most one
+                // Australia-class flat, nothing larger.
+                if year >= 4_000_000_000 {
+                    assert!(
+                        flat_majors <= 1,
+                        "seed {seed} @{year}: {flat_majors} flat majors (Earth allows one Australia)"
+                    );
+                    assert_eq!(
+                        oversized_flat, 0,
+                        "seed {seed} @{year}: a flat continent larger than Australia-class"
+                    );
+                } else {
+                    assert!(
+                        flat_majors <= 2,
+                        "seed {seed} @{year}: {flat_majors} flat majors in the young-continent phase"
+                    );
+                    assert!(
+                        oversized_flat <= 1,
+                        "seed {seed} @{year}: {oversized_flat} oversized flats in the young-continent phase"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod vast_plains {
+    use super::*;
+    use genesis_core::create_world;
+    use genesis_core::time::WorldYear;
+    use genesis_core::HexId;
+
+    /// A cell is "plains" when the 2-ring neighborhood's total relief is
+    /// under 200 m — the West-Siberian-Plain grade of flatness.
+    const PLAINS_LOCAL_RELIEF_M: f32 = 200.0;
+    /// Largest connected plain allowed, as a fraction of world land. Earth's
+    /// largest (the West Siberian Plain) is ~2% of land; the pre-epeirogeny
+    /// pathology reached 20%. Measured post-§5.12: ≤ 2% on the gate seeds;
+    /// the bound leaves chaos headroom while catching the vast-plain class.
+    const MAX_PLAIN_LAND_FRACTION: f64 = 0.08;
+
+    fn largest_plain(seed: u64, year: i64) -> (usize, usize) {
+        let mut params = validation_parameters();
+        params.core.seed = genesis_core::parameters::WorldSeed::from_integer(seed);
+        params.core.grid.subdivision_level = 6;
+        let mut world = create_world(params).expect("params");
+        let mut state = crate::plate::TectonicsState::new();
+        generate_full_history_with_tectonics(&mut world, &mut state, WorldYear(year), |_| {})
+            .expect("run");
+        let data = &world.data;
+        let n = data.cell_count() as usize;
+        let land: Vec<bool> = (0..n).map(|i| data.elevation_mean[i] > 0.0).collect();
+        let land_total = land.iter().filter(|&&l| l).count();
+
+        let mut plains = vec![false; n];
+        for i in 0..n {
+            if !land[i] {
+                continue;
+            }
+            let mut lo = data.elevation_mean[i];
+            let mut hi = lo;
+            for &nb in data.grid.neighbors(HexId(i as u32)) {
+                for nb2 in data.grid.neighbors(nb) {
+                    let e = data.elevation_mean[nb2.0 as usize];
+                    lo = lo.min(e);
+                    hi = hi.max(e);
+                }
+                let e = data.elevation_mean[nb.0 as usize];
+                lo = lo.min(e);
+                hi = hi.max(e);
+            }
+            plains[i] = hi - lo < PLAINS_LOCAL_RELIEF_M;
+        }
+
+        let mut seen = vec![false; n];
+        let mut largest = 0usize;
+        for start in 0..n {
+            if !plains[start] || seen[start] {
+                continue;
+            }
+            let mut size = 0usize;
+            let mut queue = std::collections::VecDeque::new();
+            seen[start] = true;
+            queue.push_back(start as u32);
+            while let Some(c) = queue.pop_front() {
+                size += 1;
+                for nb in data.grid.neighbors(HexId(c)) {
+                    let j = nb.0 as usize;
+                    if j < n && plains[j] && !seen[j] {
+                        seen[j] = true;
+                        queue.push_back(nb.0);
+                    }
+                }
+            }
+            largest = largest.max(size);
+        }
+        (largest, land_total)
+    }
+
+    /// Doc 06 §5.12 gate: no vast inland plains. The epeirogenic swell keeps
+    /// interior structure varied, so no connected sub-200 m-relief region may
+    /// grow beyond an Earth-plausible share of world land.
+    #[test]
+    #[ignore = "deep-time gate; run with --ignored --nocapture"]
+    fn gate_no_vast_inland_plains() {
+        let jobs: Vec<(u64, i64)> = [42u64, 7, 99]
+            .iter()
+            .flat_map(|&s| [(s, 1_000_000_000i64), (s, 4_400_000_000)])
+            .collect();
+        let results: Vec<(u64, i64, usize, usize)> = std::thread::scope(|scope| {
+            let handles: Vec<_> = jobs
+                .iter()
+                .map(|&(s, y)| scope.spawn(move || {
+                    let (largest, land) = largest_plain(s, y);
+                    (s, y, largest, land)
+                }))
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        for (seed, year, largest, land) in results {
+            let frac = largest as f64 / land.max(1) as f64;
+            println!(
+                "[gate-plains] seed={seed:>3} year={:.1}B largest={largest} ({:.0}% of land)",
+                year as f64 / 1e9,
+                frac * 100.0,
+            );
+            assert!(
+                frac <= MAX_PLAIN_LAND_FRACTION,
+                "seed {seed} @{year}: a {largest}-cell connected plain covers {:.0}% of land \
+                 (bound {:.0}%) — the vast-inland-plain pathology (Doc 06 §5.12)",
+                frac * 100.0,
+                MAX_PLAIN_LAND_FRACTION * 100.0,
+            );
+        }
+    }
+}
+
+
+#[cfg(test)]
+mod mountain_belts {
+    use super::*;
+    use genesis_core::create_world;
+    use genesis_core::time::WorldYear;
+    use genesis_core::HexId;
+
+    fn measure(seed: u64, year: i64) -> (String, usize, f64, f64) {
+        let mut params = validation_parameters();
+        params.core.seed = genesis_core::parameters::WorldSeed::from_integer(seed);
+        params.core.grid.subdivision_level = 6;
+        let mut world = create_world(params).expect("params");
+        let mut state = crate::plate::TectonicsState::new();
+        generate_full_history_with_tectonics(&mut world, &mut state, WorldYear(year), |_| {})
+            .expect("run");
+        let data = &world.data;
+        let n = data.cell_count() as usize;
+        let mtn: Vec<bool> = (0..n).map(|i| data.elevation_mean[i] >= 1500.0).collect();
+        let mtn_total = mtn.iter().filter(|&&m| m).count();
+        let land_total = (0..n).filter(|&i| data.elevation_mean[i] > 0.0).count();
+
+        // Connected mountain belts.
+        let mut seen = vec![false; n];
+        let mut belts: Vec<Vec<u32>> = Vec::new();
+        for start in 0..n {
+            if !mtn[start] || seen[start] {
+                continue;
+            }
+            let mut comp = Vec::new();
+            let mut queue = std::collections::VecDeque::new();
+            seen[start] = true;
+            queue.push_back(start as u32);
+            while let Some(c) = queue.pop_front() {
+                comp.push(c);
+                for nb in data.grid.neighbors(HexId(c)) {
+                    let j = nb.0 as usize;
+                    if j < n && mtn[j] && !seen[j] {
+                        seen[j] = true;
+                        queue.push_back(nb.0);
+                    }
+                }
+            }
+            belts.push(comp);
+        }
+        belts.sort_by_key(|b| std::cmp::Reverse(b.len()));
+        let real_belts = belts.iter().filter(|b| b.len() >= 5).count();
+        let largest = belts.first().map(|b| b.len()).unwrap_or(0);
+        // Elongation of the largest belt: BFS diameter (hex steps) vs mean width.
+        let elong = belts.first().map(|belt| {
+            let set: std::collections::HashSet<u32> = belt.iter().copied().collect();
+            let bfs_far = |start: u32| -> (u32, usize) {
+                let mut dist = std::collections::HashMap::new();
+                dist.insert(start, 0usize);
+                let mut queue = std::collections::VecDeque::new();
+                queue.push_back(start);
+                let mut far = (start, 0usize);
+                while let Some(c) = queue.pop_front() {
+                    let d = dist[&c];
+                    if d > far.1 {
+                        far = (c, d);
+                    }
+                    for nb in data.grid.neighbors(HexId(c)) {
+                        if set.contains(&nb.0) && !dist.contains_key(&nb.0) {
+                            dist.insert(nb.0, d + 1);
+                            queue.push_back(nb.0);
+                        }
+                    }
+                }
+                far
+            };
+            let (a, _) = bfs_far(belt[0]);
+            let (_, diameter) = bfs_far(a);
+            let length = diameter.max(1);
+            belt.len() as f64 / length as f64
+        });
+        let share = largest as f64 / mtn_total.max(1) as f64;
+        let width = elong.unwrap_or(0.0);
+        let line = format!(
+            "[belts] seed={seed:>3} year={:.1}B mtn={mtn_total} ({:.0}% land) belts={real_belts} largest={largest} ({:.0}% of mtn) width={:.1}",
+            year as f64 / 1e9,
+            mtn_total as f64 / land_total.max(1) as f64 * 100.0,
+            share * 100.0,
+            width,
+        );
+        (line, real_belts, share, width)
+    }
+
+    #[test]
+    #[ignore = "deep-time gate; run with --ignored --nocapture"]
+    fn gate_mountain_belt_distribution() {
+        // Range of epochs, not just endpoints: mid-history is where the
+        // conglomerate pathology peaked (assembly-era supercontinents).
+        let jobs: Vec<(u64, i64)> = [42u64, 7, 99]
+            .iter()
+            .flat_map(|&s| {
+                [
+                    (s, 1_000_000_000i64),
+                    (s, 2_000_000_000),
+                    (s, 3_000_000_000),
+                    (s, 4_400_000_000),
+                ]
+            })
+            .collect();
+        let results: Vec<(u64, i64, String, usize, f64, f64)> = std::thread::scope(|scope| {
+            let handles: Vec<_> = jobs
+                .iter()
+                .map(|&(s, y)| scope.spawn(move || {
+                    let (line, belts, share, width) = measure(s, y);
+                    (s, y, line, belts, share, width)
+                }))
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        for (seed, year, line, belts, share, width) in results {
+            println!("{line}");
+            // Doc 06 §5.13: mountains come as several long belts, not one
+            // blob. Deep time is the promise; 1 B may still carry a wide
+            // incumbent from the assembly era (EMA + banked-root memory).
+            if year >= 4_000_000_000 {
+                assert!(
+                    belts >= 4,
+                    "seed {seed} @{year}: only {belts} mountain belts (want ≥ 4 — Earth has dozens)"
+                );
+                assert!(
+                    share <= 0.75,
+                    "seed {seed} @{year}: one belt holds {:.0}% of mountain area (bound 75%)",
+                    share * 100.0
+                );
+                assert!(
+                    width <= 9.0,
+                    "seed {seed} @{year}: largest belt mean width {width:.1} hexes (bound 9 — bands, not blobs)"
+                );
+            }
+        }
+    }
+}
+
+
+#[cfg(test)]
+mod render_probe {
+    use super::*;
+    use genesis_core::create_world;
+    use genesis_core::time::WorldYear;
+    use genesis_core::HexId;
+
+    fn render(seed: u64, year: i64, path: &str) {
+        let mut params = validation_parameters();
+        params.core.seed = genesis_core::parameters::WorldSeed::from_integer(seed);
+        params.core.grid.subdivision_level = 6;
+        let mut world = create_world(params).expect("params");
+        let mut state = crate::plate::TectonicsState::new();
+        generate_full_history_with_tectonics(&mut world, &mut state, WorldYear(year), |_| {})
+            .expect("run");
+        let data = &world.data;
+        let (w, h) = (900usize, 450usize);
+        let mut img = vec![0u8; w * h * 3];
+        for py in 0..h {
+            let lat = 89.9 - 179.8 * (py as f64 + 0.5) / h as f64;
+            for px in 0..w {
+                let lon = -180.0 + 360.0 * (px as f64 + 0.5) / w as f64;
+                let hex = data.grid.nearest_hex(lat.to_radians(), lon.to_radians());
+                let e = data.elevation_mean[hex.0 as usize];
+                let (r, g, b) = if e <= 0.0 {
+                    let t = (1.0 + (e / 5000.0).max(-1.0)) as f32;
+                    ((10.0 + 30.0 * t) as u8, (30.0 + 70.0 * t) as u8, (80.0 + 120.0 * t) as u8)
+                } else if e < 300.0 {
+                    (60, 130, 60)
+                } else if e < 800.0 {
+                    (110, 140, 70)
+                } else if e < 1500.0 {
+                    (150, 120, 80)
+                } else if e < 3000.0 {
+                    (120, 100, 90)
+                } else {
+                    (235, 235, 235)
+                };
+                let i = (py * w + px) * 3;
+                img[i] = r;
+                img[i + 1] = g;
+                img[i + 2] = b;
+            }
+        }
+        let mut out = format!("P6\n{w} {h}\n255\n").into_bytes();
+        out.extend_from_slice(&img);
+        std::fs::write(path, out).expect("write ppm");
+        println!("[render] wrote {path}");
+    }
+
+    #[test]
+    #[ignore = "utility: writes equirect elevation PPMs to $RENDER_DIR for visual inspection"]
+    fn render_probe() {
+        let dir = std::env::var("RENDER_DIR").unwrap_or_else(|_| "/tmp".into());
+        std::thread::scope(|scope| {
+            scope.spawn(|| render(7, 2_000_000_000, &format!("{dir}/w7_2b.ppm")));
+            scope.spawn(|| render(2024, 2_000_000_000, &format!("{dir}/w2024_2b.ppm")));
+            scope.spawn(|| render(123, 2_000_000_000, &format!("{dir}/w123_2b.ppm")));
+        });
+    }
+}

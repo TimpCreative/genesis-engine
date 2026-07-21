@@ -421,6 +421,7 @@ mod tests {
                         fertility: 0.0,
                         age_year: 0,
                         continental_crust: false,
+                        root_m: 0.0,
                     },
                 );
         }
@@ -443,6 +444,7 @@ mod tests {
                     fertility: 0.0,
                     age_year: 0,
                     continental_crust: false,
+                    root_m: 0.0,
                 },
             );
 
@@ -487,6 +489,7 @@ mod tests {
                         fertility: 0.0,
                         age_year: 0,
                         continental_crust: false,
+                        root_m: 0.0,
                     },
                 );
         }
@@ -509,6 +512,7 @@ mod tests {
                     fertility: 0.0,
                     age_year: 0,
                     continental_crust: false,
+                    root_m: 0.0,
                 },
             );
 
@@ -567,6 +571,7 @@ mod tests {
                         fertility: 0.0,
                         age_year: 0,
                         continental_crust: false,
+                        root_m: 0.0,
                     },
                 );
         }
@@ -588,6 +593,7 @@ mod tests {
                     fertility: 0.0,
                     age_year: 0,
                     continental_crust: false,
+                    root_m: 0.0,
                 },
             );
 
@@ -646,6 +652,7 @@ mod tests {
                         fertility: 0.0,
                         age_year: 0,
                         continental_crust: false,
+                        root_m: 0.0,
                     },
                 );
         }
@@ -667,6 +674,7 @@ mod tests {
                     fertility: 0.0,
                     age_year: 0,
                     continental_crust: false,
+                    root_m: 0.0,
                 },
             );
 

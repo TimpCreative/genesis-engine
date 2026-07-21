@@ -97,9 +97,19 @@ p = ocean_frac − slope_width_frac → continental-slope top
 p = ocean_frac − shelf_fraction   → shelf_depth_m            (shelf band: shallow)
 p = ocean_frac  (= 1−land_frac)   → 0                        (coastline / datum)
 p = ocean_frac + coastal_band     → +coastal plain
-p ≈ 0.90                          → continental_modal_height_m
+p = ocean_frac + 0.35·land        → continental_modal_height_m
+p = ocean_frac + 0.72·land        → continental_modal_height_m + 500
+p = ocean_frac + 0.90·land        → continental_modal_height_m + 1200
 p → 1.00                          → orogeny tail scaled by orogeny_intensity  (peaks)
 ```
+
+The land mid-band is deliberately steepened (the modal point at `0.35·land`, with an
+intermediate `+500` point): the original placement at `0.6·land` put 45% of all land inside a
+195 m window (4.3 m per 1% of land), so any rank-contiguous province — and the Doc 06 §5.12
+freeboard attractor makes provinces rank-contiguous — mapped to a vast uniform plain. The
+§5.4 residual taper is likewise floored at 0.25 beyond ~60 m of the datum (crisp coast, live
+texture in the lowlands), and island seeding only sinks ocean-adjacent margin cells so the
+datum guard's clamped interior cells can never become isolated sub-sea perforations.
 
 The curve **guarantees the distribution**: area above `p = 1 − land_fraction` is land, so land %, shelf share, mountain-tail fatness, and abyssal depth are all exact by construction, independent of what the physics did.
 
@@ -141,6 +151,17 @@ land_eff     = land_fraction + land_fraction_wander · tanh((raw_signal − mean
 ```
 
 `land_eff` feeds the curve's `ocean_frac` each calibration. The band is symmetric and excursions bounded, so the **long-run mean → setpoint** while natural Wilson-cycle variation still breathes within the band. A low-pass on `raw_signal` prevents per-tick jitter. Deterministic.
+
+### 7.1 Orogen persistence (mountains are furniture, not foam)
+
+Earth reference: mountain *ranges* are quasi-static at hex scale over 10 My — belts hold position and extent; only sub-hex peaks turn over — and dead belts (Appalachians, Urals) stand 100–300 My on isostatic roots. The raw structure field violates this: fresh boundary uplift lands on jittering rasterized positions, so the orogenic tail of the ranking re-deals every tick (measured: top-2.9% mountain-set Jaccard 0.27 raw / 0.49 calibrated across 10 My at 1 B, with ~2 km mean height swings).
+
+Two asymmetric memories fix it, both gated to the top `OROGEN_BAND_FRAC` (0.15) of the ranking field so coastlines keep the §7 symmetric response:
+
+- **Rank:** a band cell that is *falling* follows at `TEMPORAL_TAU_OROGEN_DECAY_YEARS` (150 My — the dead-belt persistence scale); all rises stay at `TEMPORAL_TAU_YEARS`, so a new Himalaya still grows promptly. Longer decay over-compresses the top of the field and *increases* churn (measured 250 My < 150 My) — the constant is a tuned optimum, not a free dial.
+- **Texture (§5.4 residual):** in-band relief follows the raw residual at the same slow constant, *symmetric* — chasing upward spikes would ratchet every peak toward its historical noise maximum. Out-of-band texture stays per-tick.
+
+Both buffers persist in `TectonicsState` (`calibration_rank_ema`, `calibration_residual_ema`). **Gate** (`gate_mountain_persistence_10my`): 10 My mountain-set Jaccard ≥ 0.8 with land Jaccard ≥ 0.85 at 1 B, subdiv 6 (measured at adoption: 0.81 / 0.93, mean mountain drift 748 m — down from 2,077 m).
 
 ---
 

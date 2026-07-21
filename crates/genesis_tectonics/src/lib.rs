@@ -14,6 +14,7 @@ pub mod continental_heal;
 #[cfg(test)]
 mod diagnostics;
 pub mod elevation;
+pub mod epeirogeny;
 pub mod erosion;
 pub mod events;
 pub mod frames;
@@ -449,6 +450,7 @@ mod integration_tests {
                         fertility: 0.0,
                         age_year: 0,
                         continental_crust: false,
+                        root_m: 0.0,
                     })
             };
             feature.elevation_m = shallow_elev;

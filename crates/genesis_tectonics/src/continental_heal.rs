@@ -86,7 +86,6 @@ fn lift_sub_freeboard_continental(
 ) {
     let n = data.cell_count() as usize;
     let sea = data.sea_level_m;
-    let target = sea + CONTINENTAL_FREEBOARD_M;
     let mut lifts: Vec<(u32, f32)> = Vec::new();
 
     for i in 0..n {
@@ -101,6 +100,11 @@ fn lift_sub_freeboard_continental(
         if water > elev && water.is_finite() {
             continue;
         }
+        // Doc 06 §5.12: heal lifts toward the swell-shifted freeboard, so
+        // epeirogenic basins are honored, not healed away.
+        let target = sea
+            + CONTINENTAL_FREEBOARD_M
+            + crate::epeirogeny::target_offset_at_world(data, registry, cache, HexId(i as u32));
         if elev >= target - HEAL_DEPTH_TRIGGER_M {
             continue;
         }

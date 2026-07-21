@@ -53,6 +53,17 @@ pub const SUBSIDENCE_RATE: f64 = 2e-5;
 /// Produces ~5 km mountain over 100M years of sustained collision (Himalayan scale).
 pub const OROGENY_RATE: f64 = 5e-5;
 
+/// Fraction of collision/arc uplift banked as permanent crustal root
+/// (Doc 06 §5.2 roots): thickened crust is forever — Earth's dead belts
+/// stand as plateaus on their isostatic roots (Appalachians, Urals, the
+/// Guiana shield). 0.3 turns a 5 km Himalayan-scale belt into a ~1.5 km
+/// plateau legacy once erosion has done its work.
+pub const ROOT_BANK_FRACTION: f64 = 0.3;
+/// Crustal-root cap, m: Tibetan-scale crust (~70 km vs ~35 normal) buys
+/// roughly +2 km of permanent isostatic surface; repeated collisions on the
+/// same crust saturate rather than stack without bound.
+pub const ROOT_MAX_M: f32 = 2000.0;
+
 /// Subduction trench deepening rate (§5.3–§5.4).
 /// Calibrated: 5 cm/yr × 500K years × 1e-4 = 250 m per tick.
 /// Produces ~10 km trench over 100M years of sustained subduction (Mariana scale).
@@ -81,7 +92,7 @@ const COASTAL_SHELF_FALLOFF: [f64; 2] = [0.4, 0.15];
 /// Coastal uplift fraction of orogeny delta at the arc peak (§5.3).
 /// Calibrated so only margins with sustained subduction (100+ My) build
 /// Andes-scale coastal ranges; transient convergent coasts stay quiet.
-const OC_COASTAL_UPLIFT_FACTOR: f64 = 0.10;
+const OC_COASTAL_UPLIFT_FACTOR: f64 = 0.80;
 
 /// Fraction of the arc uplift applied on the continental boundary hex itself
 /// (§5.3): the forearc strip rises gently and stays emergent — Chile exists
@@ -98,7 +109,7 @@ const OC_INLAND_FALLOFF: [f64; 4] = [0.4, 1.0, 0.6, 0.25];
 /// near sea level, not continuous 6000 m volcanic walls along every trench.
 const OO_ARC_UPLIFT_FACTOR: f64 = 0.02;
 
-const INLAND_FALLOFF: [f64; 4] = [1.0, 0.6, 0.3, 0.15];
+const INLAND_FALLOFF: [f64; 4] = [1.0, 0.4, 0.0, 0.0];
 
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
 struct SurfaceKey {
@@ -110,6 +121,8 @@ struct SurfaceKey {
 struct HexDeltas {
     elev: f64,
     relief: f64,
+    /// Permanent crustal-root accrual this tick (§5.2 roots).
+    root: f64,
     bedrock: Option<BedrockType>,
     age_year: i64,
     /// World elevation when this delta was collected (for baseline feature creation).
@@ -508,6 +521,7 @@ fn apply_continental_continental(
 
     entry.elev += orogeny;
     entry.relief += relief;
+    entry.root += orogeny * ROOT_BANK_FRACTION;
 
     spread_inland(
         data,
@@ -522,6 +536,7 @@ fn apply_continental_continental(
         |d, falloff| {
             d.elev += orogeny * falloff;
             d.relief += relief * falloff;
+            d.root += orogeny * falloff * ROOT_BANK_FRACTION;
         },
     );
 }
@@ -578,6 +593,7 @@ fn apply_continental_oceanic(
                 // emergent; the magmatic arc peaks inland (spread below), so
                 // there is land between the trench and the high peaks.
                 entry.elev += uplift * FOREARC_UPLIFT_FRACTION;
+                entry.root += uplift * FOREARC_UPLIFT_FRACTION * ROOT_BANK_FRACTION;
 
                 spread_inland(
                     data,
@@ -591,6 +607,7 @@ fn apply_continental_oceanic(
                     tick_year,
                     |d, falloff| {
                         d.elev += uplift * falloff;
+                        d.root += uplift * falloff * ROOT_BANK_FRACTION;
                     },
                 );
             }
@@ -822,6 +839,9 @@ fn apply_surface_deltas(registry: &mut PlateRegistry, deltas: &BTreeMap<SurfaceK
                 (feature.elevation_m + elev_delta).max(BOUNDARY_SUBSIDENCE_FLOOR_M);
         }
         feature.relief_m += delta.relief as f32;
+        if delta.root > 0.0 && feature.continental_crust {
+            feature.root_m = (feature.root_m + delta.root as f32).min(ROOT_MAX_M);
+        }
         if let Some(bedrock) = delta.bedrock {
             feature.bedrock = bedrock;
         }
@@ -882,6 +902,7 @@ mod tests {
                     fertility: data.fertility[idx],
                     age_year: 0,
                     continental_crust: false,
+                    root_m: 0.0,
                 },
             );
         }
@@ -1156,6 +1177,7 @@ mod tests {
                     fertility: 0.0,
                     age_year: 0,
                     continental_crust: true,
+                    root_m: 0.0,
                 },
             );
         }

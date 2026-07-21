@@ -202,6 +202,7 @@ mod tests {
             fertility: 0.0,
             age_year: 0,
             continental_crust: true,
+            root_m: 0.0,
         };
         for i in 0..n {
             plate.surface.set(HexId(i as u32), feature(800.0));

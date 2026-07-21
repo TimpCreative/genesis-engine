@@ -103,10 +103,14 @@ impl SimulationLayer for TectonicsLayer {
             // temporal ranking EMA (interval 0).
             {
                 let targets = world.parameters.core.terrain;
+                // Reborrow through the RefMut once so the two EMA buffers
+                // split as disjoint field borrows.
+                let state = &mut *state;
                 crate::calibration::apply_hypsometry_transfer(
                     world,
                     &targets,
                     &mut state.calibration_rank_ema,
+                    &mut state.calibration_residual_ema,
                     0.0,
                 );
             }
@@ -270,6 +274,20 @@ impl SimulationLayer for TectonicsLayer {
                 );
             });
 
+            // Crust balance counter-flow, supply side (Doc 06 §5.11):
+            // collisions consume continental area; continentalization of the
+            // highest-standing oceanic crust replaces it, holding coverage at
+            // the land target plus shelf allowance.
+            timed_tick_step("crust_supply", tick_year, || {
+                let s = &mut *state;
+                crate::accretion::maintain_crust_supply(
+                    world,
+                    &mut s.registry,
+                    &s.projection,
+                    tick_year.value(),
+                );
+            });
+
             timed_tick_step("erosion", tick_year, || {
                 apply_erosion_tick(world, &mut state, rng, tick_year, interval_years);
             });
@@ -390,10 +408,14 @@ impl SimulationLayer for TectonicsLayer {
             // next tick, so this never feeds back into the sim.
             timed_tick_step("calibration", tick_year, || {
                 let targets = world.parameters.core.terrain;
+                // Reborrow through the RefMut once so the two EMA buffers
+                // split as disjoint field borrows.
+                let state = &mut *state;
                 crate::calibration::apply_hypsometry_transfer(
                     world,
                     &targets,
                     &mut state.calibration_rank_ema,
+                    &mut state.calibration_residual_ema,
                     interval_years,
                 );
             });

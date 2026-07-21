@@ -260,6 +260,7 @@ mod tests {
                     fertility: data.fertility[idx],
                     age_year: 0,
                     continental_crust: false,
+                    root_m: 0.0,
                 },
             );
         }

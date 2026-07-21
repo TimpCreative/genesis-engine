@@ -10,11 +10,35 @@
 //! drawdown returns water (and salt) to the ocean without leaving shelf
 //! crust. [`export_salt`] clears salt under standing water and flushes
 //! residue along drainage that reaches the ocean.
+//!
+//! Candidate seas at or above [`SEA_PERSISTENCE_MIN_HEXES`] always sustain
+//! (§5.2's Caspian rule): a below-sea-level basin that large stays full on
+//! catchment inflow, so tectonic enclosure produces a persistent inland sea
+//! rather than a drawdown to salt flats.
 
 use genesis_core::data::{WaterBody, WaterBodyId, WaterBodyKind, WorldData};
 
 use crate::routing::{FlowAccumulation, RoutingSurface, hex_area_m2};
 use crate::solve::CandidateSea;
+
+/// Minimum candidate-sea size (hexes) at which the §5.2 balance is bypassed
+/// and the sea always stands at its bathtub level — the Caspian rule. A
+/// below-sea-level basin this large collects a catchment whose rivers refill
+/// whatever the surface loses, so tectonic enclosure yields a persistent
+/// inland sea, not a drawdown to salt flats. Smaller enclosures (the Aral
+/// class) still adjudicate normally. The Caspian spans ~48 hexes at
+/// production subdivision 8 (~7,700 km²/hex, Doc 04 §3.1).
+pub const SEA_PERSISTENCE_MIN_HEXES: usize = 40;
+
+/// Deepest the §5.2 drawdown can pull a candidate sea's surface below the
+/// contemporary sea level, m. Earth's deepest standing endorheic surface is
+/// the Dead Sea at ~430 m below the ocean: a shrinking sea concentrates
+/// toward halite saturation, brine evaporation collapses to ~10% of the
+/// freshwater rate, and the drawdown stalls. Keeps swallowed ocean floor
+/// permanently submerged — dry continental hexes kilometers below the datum
+/// cannot form — and turns a transiently fragmented sea's worst tick into a
+/// shoreline dip instead of a total drain.
+pub const CANDIDATE_DRAWDOWN_FLOOR_BELOW_SEA_M: f64 = 500.0;
 
 /// Open-water evaporation intercept, mm/yr (§5.1's `800 + 45 × T`).
 pub const LAKE_EVAP_BASE_MM: f64 = 800.0;
@@ -338,7 +362,11 @@ pub fn adjudicate_lakes(
         let evaporation_at_surface = area_m2 * evap_mm * 1.0e-3;
         let id = WaterBodyId(candidate.lowest_hex);
 
-        if inflow >= evaporation_at_surface {
+        // §5.2 Caspian rule: past SEA_PERSISTENCE_MIN_HEXES the balance is
+        // moot — the basin's catchment keeps it full regardless of the local
+        // evaporation deficit.
+        let persists = cells.len() >= SEA_PERSISTENCE_MIN_HEXES;
+        if persists || inflow >= evaporation_at_surface {
             // Sustained: an isolated Sea standing at its bathtub level (an
             // ocean-fed spill keeps it full — the Caspian analog).
             write_body(
@@ -358,11 +386,15 @@ pub fn adjudicate_lakes(
 
         // Unsustainable: draw down to the evaporation balance and return the
         // surplus (and stranded marine salt) to the ocean — do not bank crust
-        // on shelf / orphaned-ocean floors.
+        // on shelf / orphaned-ocean floors. The brine floor bounds the
+        // drawdown: when the balance would stand deeper, the bisection
+        // converges onto the floor and everything below it stays submerged.
+        let drawdown_floor_m =
+            (sea_level - CANDIDATE_DRAWDOWN_FLOOR_BELOW_SEA_M).max(candidate.bottom_elevation_m);
         let level_m = solve_endorheic_level_m(
             cells,
             elevations,
-            candidate.bottom_elevation_m,
+            drawdown_floor_m,
             sea_level,
             inflow,
             evap_mm,
@@ -377,8 +409,10 @@ pub fn adjudicate_lakes(
         outcome.returned_to_ocean_m3 += candidate.bathtub_volume_m3 - kept_volume_m3;
         outcome.candidate_kept_m3 += kept_volume_m3;
 
-        if inflow <= 0.0 || kept_volume_m3 <= 0.0 {
-            // Fully drained orphan basin: dry shelf, not a continental SaltFlat.
+        if kept_volume_m3 <= 0.0 || wet_cells.is_empty() {
+            // Fully drained shallow shelf (its floor lies above the brine
+            // floor): dry shelf, not a continental SaltFlat. Deep basins
+            // always keep their brine sea, inflow or not.
             continue;
         }
         write_body(
@@ -871,6 +905,124 @@ mod tests {
         apply_returned_surplus(&mut world.data, outcome.returned_to_ocean_m3);
         assert!(world.data.sea_level_m > sea_level_before);
         assert_eq!(world.data.water_level_m[0], world.data.sea_level_m);
+    }
+
+    #[test]
+    fn deep_candidate_drawdown_stops_at_the_brine_floor() {
+        // §5.2 brine floor: a small, hyper-arid, zero-inflow orphan basin
+        // 2000 m deep may not drain dry — it keeps a Dead-Sea-style lake
+        // whose surface sits CANDIDATE_DRAWDOWN_FLOOR_BELOW_SEA_M under the
+        // datum, and every deeper cell stays submerged.
+        let mut world = base_world();
+        let cells = sink_basin(&mut world, 2000, 15, 3000.0);
+        for &cell in &cells {
+            world.data.elevation_mean[cell as usize] = -2000.0;
+        }
+        for i in 0..world.data.cell_count() as usize {
+            world.data.precipitation[i] = 0.0;
+            world.data.temperature_mean[i] = 40.0;
+        }
+        let hex_area_m2 = hex_area_m2(&world.data.grid);
+        let bathtub = cells.len() as f64 * hex_area_m2 * 2000.0;
+        let candidate = CandidateSea {
+            lowest_hex: cells.iter().copied().min().unwrap(),
+            cells: cells.clone(),
+            bathtub_volume_m3: bathtub,
+            bottom_elevation_m: -2000.0,
+        };
+        let surface = RoutingSurface::build(&world.data, std::slice::from_ref(&candidate));
+        let mut acc = accumulate(
+            &world.data,
+            &surface,
+            &vec![0.0; world.data.cell_count() as usize],
+        );
+        let outcome = adjudicate_lakes(
+            &mut world.data,
+            &surface,
+            &mut acc,
+            std::slice::from_ref(&candidate),
+            TICK_YEARS,
+        );
+
+        let floor = f64::from(world.data.sea_level_m) - CANDIDATE_DRAWDOWN_FLOOR_BELOW_SEA_M;
+        let id = WaterBodyId(cells.iter().copied().min().unwrap());
+        let body = world
+            .data
+            .water_bodies
+            .get(&id)
+            .expect("deep basin must keep a brine lake");
+        assert_eq!(body.kind, WaterBodyKind::Lake);
+        assert!(
+            (f64::from(body.surface_m) - floor).abs() < 1.0,
+            "surface {} must sit at the brine floor {floor}",
+            body.surface_m
+        );
+        // Every cell deeper than the floor is submerged — no dry hexes
+        // kilometers below the datum.
+        for &cell in &cells {
+            let i = cell as usize;
+            if f64::from(world.data.elevation_mean[i]) < floor {
+                assert_eq!(world.data.water_body_id[i], id, "deep hex {cell} stays wet");
+                assert_eq!(world.data.water_level_m[i], body.surface_m);
+            }
+        }
+        // The surplus above the floor still returns to the ocean term.
+        assert!(outcome.returned_to_ocean_m3 > 0.0);
+        assert!(
+            (outcome.returned_to_ocean_m3 + outcome.candidate_kept_m3 - bathtub).abs()
+                <= 1e-6 * bathtub,
+            "kept + returned must partition the bathtub volume"
+        );
+    }
+
+    #[test]
+    fn large_candidate_sea_persists_despite_arid_climate() {
+        // §5.2 Caspian rule: at SEA_PERSISTENCE_MIN_HEXES and above, even a
+        // hyper-arid enclosed basin stands at its bathtub level as a Sea.
+        let mut world = base_world();
+        let cells = sink_basin(&mut world, 2000, SEA_PERSISTENCE_MIN_HEXES + 5, 3000.0);
+        for &cell in &cells {
+            world.data.elevation_mean[cell as usize] = -2000.0;
+        }
+        // Same climate as the unsustained-candidate test: zero precipitation,
+        // scorching heat, zero runoff — only size keeps this one standing.
+        for i in 0..world.data.cell_count() as usize {
+            world.data.precipitation[i] = 0.0;
+            world.data.temperature_mean[i] = 40.0;
+        }
+        let hex_area_m2 = hex_area_m2(&world.data.grid);
+        let bathtub = cells.len() as f64 * hex_area_m2 * 2000.0;
+        let candidate = CandidateSea {
+            lowest_hex: cells.iter().copied().min().unwrap(),
+            cells: cells.clone(),
+            bathtub_volume_m3: bathtub,
+            bottom_elevation_m: -2000.0,
+        };
+        let surface = RoutingSurface::build(&world.data, std::slice::from_ref(&candidate));
+        let mut acc = accumulate(
+            &world.data,
+            &surface,
+            &vec![0.0; world.data.cell_count() as usize],
+        );
+        let outcome = adjudicate_lakes(
+            &mut world.data,
+            &surface,
+            &mut acc,
+            std::slice::from_ref(&candidate),
+            TICK_YEARS,
+        );
+        assert_eq!(
+            outcome.returned_to_ocean_m3, 0.0,
+            "a persistent sea returns nothing to the ocean"
+        );
+        assert_eq!(outcome.candidate_kept_m3, bathtub, "keeps its full volume");
+        let body = &world.data.water_bodies[&WaterBodyId(cells.iter().copied().min().unwrap())];
+        assert_eq!(body.kind, WaterBodyKind::Sea);
+        assert_eq!(body.surface_m, world.data.sea_level_m);
+        for &cell in &cells {
+            assert_eq!(world.data.water_body_id[cell as usize], body.id);
+            assert_eq!(world.data.water_level_m[cell as usize], body.surface_m);
+        }
     }
 
     #[test]

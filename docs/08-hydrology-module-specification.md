@@ -349,6 +349,10 @@ Equilibrium applies instantly each tick — at 500 ky ticks, real lakes equilibr
 
 Non-ocean below-`L` components (§3.4) run the same balance seeded with their bathtub volume: sustained → isolated **Sea** (Caspian analog); unsustainable → drawdown → salt. Surplus returns to the ocean term.
 
+**The Caspian rule:** components of ≥ `SEA_PERSISTENCE_MIN_HEXES` (default 40 — Caspian scale at production subdivision 8) always sustain, regardless of the balance. A below-sea-level basin that large collects a catchment whose rivers refill whatever the surface loses, so tectonic enclosure yields a persistent inland sea, never a salt flat. Smaller enclosures (the Aral class) still run the drawdown — the pluvial/salt-flat showcase is untouched below the threshold.
+
+**The brine floor:** drawdown may not pull a candidate's surface more than `CANDIDATE_DRAWDOWN_FLOOR_BELOW_SEA_M` (default 500 m) below the contemporary sea level — Earth's deepest standing endorheic surface is the Dead Sea (−430 m), because a shrinking sea concentrates toward halite saturation and brine evaporation collapses to ~10% of the freshwater rate. Swallowed ocean floor therefore stays permanently submerged (no dry continental hexes kilometers under the datum), and a sea transiently fragmented below the Caspian threshold dips at most one shoreline step for that tick instead of draining.
+
 ### 5.3 Salt
 
 Endorheic bodies bank `Δsalt = I × SALT_LOAD_FACTOR` per tick on basin-floor hexes (monotonic, like `fertility`). Salinity = salt/volume — shrinking lakes get saltier (Dead Sea); total drying leaves a `SaltFlat` body and a soil penalty. Registry kinds update on thresholds.
@@ -430,7 +434,13 @@ incision = K_channel × bedrock_mult × climate_mod × sqrt(discharge_norm) × s
 
 ### 8.3 Routing and Deposition
 
-Load (hillslope + incision + glacial) rides the network downstream, one ordered pass. Capacity `∝ discharge × slope`; excess deposits: **floodplains** (low slope; weighted by flood magnitude §7.1), **lakes** (perfect traps — endorheic basins genuinely infill over deep time), **deltas** (mouth + submerged neighbors, building toward but never above water level → progradation), **shelves** (mouth overflow). Deposition ≥ 500 m cumulative → `Sedimentary` bedrock (mechanism moves here from tectonics); the accumulator persists as soil's alluvium input.
+Load (hillslope + incision + glacial) rides the network downstream, one ordered pass, split `WASH_LOAD_FRACTION` (default 0.9 — Earth's rivers move ~90% of their flux in suspension, Milliman & Meade 1983) into **wash load** and the remainder **bedload**.
+
+**Bedload** is capacity-limited (`∝ discharge × slope`); excess deposits: **floodplains** (low slope; weighted by flood magnitude §7.1), **lake/sea entry hexes** (delta foresets), **deltas** (Major ocean mouths retain `DELTA_RETAINED_FRACTION` on the land hex → progradation), **shelves** (mouth overflow). Deposition ≥ 500 m cumulative → `Sedimentary` bedrock (mechanism moves here from tectonics); the accumulator persists as soil's alluvium input.
+
+#### 8.3.1 Wash Load
+
+The suspended fines travel capacity-free and settle only in standing water. Floodplain-class reaches skim `WASH_FLOODPLAIN_TRAP` per hex to overbank storage (~1–2% per 100 km on Earth's lowland rivers). On reaching a lake or inland sea, `WASH_PROXIMAL_FRACTION` settles at the entry hex and the rest drapes the body's floor evenly — **closed basins genuinely infill and shoal over deep time** (a §5.2 persistent sea stays full while its floor rises; a floor that aggrades past the waterline emerges and the shoreline progrades). Ocean-bound wash disperses to the sink apart from the Major-mouth delta retention. Endorheic sumps trap both loads completely.
 
 ### 8.4 Mass Conservation
 

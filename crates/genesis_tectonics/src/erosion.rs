@@ -50,6 +50,16 @@ pub const LIMESTONE_MAX_LATITUDE_DEG: f64 = 35.0;
 /// hotspot volcanoes) has no freeboard and erodes to sea level.
 pub const CONTINENTAL_FREEBOARD_M: f32 = 800.0;
 
+/// Crustal-root decay rate, per year: dead-belt roots thermally relax and
+/// delaminate over deep time. At 1.4e-9/yr (e-folding ~700 My) a fresh
+/// 2000 m root stands ~1500 m after 200 My (the Appalachians and Urals,
+/// 250–350 My old, still carry mountains), ~750 m after 700 My (the
+/// Caledonides are planed), and Precambrian provinces cratonize flat (the
+/// Canadian Shield). Without decay, roots accumulate over every collision
+/// epoch forever and the union of 3 By of sutures becomes one conglomerate
+/// mountain region spanning up to a quarter of world land (§5.13).
+pub const ROOT_DECAY_RATE_PER_YEAR: f64 = 1.4e-9;
+
 /// Epeirogenic rebound rate: fraction of the gap to the freeboard closed per
 /// year for low or submerged continental crust. At 2e-8/yr a 500k-year tick
 /// closes ~1%, so drowned margins re-emerge over ~50–100M years —
@@ -168,8 +178,12 @@ pub fn apply_land_erosion(
         // buoyant root and erodes all the way to sea level, so abandoned
         // volcanic islands are transient. Without the freeboard,
         // persistent-crust continents grind to sea level within ~100M years.
+        // Doc 06 §5.12: the freeboard target undulates with the plate's
+        // epeirogenic basins and swells, so interiors erode toward a varied
+        // surface instead of one shared scalar.
+        let offset = crate::epeirogeny::target_offset_at_world(data, registry, cache, hex);
         let freeboard = if continental_crust_at(data, registry, cache, hex) {
-            CONTINENTAL_FREEBOARD_M
+            CONTINENTAL_FREEBOARD_M + offset
         } else {
             0.0
         };
@@ -194,7 +208,21 @@ pub fn apply_land_erosion(
 
         let amount_f32 = amount as f32;
         modify_surface_at_world_hex(registry, data, cache, hex, tick_value, |feature| {
+            let pre = feature.elevation_m;
             feature.elevation_m -= amount_f32;
+            if feature.continental_crust && feature.root_m > 0.0 {
+                // Doc 06 §5.2 roots: dry weathering also stops at the floor.
+                // Deliberately swell-free (§5.12): a wobbling floor would
+                // flicker belt cells across the mountain band and break the
+                // §7.1 persistence guarantee; rooted belts get their variance
+                // from root structure, rootless interiors from the swell.
+                let floor = (crate::initial_terrain::CONTINENTAL_BASE_ELEVATION_M
+                    + feature.root_m)
+                    .min(pre);
+                if feature.elevation_m < floor {
+                    feature.elevation_m = floor;
+                }
+            }
             let remaining_above = elev_above - amount_f32;
             if elev_above > 0.0 {
                 feature.relief_m *= remaining_above / elev_above;
@@ -371,7 +399,13 @@ pub fn apply_erosion_tick(
         ..
     } = state;
 
-    apply_isostasy(registry, data.sea_level_m, tick_interval_years);
+    apply_isostasy(
+        registry,
+        &data.grid,
+        data.parameters.core.seed.value,
+        data.sea_level_m,
+        tick_interval_years,
+    );
     apply_ice_load_isostasy(
         data,
         registry,
@@ -455,7 +489,18 @@ fn apply_hydrology_elevation_deltas(
         }
         let hex = HexId(i as u32);
         modify_surface_at_world_hex(registry, data, cache, hex, tick_value, |feature| {
-            feature.elevation_m += delta;
+            if delta < 0.0 && feature.continental_crust && feature.root_m > 0.0 {
+                // Doc 06 §5.2 roots: erosion may lower the surface to the
+                // crustal-root floor but never below it (min(pre) so a
+                // tectonically thinned surface is never lifted back up).
+                let pre = feature.elevation_m;
+                let floor = (crate::initial_terrain::CONTINENTAL_BASE_ELEVATION_M
+                    + feature.root_m)
+                    .min(pre);
+                feature.elevation_m = (pre + delta).max(floor);
+            } else {
+                feature.elevation_m += delta;
+            }
             if delta > 0.0 {
                 let prior = cumulative_deposition_m.get(i).copied().unwrap_or(0.0);
                 let next = prior + delta;
@@ -490,7 +535,13 @@ pub const THERMAL_SUBSIDENCE_RATE_PER_YEAR: f64 = 6e-8;
 /// freeboard. Crust type comes from the feature's permanent
 /// `continental_crust` flag, so sediment/volcanic bedrock overprints do not
 /// confuse it. Deterministic: ascending plate and birth-index order; no RNG.
-pub fn apply_isostasy(registry: &mut PlateRegistry, sea_level_m: f32, tick_interval_years: f64) {
+pub fn apply_isostasy(
+    registry: &mut PlateRegistry,
+    grid: &genesis_core::HexGrid,
+    world_seed: u64,
+    sea_level_m: f32,
+    tick_interval_years: f64,
+) {
     let baseline = crate::elevation::OCEAN_FLOOR_BASELINE_M;
     let sink_fraction = (THERMAL_SUBSIDENCE_RATE_PER_YEAR * tick_interval_years).min(1.0) as f32;
     let rebound_fraction =
@@ -503,19 +554,32 @@ pub fn apply_isostasy(registry: &mut PlateRegistry, sea_level_m: f32, tick_inter
         let Some(plate) = registry.plates_mut().get_mut(&plate_id) else {
             continue;
         };
-        for slot in plate.surface.features.iter_mut() {
+        let root_keep = (1.0 - (ROOT_DECAY_RATE_PER_YEAR * tick_interval_years).min(1.0)) as f32;
+        for (birth_idx, slot) in plate.surface.features.iter_mut().enumerate() {
             let Some(feature) = slot else {
                 continue;
             };
             if feature.continental_crust {
+                // §5.13: dead-belt roots relax toward cratonic flatness.
+                if feature.root_m > 0.0 {
+                    feature.root_m *= root_keep;
+                }
                 // Epeirogenic rebound: buoyant crust rises back toward the
-                // freeboard unless it has been consumed into a suture.
-                if feature.elevation_m < freeboard_target
+                // freeboard — swell-shifted per hex (Doc 06 §5.12), so
+                // interiors converge onto basins and swells, not one scalar.
+                let target = freeboard_target
+                    + crate::epeirogeny::target_offset_at_birth(
+                        grid,
+                        world_seed,
+                        plate_id,
+                        genesis_core::HexId(birth_idx as u32),
+                    );
+                if feature.elevation_m < target
                     && feature.elevation_m > rebound_floor
                     && rebound_fraction > 0.0
                 {
                     feature.elevation_m +=
-                        (freeboard_target - feature.elevation_m) * rebound_fraction;
+                        (target - feature.elevation_m) * rebound_fraction;
                 }
             } else if feature.elevation_m < sea_level_m
                 && feature.elevation_m > baseline
@@ -561,6 +625,7 @@ fn apply_ice_load_isostasy(
             let load = loads[i];
             let freeboard = if crust[i] {
                 CONTINENTAL_FREEBOARD_M
+                    + crate::epeirogeny::target_offset_at_world(data, registry, cache, HexId(i as u32))
             } else {
                 0.0
             };
@@ -673,13 +738,14 @@ mod tests {
                 fertility: 0.0,
                 age_year: 0,
                 continental_crust: true,
+                root_m: 0.0,
             },
         );
         registry.insert(plate);
 
         // 200 ticks of 500k years each: rebound closes ~63% of the gap.
         for _ in 0..200 {
-            apply_isostasy(&mut registry, 0.0, 500_000.0);
+            apply_isostasy(&mut registry, &test_grid_for_isostasy(), 0, 0.0, 500_000.0);
         }
         let elev = registry
             .get(PlateId(0))
@@ -722,12 +788,13 @@ mod tests {
                 fertility: 0.0,
                 age_year: 0,
                 continental_crust: false,
+                root_m: 0.0,
             },
         );
         registry.insert(plate);
 
         for _ in 0..200 {
-            apply_isostasy(&mut registry, 0.0, 500_000.0);
+            apply_isostasy(&mut registry, &test_grid_for_isostasy(), 0, 0.0, 500_000.0);
         }
         let elev = registry
             .get(PlateId(0))
@@ -740,6 +807,10 @@ mod tests {
             elev < -2000.0,
             "abandoned volcanic island should subside toward the abyss, got {elev}"
         );
+    }
+
+    fn test_grid_for_isostasy() -> genesis_core::HexGrid {
+        genesis_core::HexGrid::new(4, 6371.0).expect("grid")
     }
 
     fn small_world() -> genesis_core::World {
@@ -781,6 +852,7 @@ mod tests {
                     fertility: data.fertility[idx],
                     age_year: 0,
                     continental_crust: false,
+                    root_m: 0.0,
                 },
             );
         }

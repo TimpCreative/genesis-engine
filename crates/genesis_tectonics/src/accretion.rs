@@ -72,6 +72,36 @@ pub const OPEN_OCEAN_MIN_FRACTION: f64 = 0.01;
 /// (obduction emergence); rebound then carries it up to the freeboard.
 pub const OBDUCTION_DEPTH_M: f32 = 200.0;
 
+/// Permanent crustal root banked when a terrane accretes to continental
+/// crust (Doc 06 §5.2 roots): docked arc basement is thickened crust, so
+/// terrane-built landmasses carry hills, never featureless shelf.
+pub const ACCRETED_TERRANE_ROOT_M: f32 = 350.0;
+
+/// Continental shelf allowance over the land target (Doc 06 §5.11 crust
+/// supply): Earth's continental crust covers ~40% of the surface while land
+/// is ~29% — the difference is submerged shelf and slope.
+pub const CRUST_SHELF_ALLOWANCE: f64 = 0.08;
+/// Cap on continentalization per tick, as a fraction of world cells: the
+/// supply controller trickles conversions (~8 cells/My at subdivision 6)
+/// rather than flipping provinces wholesale. Outpaces the measured
+/// collision-consumption rate (~3 cells/My) while keeping the coastline
+/// churn from margin growth below the §7.1 stability gate's threshold.
+pub const CONTINENTALIZATION_MAX_PER_TICK: f64 = 0.0005;
+/// Only crust standing above this feature-frame elevation may
+/// continentalize (shelf grade and up): abyssal floor stays oceanic no
+/// matter the deficit.
+pub const CONTINENTALIZATION_MIN_ELEVATION_M: f32 = -1000.0;
+
+/// Basement root for continentalized crust, graded by the elevation the
+/// crust stood at when it converted: a taller arc or swell is thicker crust
+/// (isostasy), so conversion fossilizes the edifice's shape into permanent
+/// basement — young continents assembled from converted crust inherit
+/// ridge-shaped highlands instead of a uniform featureless plateau.
+pub fn continentalized_root_m(elevation_m: f32) -> f32 {
+    (ACCRETED_TERRANE_ROOT_M + (elevation_m - CONTINENTALIZATION_MIN_ELEVATION_M).max(0.0) * 0.25)
+        .min(crate::elevation::ROOT_MAX_M)
+}
+
 /// Deterministic RNG stream for subduction-erosion draws.
 pub const SUBDUCTION_EROSION_STREAM: &str = "tectonics.subduction_erosion";
 
@@ -334,6 +364,15 @@ pub fn accrete_trapped_oceanic_crust(
             }
             if convert {
                 feature.continental_crust = true;
+                // Doc 06 §5.2 roots: accreted terranes carry thickened arc
+                // crust of their own (Wrangellia, the Cordilleran terranes) —
+                // a modest permanent basement root. The surface still accretes
+                // at obduction depth (shallow shelf); the root binds later,
+                // when orogeny lifts this crust and erosion tries to plane it
+                // back below its basement.
+                feature.root_m = feature
+                    .root_m
+                    .max(continentalized_root_m(feature.elevation_m));
                 if feature.bedrock == BedrockType::OceanicCrust {
                     // Obducted ocean floor becomes continental basement (ophiolite).
                     feature.bedrock = BedrockType::Igneous;
@@ -416,6 +455,88 @@ pub fn apply_subduction_erosion(
     eroded
 }
 
+/// Doc 06 §5.11: net crust conservation, supply side. Convergence consumes
+/// continental area (crustal shortening, subduction erosion), yet Earth's
+/// crust budget holds roughly steady over 4 By — arc magmatism and the
+/// continentalization of long-emergent, thickened crust replace what
+/// collisions eat. Without the counter-flow, measured coverage collapses
+/// 37% → 9% over 4.4 By and the hypsometry transfer must promote featureless
+/// abyssal floor to land ("false continents").
+///
+/// The controller holds `continental_crust` coverage at the calibration land
+/// target plus [`CRUST_SHELF_ALLOWANCE`] by converting the highest-standing
+/// oceanic crust — the arcs, hotspot plateaus, and collision-thickened
+/// marginal floors already acting as land — at a bounded per-tick rate.
+/// Converted crust receives young basement ([`ACCRETED_TERRANE_ROOT_M`]) and
+/// isostasy then lifts it toward the continental freeboard: continents grow
+/// at their active margins, exactly where Earth grows them. Deterministic:
+/// candidates ordered by descending elevation, ascending `HexId`; no RNG.
+pub fn maintain_crust_supply(
+    data: &mut WorldData,
+    registry: &mut PlateRegistry,
+    cache: &ProjectionCache,
+    tick_year: i64,
+) {
+    let n = data.cell_count() as usize;
+    if n == 0 {
+        return;
+    }
+    let target_fraction =
+        f64::from(data.parameters.core.terrain.land_fraction) + CRUST_SHELF_ALLOWANCE;
+    let target_cells = (target_fraction * n as f64).ceil() as usize;
+    let current = data.continental_crust.iter().filter(|&&c| c).count();
+    if current >= target_cells {
+        return;
+    }
+    let budget = ((n as f64 * CONTINENTALIZATION_MAX_PER_TICK).ceil() as usize)
+        .min(target_cells - current);
+
+    // Highest-standing oceanic crust first (descending elevation, HexId tie).
+    let mut candidates: Vec<u32> = (0..n as u32)
+        .filter(|&i| {
+            !data.continental_crust[i as usize]
+                && data.elevation_mean[i as usize] >= CONTINENTALIZATION_MIN_ELEVATION_M
+        })
+        .collect();
+    candidates.sort_by(|&a, &b| {
+        data.elevation_mean[b as usize]
+            .total_cmp(&data.elevation_mean[a as usize])
+            .then_with(|| a.cmp(&b))
+    });
+
+    let mut converted = 0usize;
+    for &cell in &candidates {
+        if converted >= budget {
+            break;
+        }
+        let hex = HexId(cell);
+        let mut did = false;
+        modify_surface_at_world_hex(registry, data, cache, hex, tick_year, |feature| {
+            if feature.continental_crust
+                || feature.elevation_m < CONTINENTALIZATION_MIN_ELEVATION_M
+            {
+                return;
+            }
+            feature.continental_crust = true;
+            // Young continentalized basement, graded by standing height
+            // (Doc 06 §5.2 roots / §5.11).
+            feature.root_m = feature
+                .root_m
+                .max(continentalized_root_m(feature.elevation_m));
+            if feature.bedrock == BedrockType::OceanicCrust {
+                feature.bedrock = BedrockType::Igneous;
+            }
+            did = true;
+        });
+        if did {
+            // Keep the world view in sync for this tick's later steps
+            // (erosion freeboard reads it); the next rebuild re-derives it.
+            data.continental_crust[cell as usize] = true;
+            converted += 1;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use genesis_core::parameters::WorldParameters;
@@ -431,6 +552,10 @@ mod tests {
     fn formed_world() -> (genesis_core::World, TectonicsState) {
         let mut params = WorldParameters::default();
         params.core.grid.subdivision_level = 5;
+        // Pin a single supercontinent so these accretion-mechanics tests run on a
+        // clean substrate with no trapped inter-continental basins (which the
+        // default seed-driven multi-continent layout can produce).
+        params.core.geology.continent_cluster_count = 1;
         let mut world = create_world(params).expect("world");
         let mut state = TectonicsState::new();
         run_formation(&mut world, &mut state);

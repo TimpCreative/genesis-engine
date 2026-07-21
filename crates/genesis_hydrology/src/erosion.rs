@@ -1,9 +1,15 @@
 //! Erosion and sediment transport (Doc 08 §8).
 //!
 //! Hillslope denudation, stream-power incision, and one-pass sediment routing.
-//! Elevation changes are written to [`WorldData::hydro_elevation_delta_m`] and
-//! applied to birth-frame plate surfaces by tectonics on the next geological
-//! tick (§8.5 — hydrology never calls `modify_surface_at_world_hex` directly).
+//! Eroded mass splits into capacity-limited **bedload** and capacity-free
+//! **wash load** (§8.3.1) — the suspended fines that dominate Earth's river
+//! flux and settle only in standing water, so lakes and inland seas genuinely
+//! infill and shoal over deep time. Elevation changes are written to
+//! [`WorldData::hydro_elevation_delta_m`] and applied to birth-frame plate
+//! surfaces by tectonics on the next geological tick (§8.5 — hydrology never
+//! calls `modify_surface_at_world_hex` directly).
+
+use std::collections::BTreeMap;
 
 use genesis_core::HexId;
 use genesis_core::data::{
@@ -28,6 +34,25 @@ pub const CONTINENTAL_INCISION_ALLOWANCE_M: f32 = 100.0;
 pub const DEPOSITION_THRESHOLD_M: f32 = 500.0;
 /// Relative mass-conservation tolerance (§8.4).
 pub const MASS_CONSERVATION_TOLERANCE_REL: f64 = 1.0e-6;
+/// Suspended (wash) share of eroded mass (§8.3.1). Earth's rivers move
+/// ~90% of their sediment flux in suspension — ~18 Gt/yr suspended against
+/// ~1–2 Gt/yr bedload globally (Milliman & Meade 1983) — and the fines
+/// travel capacity-free, settling only in standing water.
+pub const WASH_LOAD_FRACTION: f64 = 0.9;
+/// Wash load trapped per floodplain-class reach traversed (overbank
+/// sequestration): Earth's large lowland rivers lose ~1–2% of suspended
+/// load per 100 km of floodplain (Amazon mainstem budgets); one hex spans
+/// ~88 km at production subdivision 8.
+pub const WASH_FLOODPLAIN_TRAP: f64 = 0.02;
+/// Share of wash entering a standing body that settles at the entry hex
+/// (delta foresets and prodelta); the rest drapes the body's floor evenly.
+/// Large lacustrine deltas keep the majority of their load proximal.
+pub const WASH_PROXIMAL_FRACTION: f64 = 0.6;
+/// Channel slope below which a reach counts as floodplain (§8.3).
+pub const FLOODPLAIN_SLOPE_MAX: f64 = 0.002;
+/// Fraction of a Major mouth's arriving load retained on the land hex as
+/// delta (§8.3); the rest disperses to the ocean sink.
+pub const DELTA_RETAINED_FRACTION: f64 = 0.4;
 
 /// Continental-crust fluvial/glacial floor (m absolute), or `None` for oceanic
 /// crust (caller keeps water-floor incision).
@@ -114,6 +139,7 @@ pub fn apply_erosion(
     let hex_area = hex_area_m2(&data.grid);
     let sea = data.sea_level_m;
     let mut load_m = vec![0.0_f64; n];
+    let mut wash_m = vec![0.0_f64; n];
     let mut eroded_m3 = 0.0_f64;
 
     // §8.1 hillslope + §8.2 stream-power — produce load and elevation deltas.
@@ -170,22 +196,38 @@ pub fn apply_erosion(
         if total <= 0.0 {
             continue;
         }
-        load_m[i] += total;
+        // §8.3.1: fines travel in suspension; the remainder is bedload.
+        wash_m[i] += total * WASH_LOAD_FRACTION;
+        load_m[i] += total * (1.0 - WASH_LOAD_FRACTION);
         data.hydro_elevation_delta_m[i] -= total as f32;
         eroded_m3 += total * hex_area;
     }
 
-    // §8.3 route load downstream in descending filled order.
+    // §8.3 route both loads downstream in descending filled order: bedload
+    // capacity-limited, wash load capacity-free (§8.3.1).
     let mut deposited_m3 = 0.0_f64;
     let mut ocean_sink_m3 = 0.0_f64;
+    // Registered standing-water membership (ascending cell order): the
+    // §8.3.1 distal drape spreads wash over the receiving body's floor.
+    let mut body_cells: BTreeMap<WaterBodyId, Vec<u32>> = BTreeMap::new();
+    for i in 0..n {
+        let id = data.water_body_id[i];
+        if id != WaterBodyId::NONE {
+            body_cells.entry(id).or_default().push(i as u32);
+        }
+    }
     for &cell in &surface.order_desc {
         let i = cell as usize;
         let mut remaining = load_m[i];
-        if remaining <= 0.0 {
+        let wash = wash_m[i];
+        if remaining <= 0.0 && wash <= 0.0 {
             continue;
         }
+        load_m[i] = 0.0;
+        wash_m[i] = 0.0;
         let Some(target) = surface.flow_target[i] else {
-            // Retained basin / sink: perfect trap (§8.3 lakes).
+            // Retained basin / sink: perfect trap (§8.3 lakes). Bedload
+            // piles the bottom hex; wash drapes the standing body's floor.
             deposit(
                 data,
                 alluvium_depth_m,
@@ -194,7 +236,15 @@ pub fn apply_erosion(
                 hex_area,
                 &mut deposited_m3,
             );
-            load_m[i] = 0.0;
+            settle_wash(
+                data,
+                alluvium_depth_m,
+                &body_cells,
+                i,
+                wash,
+                hex_area,
+                &mut deposited_m3,
+            );
             continue;
         };
         let j = target as usize;
@@ -206,22 +256,24 @@ pub fn apply_erosion(
             if is_ocean {
                 let discharge = f64::from(data.river_discharge_m3_yr[i]);
                 if river_class(discharge) >= RiverClass::Major {
-                    // Major mouths prograde: keep a fraction on the land hex as delta.
-                    let delta_frac = 0.4;
+                    // Major mouths prograde: keep a fraction of both loads
+                    // on the land hex as delta; the rest disperses at sea.
                     deposit(
                         data,
                         alluvium_depth_m,
                         i,
-                        remaining * delta_frac,
+                        (remaining + wash) * DELTA_RETAINED_FRACTION,
                         hex_area,
                         &mut deposited_m3,
                     );
-                    ocean_sink_m3 += remaining * (1.0 - delta_frac) * hex_area;
+                    ocean_sink_m3 += (remaining + wash) * (1.0 - DELTA_RETAINED_FRACTION) * hex_area;
                     data.hydro_flags[i] |= HydroFlags::DELTA;
                 } else {
-                    ocean_sink_m3 += remaining * hex_area;
+                    ocean_sink_m3 += (remaining + wash) * hex_area;
                 }
             } else {
+                // Standing inland body: bedload builds the entry hex (the
+                // prograding delta foreset); wash settles per §8.3.1.
                 deposit(
                     data,
                     alluvium_depth_m,
@@ -230,20 +282,30 @@ pub fn apply_erosion(
                     hex_area,
                     &mut deposited_m3,
                 );
+                settle_wash(
+                    data,
+                    alluvium_depth_m,
+                    &body_cells,
+                    j,
+                    wash,
+                    hex_area,
+                    &mut deposited_m3,
+                );
             }
-            load_m[i] = 0.0;
             continue;
         }
         if surface.candidate_of[j] != crate::routing::NONE {
+            // Dry fringe of a drawn-down candidate (wet candidate cells
+            // carry a body id and take the branch above): both loads stop
+            // on the below-sea-level shelf.
             deposit(
                 data,
                 alluvium_depth_m,
                 j,
-                remaining,
+                remaining + wash,
                 hex_area,
                 &mut deposited_m3,
             );
-            load_m[i] = 0.0;
             continue;
         }
 
@@ -251,7 +313,7 @@ pub fn apply_erosion(
         let discharge = f64::from(data.river_discharge_m3_yr[i]).max(1.0);
         let capacity = (discharge / DISCHARGE_NORM_M3_YR) * slope * 50.0; // m of transportable load
         let flood_w = flood_magnitude_m3_yr(data, i as u32) / discharge.max(1.0);
-        let deposit_here = if slope < 0.002 {
+        let deposit_here = if slope < FLOODPLAIN_SLOPE_MAX {
             // Floodplain: deposit excess weighted by flood magnitude.
             ((remaining - capacity).max(0.0) * flood_w.min(2.0)).min(remaining)
         } else {
@@ -268,30 +330,41 @@ pub fn apply_erosion(
             );
             remaining -= deposit_here;
         }
-        load_m[i] = 0.0;
         load_m[j] += remaining;
+        // §8.3.1 wash rides capacity-free; floodplain reaches skim a
+        // little to overbank storage.
+        let wash_passed = if slope < FLOODPLAIN_SLOPE_MAX {
+            let skim = wash * WASH_FLOODPLAIN_TRAP;
+            deposit(data, alluvium_depth_m, i, skim, hex_area, &mut deposited_m3);
+            wash - skim
+        } else {
+            wash
+        };
+        wash_m[j] += wash_passed;
     }
 
     // Any load that never left the order (no target chain to ocean) counts as deposited
     // at its last cell — already handled. Residual on water cells → ocean sink.
     #[allow(clippy::needless_range_loop)]
     for i in 0..n {
-        if load_m[i] <= 0.0 {
+        let residual = load_m[i] + wash_m[i];
+        if residual <= 0.0 {
             continue;
         }
         if data.water_body_id[i] != WaterBodyId::NONE {
-            ocean_sink_m3 += load_m[i] * hex_area;
+            ocean_sink_m3 += residual * hex_area;
         } else {
             deposit(
                 data,
                 alluvium_depth_m,
                 i,
-                load_m[i],
+                residual,
                 hex_area,
                 &mut deposited_m3,
             );
         }
         load_m[i] = 0.0;
+        wash_m[i] = 0.0;
     }
 
     let outcome = ErosionOutcome {
@@ -324,6 +397,48 @@ fn channel_slope(data: &WorldData, surface: &RoutingSurface, i: usize) -> f64 {
     let drop = f64::from(surface.filled_m[i]) - f64::from(surface.filled_m[target as usize]);
     let width = hex_area_m2(&data.grid).sqrt().max(1.0);
     (drop / width).max(0.0)
+}
+
+/// §8.3.1 wash settling in a standing body: [`WASH_PROXIMAL_FRACTION`] stays
+/// at the entry hex (delta foresets); the rest drapes the body's floor cells
+/// evenly (ascending order — deterministic). Entry hexes without a body
+/// (bare basin bottoms) take the full amount.
+fn settle_wash(
+    data: &mut WorldData,
+    alluvium_depth_m: &mut [f32],
+    body_cells: &BTreeMap<WaterBodyId, Vec<u32>>,
+    entry: usize,
+    wash: f64,
+    hex_area: f64,
+    deposited_m3: &mut f64,
+) {
+    if wash <= 0.0 {
+        return;
+    }
+    let id = data.water_body_id[entry];
+    let Some(cells) = body_cells.get(&id).filter(|cells| !cells.is_empty()) else {
+        deposit(data, alluvium_depth_m, entry, wash, hex_area, deposited_m3);
+        return;
+    };
+    deposit(
+        data,
+        alluvium_depth_m,
+        entry,
+        wash * WASH_PROXIMAL_FRACTION,
+        hex_area,
+        deposited_m3,
+    );
+    let share = wash * (1.0 - WASH_PROXIMAL_FRACTION) / cells.len() as f64;
+    for &cell in cells {
+        deposit(
+            data,
+            alluvium_depth_m,
+            cell as usize,
+            share,
+            hex_area,
+            deposited_m3,
+        );
+    }
 }
 
 fn deposit(
@@ -440,6 +555,87 @@ mod tests {
             b.data.hydro_elevation_delta_m
         );
         assert!(oa.is_conserved());
+    }
+
+    #[test]
+    fn wash_load_drapes_an_inland_sea_floor() {
+        // §8.3.1: a below-sea-level inland Sea ringed by eroding land. The
+        // entry hexes take bedload plus the proximal wash; every floor cell
+        // takes the distal drape — the sea genuinely shoals.
+        let mut world = fixture();
+        let n = world.data.cell_count() as usize;
+        // Grow a 12-cell connected blob far from the hex-0 ocean and stand
+        // it at 0 m as a registered Sea (a sustained candidate's outcome).
+        let sea_id = WaterBodyId(2000);
+        let mut cells: Vec<u32> = vec![2000];
+        let mut in_sea = vec![false; n];
+        in_sea[2000] = true;
+        let mut cursor = 0;
+        while cells.len() < 12 && cursor < cells.len() {
+            let cell = cells[cursor];
+            for neighbor in world.data.grid.neighbors(HexId(cell)) {
+                let k = neighbor.0 as usize;
+                if k < n && !in_sea[k] && neighbor.0 != 0 {
+                    in_sea[k] = true;
+                    cells.push(neighbor.0);
+                    if cells.len() >= 12 {
+                        break;
+                    }
+                }
+            }
+            cursor += 1;
+        }
+        cells.sort_unstable();
+        for &cell in &cells {
+            world.data.elevation_mean[cell as usize] = -1500.0;
+            world.data.water_level_m[cell as usize] = 0.0;
+            world.data.water_body_id[cell as usize] = sea_id;
+        }
+        world.data.water_bodies.insert(
+            sea_id,
+            WaterBody {
+                id: sea_id,
+                kind: WaterBodyKind::Sea,
+                surface_m: 0.0,
+                area_km2: 1.0,
+                volume_km3: 1.0,
+                salinity: 0.0,
+                outlet: None,
+            },
+        );
+
+        let surface = RoutingSurface::build(&world.data, &[]);
+        let mut alluvium = vec![0.0; n];
+        let glacial = vec![0.0; n];
+        let outcome = apply_erosion(
+            &mut world.data,
+            &surface,
+            &mut alluvium,
+            &glacial,
+            500_000.0,
+        );
+
+        assert!(outcome.is_conserved(), "{outcome:?}");
+        // Distal drape: every floor cell aggrades, not just the mouths.
+        for &cell in &cells {
+            assert!(
+                world.data.hydro_elevation_delta_m[cell as usize] > 0.0,
+                "sea cell {cell} must receive the wash drape"
+            );
+        }
+        // Proximal foresets: mouths outpace the evenly-spread distal share.
+        let max_gain = cells
+            .iter()
+            .map(|&c| world.data.hydro_elevation_delta_m[c as usize])
+            .fold(0.0_f32, f32::max);
+        let min_gain = cells
+            .iter()
+            .map(|&c| world.data.hydro_elevation_delta_m[c as usize])
+            .fold(f32::INFINITY, f32::min);
+        assert!(
+            max_gain > min_gain,
+            "entry hexes must take the proximal share: max {max_gain} vs min {min_gain}"
+        );
     }
 
     /// Minimal land hex with Stream+ discharge; routing derives flow from elev.

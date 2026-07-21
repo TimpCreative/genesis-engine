@@ -228,6 +228,12 @@ pub struct TectonicsState {
     /// drift rather than flickering on each tick's global fluctuation. Empty
     /// until the first calibration, then seeded from that tick.
     pub calibration_rank_ema: Vec<f32>,
+    /// Temporally low-passed §5.4 residual (texture) field for the orogen
+    /// band (Doc 06-CAL §7.1): in-band relief follows the raw residual at the
+    /// slow orogen constant so peak texture is furniture, not per-tick foam;
+    /// outside the band it mirrors the raw residual exactly. Empty until the
+    /// first calibration.
+    pub calibration_residual_ema: Vec<f32>,
     /// Most recent per-hex ice load (m); drives GIA rebound after deglaciation
     /// (Doc 08 §9.1). Sticky: holds the last nonzero load so post-glacial
     /// rebound keeps relaxing across ice-free ticks.
