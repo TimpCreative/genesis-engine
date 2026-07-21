@@ -186,6 +186,11 @@ impl SimulationLayer for ClimateLayer {
                 world.glaciation_intensity = 0.0;
             }
 
+            // Surface the authoritative CO₂ onto WorldData (Doc 09B A1) after the
+            // carbon cycle (and Formation's composition_at_year) have finalized it
+            // this tick, so biology and ocean chemistry read the current value.
+            world.co2_ppm = state.atmospheric_composition.co2_ppm;
+
             let temp_start = std::time::Instant::now();
             crate::temperature::compute_temperature_field(world, &state);
             let temp_elapsed = temp_start.elapsed();
@@ -287,6 +292,38 @@ mod tests {
             (world.data.global_temperature_c - 15.0).abs() < 20.0,
             "temperature should be near equilibrium; got {}",
             world.data.global_temperature_c
+        );
+    }
+
+    #[test]
+    fn co2_is_mirrored_onto_worlddata_each_tick() {
+        // Doc 09B A1: WorldData.co2_ppm must track the climate crate's
+        // authoritative co2 after the carbon cycle runs.
+        let params = WorldParameters::default();
+        let mut world = create_world(params).expect("world");
+        let mut climate = ClimateState::new();
+
+        let (layer, shared) = ClimateLayer::attach(&mut climate);
+        let mut coordinator = TickCoordinator::new();
+        coordinator.add_layer(Box::new(layer));
+
+        let params = world.data.parameters.clone();
+        coordinator.advance_to(WorldYear(500_000_000), &mut world.data, &world.rng, &params);
+        drop(coordinator);
+
+        let climate = ClimateLayer::detach_state(shared);
+
+        assert!(climate.formation_complete);
+        let expected = climate.atmospheric_composition.co2_ppm;
+        assert!(
+            (world.data.co2_ppm - expected).abs() < 1e-6,
+            "WorldData.co2_ppm ({}) must mirror climate co2 ({expected})",
+            world.data.co2_ppm
+        );
+        assert!(
+            world.data.co2_ppm > 0.0 && world.data.co2_ppm < 100_000.0,
+            "co2 should be a sane ppm, got {}",
+            world.data.co2_ppm
         );
     }
 
