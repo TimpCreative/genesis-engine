@@ -61,6 +61,27 @@ milestone ratchet); this is the civilization-specific rung.
   the atomic simulated unit is, and its per-tick cost) *before* committing to the
   achievable tick floor. The floor is a function of that granularity.
 
+### 2.2 The cadence seam (implemented July 2026)
+
+Ahead of the full module, the **tick-cadence seam** is in place so the multi-rate
+coordinator is proven for intelligent species: `genesis_civilization::CivilizationLayer`
+(a `SimulationLayer`) is registered last in both coordinators (one-shot
+`generate_full_history` and live `run_live_simulation`). It is dormant until
+`sapience_emergence_year`, then ticks at `CIV_ANCIENT_TICK_YEARS = 1_000`
+(Ancient) and `CIV_RECENT_TICK_YEARS = 25` (Recent) — decade-to-millennium
+resolution the geological layers never reach, while tectonics sits dormant. These
+are **placeholders**; the milestone ratchet (§2.1) will drive them below Recent
+(toward 1-year ticks) once agriculture/tech milestones and the bounded-simulation
+seam exist.
+
+The layer's `advance` is **inert** — it records the tick and touches neither the
+RNG nor `WorldData`, so wiring it in cannot change the physical/biology outcome
+(verified: life still emerges at 265 My; `advance_does_not_mutate_world_or_rng`).
+`CivilizationState` currently holds only observability counters. Real dynamics
+replace the inert `advance` and grow `CivilizationState` — the registration,
+attach/detach sharing (for a live-stepping worker to read civ state), and
+era-gating are already correct.
+
 ---
 
 ## 3. To Be Specified
