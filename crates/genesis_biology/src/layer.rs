@@ -72,7 +72,7 @@ impl SimulationLayer for BiologyLayer {
         if state.origin.is_none() {
             try_biogenesis(&mut state, world, rng, interval);
         } else {
-            microbial_step(&mut state, world, rng);
+            microbial_step(&mut state, world, rng, interval);
             // Refresh the geography-derived biology fields (provinces §5.1,
             // energy/diversity §4.4/§5.2, biomes §4.6, biomass §5.2, guild
             // occupancy §4.3) at most every ~5 My — coarser than the tick to bound

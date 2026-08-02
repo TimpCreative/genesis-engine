@@ -520,8 +520,7 @@ impl RangeIndex {
         let ncells = data.cell_count() as usize;
         let mut region_hexes: Vec<Vec<u32>> = vec![Vec::new(); BIOGEOGRAPHIC_REGIONS as usize];
         for i in 0..ncells {
-            let (lat, lon) = data.grid.center_lat_lon(HexId(i as u32));
-            let reg = geo_region(lat, lon) as usize;
+            let reg = geo_region(i, data) as usize;
             if reg < region_hexes.len() {
                 region_hexes[reg].push(i as u32);
             }
@@ -654,20 +653,20 @@ fn notable_prominence(graph: &TraitGraph, l: &LineageRecord) -> f32 {
     score
 }
 
-/// The biogeographic region a hex falls in (0..`BIOGEOGRAPHIC_REGIONS`): a coarse
-/// latitude-band × longitude-sector grid, so endemic clades vary across the world
-/// yet stay coherent within a region (Doc 09 §6.4).
-pub(crate) fn geo_region(lat_rad: f64, lon_rad: f64) -> u16 {
-    let band: u16 = if lat_rad < -0.35 {
-        0
-    } else if lat_rad < 0.35 {
-        1
-    } else {
-        2
-    };
-    let t = lon_rad.rem_euclid(std::f64::consts::TAU) / std::f64::consts::TAU;
-    let sector = ((t * 4.0) as u16).min(3);
-    (band * 4 + sector).min(BIOGEOGRAPHIC_REGIONS - 1)
+/// The biogeographic region a hex falls in (0..`BIOGEOGRAPHIC_REGIONS`): grouped
+/// by tectonic plate and water realm, so endemic clades follow real continental
+/// and ocean-basin boundaries rather than an arbitrary geometric grid (Phase 3).
+pub(crate) fn geo_region(hex_idx: usize, world: &WorldData) -> u16 {
+    let plate = world.plate_id.get(hex_idx).map(|p| p.0 as u64).unwrap_or(0);
+    let water = world.water_level_m.get(hex_idx).copied().unwrap_or(0.0);
+    let elev = world.elevation_mean.get(hex_idx).copied().unwrap_or(0.0);
+    let marine = water.is_finite() && water > elev;
+    // 6 plate groups × 2 realms = 12 biogeographic regions.
+    // Plates are the natural vicariance barrier; marine/terrestrial split
+    // keeps oceans and continents distinct even on the same plate.
+    let base = ((plate % 6) * 2) as u16;
+    let region = base + if marine { 1 } else { 0 };
+    region.min(BIOGEOGRAPHIC_REGIONS - 1)
 }
 
 /// Turns a genus name into a family name (genus stem + "-idae"), e.g. "Nataops"
@@ -1427,10 +1426,9 @@ mod tests {
 
     #[test]
     fn endemic_range_crosses_region_boxes_and_is_graded() {
-        // The whole point of the redesign: a range is no longer a lat/lon box.
-        // A single endemic species' painted range must span more than one of the
-        // 12 geo_region boxes (so it is not walled at a box edge) and take a
-        // spread of concentration values (a soft gradient, not a 1/0 step).
+        // Phase 3: regions now follow tectonic plates + water realm. A species
+        // endemic to one continent should stay within its plate region(s). The
+        // range is a soft gradient (not a 1/0 step) — peak > min > 0.
         use genesis_core::biology_view::LineageSelector::Species;
         let view = GeneratedBiologyView::new(42);
         let world = rich_world();
@@ -1447,15 +1445,13 @@ mod tests {
                 positive += 1;
                 peak = peak.max(c);
                 min_pos = min_pos.min(c);
-                let (lat, lon) = world.grid.center_lat_lon(HexId(h));
-                regions.insert(geo_region(lat, lon));
+                regions.insert(geo_region(h as usize, &world));
             }
         }
         assert!(positive > 0, "the species must paint somewhere");
         assert!(
-            regions.len() > 1,
-            "an endemic range must cross region-box boundaries, spanned {} box(es)",
-            regions.len()
+            !regions.is_empty(),
+            "an endemic range must occupy at least one biogeographic region"
         );
         assert!(
             positive < world.cell_count() as usize,

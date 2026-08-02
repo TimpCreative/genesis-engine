@@ -18,16 +18,16 @@ use crate::evolution::{SelectivePayoff, WalkParams, WalkStep, biased_evolution_s
 use crate::state::{BiologyState, Milestone};
 use rand::Rng;
 
-/// O₂ accrual per biology tick once photosynthesis exists — slow, so the Great
-/// Oxygenation is ~100+ My after photosynthesis, not a few My (limitation 1).
-const O2_RISE_PER_TICK: f32 = 0.0005;
+/// O₂ accrual per year once photosynthesis exists (rate-scaled, Phase 4).
+/// At the default 500 ky tick this is equivalent to the old `O2_RISE_PER_TICK`
+/// of 0.0005, but now the rate is independent of tick cadence.
+const O2_RISE_PER_YEAR: f32 = 1.0e-9;
 const O2_CAP: f32 = 0.21;
 const GOE_THRESHOLD: f32 = 0.10;
-/// Per-tick probability the microbial biosphere takes an innovation step — most
-/// ticks are stasis (punctuated equilibrium, §6.1), stretching the microbial era
-/// over hundreds of My instead of ~10 (limitation 1). A generations-vs-ticks
-/// model (§5.5) is the fuller fix.
-const MICROBIAL_STEP_PROB: f64 = 0.04;
+/// Per-year probability the microbial biosphere takes an innovation step
+/// (rate-scaled, Phase 4). At 500 ky ticks this is ~0.04 per tick; at finer
+/// cadences the per-tick probability scales down, preserving elapsed-time tempo.
+const MICROBIAL_STEP_PROB_PER_YEAR: f64 = 8.0e-8;
 /// How strongly reversal/loss steps compete with gains in the microbial walk
 /// (Doc 09 §2.3). Small, so most steps are innovations and loss is the rare
 /// `reversal_cost`-weighted minority (e.g. a chemoautotroph shedding chemosynthesis
@@ -84,10 +84,7 @@ pub(crate) fn region_profiles(world: &WorldData) -> crate::speciation::RegionPro
     let mut land_n = [0f32; R];
     let mut n = [0f32; R];
     for i in 0..world.cell_count() as usize {
-        let (lat, lon) = world
-            .grid
-            .center_lat_lon(genesis_core::grid::HexId(i as u32));
-        let r = crate::view::geo_region(lat, lon) as usize;
+        let r = crate::view::geo_region(i, world) as usize;
         let water = world.water_level_m[i];
         let wet = water.is_finite() && water > world.elevation_mean[i];
         temp[r] += world.temperature_mean[i];
@@ -137,7 +134,12 @@ pub(crate) fn region_profiles(world: &WorldData) -> crate::speciation::RegionPro
 }
 
 /// Advances the microbial biosphere by one innovation step this tick.
-pub(crate) fn microbial_step(state: &mut BiologyState, world: &mut WorldData, rng: &WorldRng) {
+pub(crate) fn microbial_step(
+    state: &mut BiologyState,
+    world: &mut WorldData,
+    rng: &WorldRng,
+    interval_years: i64,
+) {
     if state.milestones.contains(&Milestone::Multicellularity) {
         // Microbial era complete — build the recorded tree of life once, the tick
         // after multicellularity opens the macroscopic radiation (Doc 09 §6).
@@ -191,7 +193,8 @@ pub(crate) fn microbial_step(state: &mut BiologyState, world: &mut WorldData, rn
     // gates below read this same world field.
     if state.root_genome.contains(photosynthesis) {
         world.atmospheric_oxygen_fraction =
-            (world.atmospheric_oxygen_fraction + O2_RISE_PER_TICK).min(O2_CAP);
+            (world.atmospheric_oxygen_fraction + O2_RISE_PER_YEAR * interval_years as f32)
+                .min(O2_CAP);
         // Keep the state accessor in sync for callers reading `o2_fraction()`.
         state.o2_fraction = world.atmospheric_oxygen_fraction;
         if world.atmospheric_oxygen_fraction >= GOE_THRESHOLD
@@ -231,7 +234,8 @@ pub(crate) fn microbial_step(state: &mut BiologyState, world: &mut WorldData, rn
 
     // Punctuated equilibrium: most ticks are stasis, so the microbial era spans
     // hundreds of My rather than ~10 (limitation 1).
-    if stream.gen_range(0.0..1.0) >= MICROBIAL_STEP_PROB {
+    let step_prob = (MICROBIAL_STEP_PROB_PER_YEAR * interval_years as f64).min(1.0);
+    if stream.gen_range(0.0..1.0) >= step_prob {
         return;
     }
     match biased_evolution_step(
@@ -323,7 +327,7 @@ mod tests {
             if state.origin().is_none() {
                 try_biogenesis(&mut state, &mut world, &rng, TICK);
             } else {
-                microbial_step(&mut state, &mut world, &rng);
+                microbial_step(&mut state, &mut world, &rng, TICK);
             }
             if state.has_milestone(Milestone::Multicellularity) {
                 break;
@@ -379,7 +383,7 @@ mod tests {
             if state.origin().is_none() {
                 try_biogenesis(&mut state, &mut world, &rng, TICK);
             } else {
-                microbial_step(&mut state, &mut world, &rng);
+                microbial_step(&mut state, &mut world, &rng, TICK);
             }
             year += TICK;
         }
@@ -416,7 +420,7 @@ mod tests {
             if state.origin().is_none() {
                 try_biogenesis(&mut state, &mut world, &rng, TICK);
             } else {
-                microbial_step(&mut state, &mut world, &rng);
+                microbial_step(&mut state, &mut world, &rng, TICK);
             }
             if state.has_milestone(Milestone::Multicellularity) {
                 break;
@@ -448,7 +452,7 @@ mod tests {
             if state.origin().is_none() {
                 try_biogenesis(&mut state, &mut world, &rng, TICK);
             } else {
-                microbial_step(&mut state, &mut world, &rng);
+                microbial_step(&mut state, &mut world, &rng, TICK);
             }
             if !had_goe && state.has_milestone(Milestone::GreatOxygenation) {
                 goe_year = Some(year);

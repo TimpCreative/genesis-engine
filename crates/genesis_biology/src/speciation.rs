@@ -570,10 +570,7 @@ pub fn speciation_tick(
     let mut cur_regimes = [0u8; BIOGEOGRAPHIC_REGIONS as usize];
     let mut regime_counts = [[0usize; 16]; BIOGEOGRAPHIC_REGIONS as usize];
     for i in 0..world.cell_count() as usize {
-        let (lat, lon) = world
-            .grid
-            .center_lat_lon(genesis_core::grid::HexId(i as u32));
-        let r = crate::view::geo_region(lat, lon) as usize;
+        let r = crate::view::geo_region(i, world) as usize;
         let regime = world.climate_regime[i] as usize;
         if r < BIOGEOGRAPHIC_REGIONS as usize && regime < 16 {
             regime_counts[r][regime] += 1;

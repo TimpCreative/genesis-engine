@@ -190,6 +190,10 @@ impl SimulationLayer for ClimateLayer {
             // carbon cycle (and Formation's composition_at_year) have finalized it
             // this tick, so biology and ocean chemistry read the current value.
             world.co2_ppm = state.atmospheric_composition.co2_ppm;
+            // Phase 4: close the O₂ loop — biology writes atmospheric_oxygen_fraction
+            // (Doc 09 §11.1), climate consumes it for weathering/temperature feedback.
+            state.atmospheric_composition.oxygen_fraction =
+                world.atmospheric_oxygen_fraction.max(0.0);
 
             let temp_start = std::time::Instant::now();
             crate::temperature::compute_temperature_field(world, &state);
