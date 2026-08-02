@@ -13,7 +13,7 @@
 //! selective mass extinction. But the *shape* — a branching family tree from
 //! LUCA with coherent inheritance and extinct lines — is honest.
 
-use genesis_core::data::GuildId;
+use genesis_core::data::{GuildId, WorldData};
 use genesis_core::time::WorldYear;
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
@@ -22,12 +22,13 @@ use crate::evolution::{EnvProfile, EnvironmentPayoff, WalkParams, WalkStep, bias
 use crate::guild::{GuildRoster, fills_guild, rule_specificity};
 use crate::ledger::{Ledger, LineageRecord};
 use crate::morphospace::{TraitGraph, TraitSet};
-use crate::province::Realm;
+use crate::province::{ProvinceRegistry, Realm};
 use genesis_rules::FactContext;
 
 const MAX_DEPTH: usize = 6;
 /// Depth from which a lineage is specialized enough to fill a guild (a "species").
 const LEAF_DEPTH: usize = 4;
+#[allow(dead_code)]
 const EXTINCT_PERCENT: u64 = 35;
 /// Years between successive branch generations (deeper = later, for time-aware
 /// tree growth).
@@ -227,7 +228,9 @@ pub fn build_radiation_with(
         }
     }
 
-    mark_extinctions(&mut ledger);
+    // Extinction is now applied per-tick (selective, environment-driven) rather
+    // than as a flat hazard at build time. Lineages start extant; the layer's
+    // heavy-stride block calls `selective_extinction`.
     ledger
 }
 
@@ -405,19 +408,143 @@ fn radiate(
     }
 }
 
-/// Marks a deterministic fraction of leaf (guild-bearing) lineages extinct
-/// (Doc 09 §7, simplified flat hazard) — the greyed lines in the tree.
+/// Flat-hazard fallback for microbial-only worlds (no provinces or climate data).
+#[allow(dead_code)]
 fn mark_extinctions(ledger: &mut Ledger) {
     for record in &mut ledger.lineages {
         if record.guild != GuildId::NONE
             && record.parent.is_some()
-            && record.region.is_some() // cosmopolitan basal seeds are immortal
+            && record.region.is_some()
             && mix(record.name_seed, 0xEED) % 100 < EXTINCT_PERCENT
         {
             let lifespan = 30_000_000 + (record.name_seed % 120) as i64 * 1_000_000;
             record.extinction_year = Some(WorldYear(record.origin_year.value() + lifespan));
         }
     }
+}
+
+/// Environment-driven selective extinction (Phase 1). Called each heavy stride
+/// after provinces are recomputed. Lineage hazard is a deterministic function of
+/// background rate, climate stability, and competition — the world kills species
+/// that lose their niche.
+///
+/// Returns the number of lineages newly marked extinct this stride.
+pub fn selective_extinction(
+    ledger: &mut Ledger,
+    roster: &GuildRoster,
+    provinces: &ProvinceRegistry,
+    prior_temps: &[f32],
+    prior_precips: &[f32],
+    world: &WorldData,
+    year: WorldYear,
+    seed: u64,
+) -> usize {
+    const BASE_HAZARD: u64 = 10; // 10% per heavy stride (~35 My mean lifespan in stable times)
+    const CLIMATE_SHOCK_THRESHOLD_C: f32 = 3.0;
+    const CLIMATE_SHOCK_THRESHOLD_P: f32 = 0.30;
+    const CLIMATE_SHOCK_MAX_HAZARD: u64 = 20; // +20% additive for severe climate shock
+    const COMPETITION_HAZARD_MULTIPLIER: u64 = 2; // 2× for the weaker competitor
+
+    // Compute current per-province mean temperature and precipitation.
+    let n_provinces = provinces.len().max(1);
+    let mut cur_temps = vec![0f32; n_provinces];
+    let mut cur_precips = vec![0f32; n_provinces];
+    let mut cur_counts = vec![0usize; n_provinces];
+    for i in 0..world.cell_count() as usize {
+        let pid = world.province_id.get(i).map(|p| p.0 as usize).unwrap_or(0);
+        if pid < n_provinces {
+            cur_temps[pid] += world.temperature_mean[i];
+            cur_precips[pid] += world.precipitation[i].max(0.0);
+            cur_counts[pid] += 1;
+        }
+    }
+    for p in 0..n_provinces {
+        if cur_counts[p] > 0 {
+            let n = cur_counts[p] as f32;
+            cur_temps[p] /= n;
+            cur_precips[p] /= n;
+        }
+    }
+
+    // Build a per-(region, guild) index of extant lineages for competition.
+    // Also pre-compute guild specificity scores to avoid borrowing ledger
+    // immutably while we iterate it mutably below.
+    let mut guild_region: std::collections::BTreeMap<(u16, u16), Vec<(usize, u64, u32)>> =
+        std::collections::BTreeMap::new();
+    for (idx, rec) in ledger.lineages.iter().enumerate() {
+        if rec.extinction_year.is_none()
+            && rec.guild != GuildId::NONE
+            && rec.region.is_some()
+        {
+            let spec = roster
+                .iter()
+                .find(|g| g.id == rec.guild)
+                .map(|g| rule_specificity(&g.membership))
+                .unwrap_or(1);
+            let key = (rec.region.unwrap(), rec.guild.0);
+            guild_region
+                .entry(key)
+                .or_default()
+                .push((idx, rec.name_seed, spec));
+        }
+    }
+
+    let mut newly_extinct = 0usize;
+
+    for (idx, record) in ledger.lineages.iter_mut().enumerate() {
+        if record.extinction_year.is_some()
+            || record.guild == GuildId::NONE
+            || record.region.is_none()
+        {
+            continue; // already extinct, not guild-bearing, or cosmopolitan (immortal)
+        }
+        let region = record.region.unwrap();
+
+        // --- base hazard ---
+        let mut hazard = BASE_HAZARD;
+
+        // --- climate shock ---
+        let pidx = region as usize;
+        if pidx < prior_temps.len() && pidx < cur_temps.len() && cur_counts.get(pidx).copied().unwrap_or(0) > 0 {
+            let dt = (cur_temps[pidx] - prior_temps[pidx]).abs();
+            let dp = if prior_precips[pidx] > 0.0 {
+                ((cur_precips[pidx] - prior_precips[pidx]) / prior_precips[pidx]).abs()
+            } else {
+                0.0
+            };
+            let temp_shock = (dt / CLIMATE_SHOCK_THRESHOLD_C).min(1.0);
+            let precip_shock = (dp / CLIMATE_SHOCK_THRESHOLD_P).min(1.0);
+            let shock = temp_shock.max(precip_shock);
+            hazard += (CLIMATE_SHOCK_MAX_HAZARD as f32 * shock) as u64;
+        }
+
+        // --- competition ---
+        if let Some(competitors) = guild_region.get(&(region, record.guild.0)) {
+            if competitors.len() > 1 {
+                let my_spec = competitors
+                    .iter()
+                    .find(|(ci, _, _)| *ci == idx)
+                    .map(|(_, _, s)| *s)
+                    .unwrap_or(1);
+                let better = competitors
+                    .iter()
+                    .any(|(_, _, s)| *s > my_spec);
+                if better {
+                    hazard *= COMPETITION_HAZARD_MULTIPLIER;
+                }
+            }
+        }
+
+        // --- deterministic roll ---
+        hazard = hazard.min(95); // cap at 95% — always a chance to survive
+        let roll = mix(record.name_seed ^ seed, year.value() as u64) % 100;
+        if roll < hazard {
+            record.extinction_year = Some(year);
+            newly_extinct += 1;
+        }
+    }
+
+    newly_extinct
 }
 
 #[cfg(test)]
@@ -464,9 +591,11 @@ mod tests {
                 }
             }
         }
-        // Some leaves specialized into guilds; some went extinct.
+        // Some leaves specialized into guilds. Extinction is now applied
+        // per-heavy-stride (selective_extinction), not at build time.
         assert!(ledger.iter().any(|l| l.guild != GuildId::NONE));
-        assert!(ledger.iter().any(|l| l.extinction_year.is_some()));
+        // All lineages start extant — extinction happens later, driven by the world.
+        assert!(ledger.iter().all(|l| l.extinction_year.is_none()));
     }
 
     #[test]
@@ -619,6 +748,107 @@ mod tests {
         for l in ledger.iter() {
             assert_eq!(l.guild, GuildId::NONE);
             assert!(!l.trait_set.contains(multicellular));
+        }
+    }
+
+    // --- selective extinction tests ---
+
+    /// Builds a minimal world + radiation for testing extinction.
+    fn extinction_fixture() -> (WorldData, GuildRoster, ProvinceRegistry, Ledger) {
+        use genesis_core::create_world;
+        let mut params = genesis_core::parameters::WorldParameters::default();
+        params.core.grid.subdivision_level = 5; // small grid for speed
+        let mut world = create_world(params).expect("world").data;
+        // Give it deep ocean and varied terrain so provinces form.
+        for i in 0..world.cell_count() as usize {
+            if i % 3 == 0 {
+                world.elevation_mean[i] = -3000.0;
+                world.water_level_m[i] = 0.0;
+            } else {
+                world.elevation_mean[i] = 500.0;
+                world.water_level_m[i] = 0.0;
+            }
+            world.temperature_mean[i] = 20.0;
+            world.precipitation[i] = 500.0;
+        }
+        let provinces = crate::province::label_provinces(&mut world);
+        let graph = core_morphospace();
+        let roster = core_guilds(&graph);
+        let ledger = build_radiation(&graph, &roster, 42, WorldYear(400_000_000));
+        (world, roster, provinces, ledger)
+    }
+
+    #[test]
+    fn background_extinction_is_deterministic() {
+        let (world, roster, provinces, mut ledger) = extinction_fixture();
+        let n = provinces.len().max(1);
+        let temps = vec![20.0; n];
+        let precips = vec![500.0; n];
+
+        let a = selective_extinction(
+            &mut ledger, &roster, &provinces, &temps, &precips,
+            &world, WorldYear(410_000_000), 42,
+        );
+        // Same inputs → same result.
+        let graph = core_morphospace();
+        let roster2 = core_guilds(&graph);
+        let mut ledger2 = build_radiation(&graph, &roster2, 42, WorldYear(400_000_000));
+        let b = selective_extinction(
+            &mut ledger2, &roster2, &provinces, &temps, &precips,
+            &world, WorldYear(410_000_000), 42,
+        );
+        assert_eq!(a, b, "selective extinction must be deterministic");
+    }
+
+    #[test]
+    fn climate_shock_elevates_extinction() {
+        let (world, roster, provinces, mut ledger) = extinction_fixture();
+        let n = provinces.len().max(1);
+
+        // Stable: prior ≈ current → low extinction.
+        let stable_temps = vec![20.0; n];
+        let stable_precips = vec![500.0; n];
+        let graph = core_morphospace();
+        let r2 = core_guilds(&graph);
+        let mut stable_ledger = build_radiation(&graph, &r2, 42, WorldYear(400_000_000));
+        let stable_dead = selective_extinction(
+            &mut stable_ledger, &r2, &provinces, &stable_temps, &stable_precips,
+            &world, WorldYear(410_000_000), 100,
+        );
+
+        // Shocked: prior very different from current → higher extinction.
+        let shock_temps = vec![30.0; n]; // 10°C warmer than current
+        let shock_precips = vec![100.0; n]; // much drier than current
+        let shock_dead = selective_extinction(
+            &mut ledger, &roster, &provinces, &shock_temps, &shock_precips,
+            &world, WorldYear(410_000_000), 100,
+        );
+
+        assert!(
+            shock_dead >= stable_dead,
+            "climate shock should not reduce extinction: shock={shock_dead} stable={stable_dead}"
+        );
+    }
+
+    #[test]
+    fn cosmopolitan_lineages_are_immortal() {
+        let (world, roster, provinces, mut ledger) = extinction_fixture();
+        let n = provinces.len().max(1);
+        let temps = vec![20.0; n];
+        let precips = vec![500.0; n];
+
+        let cosm_count_before = ledger.iter().filter(|l| l.region.is_none()).count();
+        assert!(cosm_count_before > 0, "need cosmopolitan lineages");
+
+        selective_extinction(
+            &mut ledger, &roster, &provinces, &temps, &precips,
+            &world, WorldYear(410_000_000), 42,
+        );
+
+        for l in ledger.iter() {
+            if l.region.is_none() {
+                assert!(l.extinction_year.is_none(), "cosmopolitan lineages are immortal");
+            }
         }
     }
 }

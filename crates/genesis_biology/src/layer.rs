@@ -15,6 +15,7 @@ use genesis_core::time::{Era, SimulationLayer, WorldYear};
 
 use crate::biogenesis::try_biogenesis;
 use crate::microbial::microbial_step;
+use crate::province::ProvinceRegistry;
 use crate::state::BiologyState;
 
 /// Geological-era biology tick interval (Doc 05 §B.1). Refined to the full
@@ -89,6 +90,12 @@ impl SimulationLayer for BiologyLayer {
                     // Reborrow so `guilds` (shared) and `provinces` (mut) are seen
                     // as disjoint fields, not two borrows through the `RefMut`.
                     let s = &mut *state;
+                    // Save prior province temps/precips before recomputing provinces,
+                    // so selective extinction can detect climate shocks.
+                    s.prior_province_temps = snapshot_province_temps(world, &s.provinces);
+                    s.prior_province_precips = snapshot_province_precips(world, &s.provinces);
+                    s.prior_provinces = Some(std::mem::take(&mut s.provinces));
+                    // Recompute the heavy fields.
                     s.provinces = crate::province::label_provinces(world);
                     crate::richness::compute_primary_productivity(world);
                     crate::richness::compute_richness(world, &mut s.provinces);
@@ -96,11 +103,73 @@ impl SimulationLayer for BiologyLayer {
                     crate::population::compute_biomass(world);
                     crate::population::compute_guild_occupancy(&s.guilds, &mut s.provinces);
                     s.heavy_signature = Some(sig);
+                    // Environment-driven selective extinction (Phase 1): the world
+                    // kills species that lose their niche.
+                    if !s.ledger.is_empty() {
+                        let n = crate::speciation::selective_extinction(
+                            &mut s.ledger,
+                            &s.guilds,
+                            &s.provinces,
+                            &s.prior_province_temps,
+                            &s.prior_province_precips,
+                            world,
+                            world.current_year,
+                            world.parameters.core.seed.value,
+                        );
+                        if n > 0 {
+                            tracing::debug!(
+                                "{} lineages went extinct at {} My",
+                                n,
+                                world.current_year.value() / 1_000_000
+                            );
+                        }
+                    }
                 }
             }
         }
         Vec::new()
     }
+}
+
+/// Per-province mean temperature snapshot (for selective extinction climate-shock
+/// detection). Returns a vec indexed by `ProvinceId.0`.
+fn snapshot_province_temps(world: &WorldData, provinces: &ProvinceRegistry) -> Vec<f32> {
+    let n = provinces.len().max(1);
+    let mut temps = vec![0f32; n];
+    let mut counts = vec![0usize; n];
+    for i in 0..world.cell_count() as usize {
+        let pid = world.province_id.get(i).map(|p| p.0 as usize).unwrap_or(0);
+        if pid < n {
+            temps[pid] += world.temperature_mean[i];
+            counts[pid] += 1;
+        }
+    }
+    for p in 0..n {
+        if counts[p] > 0 {
+            temps[p] /= counts[p] as f32;
+        }
+    }
+    temps
+}
+
+/// Per-province mean precipitation snapshot.
+fn snapshot_province_precips(world: &WorldData, provinces: &ProvinceRegistry) -> Vec<f32> {
+    let n = provinces.len().max(1);
+    let mut precips = vec![0f32; n];
+    let mut counts = vec![0usize; n];
+    for i in 0..world.cell_count() as usize {
+        let pid = world.province_id.get(i).map(|p| p.0 as usize).unwrap_or(0);
+        if pid < n {
+            precips[pid] += world.precipitation[i].max(0.0);
+            counts[pid] += 1;
+        }
+    }
+    for p in 0..n {
+        if counts[p] > 0 {
+            precips[p] /= counts[p] as f32;
+        }
+    }
+    precips
 }
 
 /// A deterministic signature of the geography/climate inputs the heavy biology

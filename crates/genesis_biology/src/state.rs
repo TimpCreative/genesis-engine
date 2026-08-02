@@ -65,6 +65,14 @@ pub struct BiologyState {
     /// the dirty-flag that lets a heavy-stride tick skip the O(n) recompute when
     /// nothing relevant has changed (Doc 09 §15; limitations 9 & 13).
     pub(crate) heavy_signature: Option<u64>,
+    /// Prior heavy-stride province map, used to detect province splits (allopatric
+    /// speciation) and geography-driven extinction (Phase 1 selective extinction).
+    pub(crate) prior_provinces: Option<ProvinceRegistry>,
+    /// Per-province mean temperatures from the last heavy-stride snapshot, used
+    /// to detect climate shocks for selective extinction.
+    pub(crate) prior_province_temps: Vec<f32>,
+    /// Per-province mean precipitation from the last heavy-stride snapshot.
+    pub(crate) prior_province_precips: Vec<f32>,
 }
 
 impl Default for BiologyState {
@@ -83,6 +91,9 @@ impl Default for BiologyState {
             pending_events: Vec::new(),
             next_event_id: 0,
             heavy_signature: None,
+            prior_provinces: None,
+            prior_province_temps: Vec::new(),
+            prior_province_precips: Vec::new(),
         }
     }
 }
