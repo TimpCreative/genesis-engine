@@ -27,7 +27,7 @@ use crate::hex_inspect::{
     inspector_hotkeys, refresh_tab_colors, spawn_hex_inspect_ui, update_hex_inspector,
     update_hex_tooltip, update_hovered_hex,
 };
-use crate::worldgen::{GenEvent, HistoryFrame, SimCommand, WorldGenConfig, run_live_simulation};
+use crate::worldgen::{GenEvent, HISTORY_STRIDE_YEARS, HistoryFrame, SimCommand, WorldGenConfig, run_live_simulation};
 
 /// Top-level application screen.
 #[derive(States, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -1998,25 +1998,27 @@ fn step_view(timeline: &mut WorldTimeline, dir: i64, span_years: i64, control: O
     }
 
     // Within the buffer, move by ~`span` worth of real years, snapping to the
-    // nearest captured frame in that direction (at least one frame, so a press
-    // always moves). A larger span skips proportionally more coarse frames; a
-    // span finer than the local capture gap moves a single frame. This makes
-    // the selected step size govern the jump everywhere the frames exist —
-    // where they don't (a coarse-captured span), one frame is the floor.
+    // nearest captured frame in that direction. A span larger than the capture
+    // stride skips multiple frames proportionally. A span finer than the gap
+    // snaps to the closest frame — which may be the current one (no movement).
+    // The live-edge path above handles true fine-stepping.
     if timeline.frames.is_empty() {
         return false;
     }
     let last = timeline.frames.len() - 1;
     let cur_year = timeline.frames[timeline.current].year;
     let target_year = cur_year + dir * span_years;
-    let mut idx = nearest_frame_index(&timeline.frames, target_year);
-    // Guarantee at least one frame of movement in the pressed direction.
-    if dir > 0 && idx <= timeline.current {
-        idx = (timeline.current + 1).min(last);
-    } else if dir < 0 && idx >= timeline.current {
-        idx = timeline.current.saturating_sub(1);
+    let idx = nearest_frame_index(&timeline.frames, target_year);
+    // When the span is finer than the capture stride, the nearest frame may be
+    // the current one. Only force a minimum of one frame when the span is at
+    // least the capture gap, so "Step: 500 ky" doesn't silently jump 10 My.
+    if dir > 0 && idx == timeline.current && span_years >= HISTORY_STRIDE_YEARS {
+        timeline.current = (timeline.current + 1).min(last);
+    } else if dir < 0 && idx == timeline.current && span_years >= HISTORY_STRIDE_YEARS {
+        timeline.current = timeline.current.saturating_sub(1);
+    } else {
+        timeline.current = idx;
     }
-    timeline.current = idx;
     // Following the edge only resumes if a forward step actually reached it.
     timeline.following_edge = dir > 0 && timeline.at_edge();
     false
@@ -3779,23 +3781,28 @@ mod tests {
 
     #[test]
     fn stepping_within_buffer_moves_one_frame_no_command() {
-        // Without a SimControl (offline), forward/backward just walk the real
-        // buffered frames; no command is issued and nothing is interpolated.
+        // Without a SimControl (offline), forward/backward walk the buffered
+        // frames. A span ≥ the capture stride (10 My) moves one frame; a finer
+        // span snaps to the nearest frame (staying put if already closest).
         let mut tl = timeline_with(3);
+        // Span = 500k < 10 My stride: stays on frame 0 (no finer data exists).
         assert!(!step_view(&mut tl, 1, 500_000, None));
+        assert_eq!(tl.current, 0);
+        // Span = 10 My: moves one frame.
+        assert!(!step_view(&mut tl, 1, 10_000_000, None));
         assert_eq!(tl.current, 1);
-        assert!(!step_view(&mut tl, 1, 500_000, None));
+        assert!(!step_view(&mut tl, 1, 10_000_000, None));
         assert_eq!(tl.current, 2);
         // At the edge with no worker: forward is a no-op (no command possible).
-        assert!(!step_view(&mut tl, 1, 500_000, None));
+        assert!(!step_view(&mut tl, 1, 10_000_000, None));
         assert_eq!(tl.current, 2, "clamps at the live edge when offline");
         // Backward walks the buffer and leaves the edge.
-        assert!(!step_view(&mut tl, -1, 500_000, None));
+        assert!(!step_view(&mut tl, -1, 10_000_000, None));
         assert_eq!(tl.current, 1);
         assert!(!tl.following_edge);
         // Down to the start and clamp.
-        assert!(!step_view(&mut tl, -1, 500_000, None));
-        assert!(!step_view(&mut tl, -1, 500_000, None));
+        assert!(!step_view(&mut tl, -1, 10_000_000, None));
+        assert!(!step_view(&mut tl, -1, 10_000_000, None));
         assert_eq!(tl.current, 0);
     }
 
