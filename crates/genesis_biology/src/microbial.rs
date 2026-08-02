@@ -73,7 +73,7 @@ impl SelectivePayoff for MicrobialPayoff {
 /// Samples each biogeographic region's representative environment from the world
 /// (Doc 09B) so the radiation can adapt clades to their local climate. Uses the
 /// same `geo_region` mapping the map read-back uses, and richness-style factors.
-fn region_profiles(world: &WorldData) -> crate::speciation::RegionProfiles {
+pub(crate) fn region_profiles(world: &WorldData) -> crate::speciation::RegionProfiles {
     use crate::evolution::EnvProfile;
     const R: usize = crate::speciation::BIOGEOGRAPHIC_REGIONS as usize;
     let mut temp = [0f32; R];

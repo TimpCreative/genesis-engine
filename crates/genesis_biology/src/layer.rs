@@ -106,21 +106,38 @@ impl SimulationLayer for BiologyLayer {
                     // Environment-driven selective extinction (Phase 1): the world
                     // kills species that lose their niche.
                     if !s.ledger.is_empty() {
-                        let n = crate::speciation::selective_extinction(
+                        let seed = world.parameters.core.seed.value;
+                        let year = world.current_year;
+                        // Extinction: the world kills species that lose their niche.
+                        let n_ext = crate::speciation::selective_extinction(
                             &mut s.ledger,
                             &s.guilds,
                             &s.provinces,
                             &s.prior_province_temps,
                             &s.prior_province_precips,
                             world,
-                            world.current_year,
-                            world.parameters.core.seed.value,
+                            year,
+                            seed,
                         );
-                        if n > 0 {
+                        // Speciation: the world creates new species in response to change.
+                        let profiles = crate::microbial::region_profiles(world);
+                        let n_spec = crate::speciation::speciation_tick(
+                            &mut s.ledger,
+                            &s.graph,
+                            &s.guilds,
+                            &profiles,
+                            world,
+                            &mut s.prior_region_regimes,
+                            year,
+                            seed,
+                        );
+                        if n_ext > 0 || n_spec > 0 {
                             tracing::debug!(
-                                "{} lineages went extinct at {} My",
-                                n,
-                                world.current_year.value() / 1_000_000
+                                "biology at {} My: {} extinct, {} speciated (total {})",
+                                year.value() / 1_000_000,
+                                n_ext,
+                                n_spec,
+                                s.ledger.len(),
                             );
                         }
                     }

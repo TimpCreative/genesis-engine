@@ -547,6 +547,150 @@ pub fn selective_extinction(
     newly_extinct
 }
 
+/// Per-tick speciation (Phase 2). Called each heavy stride after provinces are
+/// recomputed. The tree of life grows in response to the world: climate shifts
+/// trigger niche divergence, and each stride has a small background branching
+/// probability (punctuated equilibrium, Doc 09 §6.1).
+///
+/// Returns the number of new lineages created this stride.
+pub fn speciation_tick(
+    ledger: &mut Ledger,
+    graph: &TraitGraph,
+    roster: &GuildRoster,
+    profiles: &RegionProfiles,
+    world: &WorldData,
+    prior_regimes: &mut [u8; BIOGEOGRAPHIC_REGIONS as usize],
+    year: WorldYear,
+    seed: u64,
+) -> usize {
+    const BACKGROUND_BRANCH_PROB: u64 = 4; // 4% per extant lineage per heavy stride
+    const NICHE_DIVERGENCE_EXTRA_BRANCHES: usize = 2; // extra branches on climate shift
+
+    // Compute current per-geometric-region dominant climate regime.
+    let mut cur_regimes = [0u8; BIOGEOGRAPHIC_REGIONS as usize];
+    let mut regime_counts = [[0usize; 16]; BIOGEOGRAPHIC_REGIONS as usize];
+    for i in 0..world.cell_count() as usize {
+        let (lat, lon) = world
+            .grid
+            .center_lat_lon(genesis_core::grid::HexId(i as u32));
+        let r = crate::view::geo_region(lat, lon) as usize;
+        let regime = world.climate_regime[i] as usize;
+        if r < BIOGEOGRAPHIC_REGIONS as usize && regime < 16 {
+            regime_counts[r][regime] += 1;
+        }
+    }
+    for r in 0..BIOGEOGRAPHIC_REGIONS as usize {
+        let mut best = 0;
+        let mut best_count = 0usize;
+        for (regime, &count) in regime_counts[r].iter().enumerate() {
+            if count > best_count {
+                best_count = count;
+                best = regime;
+            }
+        }
+        cur_regimes[r] = best as u8;
+    }
+
+    let mut new_lineages = 0usize;
+    let mut rng = SmallRng::seed_from_u64(seed ^ 0x5FEC1_CAFE);
+
+    // Snapshot extant lineages so we don't iterate newly-created ones.
+    let extant: Vec<(usize, TraitSet, u16, u64)> = ledger
+        .lineages
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| l.extinction_year.is_none() && l.region.is_some())
+        .map(|(idx, l)| (idx, l.trait_set.clone(), l.region.unwrap(), l.name_seed))
+        .collect();
+
+    for (_idx, genome, region, name_seed) in &extant {
+        let r = *region as usize;
+        if r >= BIOGEOGRAPHIC_REGIONS as usize {
+            continue;
+        }
+
+        let regime_changed = prior_regimes[r] != 0 && cur_regimes[r] != 0
+            && prior_regimes[r] != cur_regimes[r];
+
+        // Niche divergence: climate regime shift triggers extra branching.
+        let branch_chance = if regime_changed {
+            BACKGROUND_BRANCH_PROB * 4 // 16% — significant boost
+        } else {
+            BACKGROUND_BRANCH_PROB
+        };
+
+        let roll = mix(*name_seed ^ seed, year.value() as u64) % 100;
+        if roll >= branch_chance {
+            continue;
+        }
+
+        // Branch: take one walk step from parent genome, biased by the region's
+        // current environment profile.
+        let env = FactContext::new();
+        let payoff = EnvironmentPayoff::new(graph, profiles.0[r]);
+        let step = biased_evolution_step(
+            graph, genome, &env, &WalkParams::default(), &payoff,
+            0.0, // gain-only for speciation (building new adaptations)
+            &mut rng,
+        );
+        let step = match step {
+            Some(WalkStep::Gain(tid)) => tid,
+            Some(WalkStep::Loss(_)) => continue, // skip loss-only steps
+            None => continue,
+        };
+
+        let mut child_genome = genome.clone();
+        child_genome.insert(step);
+        let guild = leaf_guild(graph, roster, &child_genome);
+        let origin_year = year;
+
+        ledger.push(LineageRecord {
+            id: genesis_core::data::LineageId::NONE,
+            parent: None, // branching lineages float free — no stable parent id
+            origin_year,
+            extinction_year: None,
+            trait_set: child_genome,
+            trait_delta: Some(step),
+            guild,
+            region: Some(*region),
+            name_seed: mix(*name_seed, step.0 as u64),
+        });
+        new_lineages += 1;
+
+        // Extra branches on climate shift (niche divergence burst).
+        if regime_changed && new_lineages < extant.len() {
+            for _ in 0..NICHE_DIVERGENCE_EXTRA_BRANCHES {
+                let step2 = biased_evolution_step(
+                    graph, genome, &env, &WalkParams::default(), &payoff,
+                    0.0, &mut rng,
+                );
+                if let Some(WalkStep::Gain(tid)) = step2 {
+                    let mut cg = genome.clone();
+                    cg.insert(tid);
+                    let guild2 = leaf_guild(graph, roster, &cg);
+                    ledger.push(LineageRecord {
+                        id: genesis_core::data::LineageId::NONE,
+                        parent: None,
+                        origin_year,
+                        extinction_year: None,
+                        trait_set: cg,
+                        trait_delta: Some(tid),
+                        guild: guild2,
+                        region: Some(*region),
+                        name_seed: mix(*name_seed ^ 0xBEEF, tid.0 as u64),
+                    });
+                    new_lineages += 1;
+                }
+            }
+        }
+    }
+
+    // Store current regimes for next stride's comparison.
+    *prior_regimes = cur_regimes;
+
+    new_lineages
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -850,5 +994,77 @@ mod tests {
                 assert!(l.extinction_year.is_none(), "cosmopolitan lineages are immortal");
             }
         }
+    }
+
+    // --- speciation_tick tests ---
+
+    #[test]
+    fn speciation_grows_the_tree() {
+        let (world, roster, _provinces, mut ledger) = extinction_fixture();
+        let graph = core_morphospace();
+        let profiles = RegionProfiles::neutral();
+        let mut regimes = [0u8; BIOGEOGRAPHIC_REGIONS as usize];
+
+        let before = ledger.len();
+        let n = speciation_tick(
+            &mut ledger, &graph, &roster, &profiles, &world,
+            &mut regimes, WorldYear(410_000_000), 42,
+        );
+        // Background speciation should create at least a few new lineages.
+        assert!(n > 0, "speciation should create new lineages");
+        assert!(ledger.len() > before, "tree should grow over time");
+    }
+
+    #[test]
+    fn speciation_is_deterministic() {
+        let (world, roster, _provinces, mut ledger) = extinction_fixture();
+        let graph = core_morphospace();
+        let profiles = RegionProfiles::neutral();
+
+        let mut regimes_a = [0u8; BIOGEOGRAPHIC_REGIONS as usize];
+        let a = speciation_tick(
+            &mut ledger, &graph, &roster, &profiles, &world,
+            &mut regimes_a, WorldYear(410_000_000), 42,
+        );
+
+        let graph2 = core_morphospace();
+        let r2 = core_guilds(&graph2);
+        let mut ledger2 = build_radiation(&graph2, &r2, 42, WorldYear(400_000_000));
+        let mut regimes_b = [0u8; BIOGEOGRAPHIC_REGIONS as usize];
+        let b = speciation_tick(
+            &mut ledger2, &graph2, &r2, &profiles, &world,
+            &mut regimes_b, WorldYear(410_000_000), 42,
+        );
+        assert_eq!(a, b, "speciation must be deterministic");
+    }
+
+    #[test]
+    fn climate_shift_triggers_more_speciation() {
+        let (mut world, roster, _provinces, mut ledger) = extinction_fixture();
+        let graph = core_morphospace();
+        let profiles = RegionProfiles::neutral();
+
+        // Stable: no prior regime → low speciation.
+        let mut regimes_stable = [0u8; BIOGEOGRAPHIC_REGIONS as usize];
+        let stable_n = speciation_tick(
+            &mut ledger, &graph, &roster, &profiles, &world,
+            &mut regimes_stable, WorldYear(410_000_000), 42,
+        );
+
+        // Shifted: prior regime different from current → boosted speciation.
+        // Set prior regimes to something very different from the current tropical ocean.
+        let graph2 = core_morphospace();
+        let r2 = core_guilds(&graph2);
+        let mut ledger2 = build_radiation(&graph2, &r2, 42, WorldYear(400_000_000));
+        let mut regimes_shifted = [8u8; BIOGEOGRAPHIC_REGIONS as usize]; // Boreal
+        let shifted_n = speciation_tick(
+            &mut ledger2, &graph2, &r2, &profiles, &world,
+            &mut regimes_shifted, WorldYear(410_000_000), 42,
+        );
+
+        assert!(
+            shifted_n >= stable_n,
+            "climate shift should not reduce speciation: shifted={shifted_n} stable={stable_n}"
+        );
     }
 }

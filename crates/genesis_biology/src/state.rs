@@ -73,6 +73,10 @@ pub struct BiologyState {
     pub(crate) prior_province_temps: Vec<f32>,
     /// Per-province mean precipitation from the last heavy-stride snapshot.
     pub(crate) prior_province_precips: Vec<f32>,
+    /// Per-region (geometric, 0..12) dominant climate regime from the last heavy
+    /// stride, used to detect climate shifts that trigger niche-divergence
+    /// speciation (Phase 2).
+    pub(crate) prior_region_regimes: [u8; crate::speciation::BIOGEOGRAPHIC_REGIONS as usize],
 }
 
 impl Default for BiologyState {
@@ -94,6 +98,7 @@ impl Default for BiologyState {
             prior_provinces: None,
             prior_province_temps: Vec::new(),
             prior_province_precips: Vec::new(),
+            prior_region_regimes: [0u8; crate::speciation::BIOGEOGRAPHIC_REGIONS as usize],
         }
     }
 }
