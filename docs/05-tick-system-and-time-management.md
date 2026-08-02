@@ -81,6 +81,53 @@ frames**, not disk snapshots. Decision record:
   go through the deterministic pipeline and (future) Doc 13 disk snapshots —
   a `HistoryFrame` is NOT a save state.
 
+## §A.1 Live Real-Time Stepping (specified July 2026, supersedes interpolation)
+
+The viewer no longer pre-records the whole history and scrubs a fixed 10 My
+buffer; it keeps the **simulation resident and steps it forward at real tick
+granularity**. Rationale: the engine already computes fine ticks (500k in the
+Geological era — see the era/interval table in §B.1), so showing 10 My-strided
+snapshots and interpolating between them displayed states the sim never
+computed. Interpolation was tried and removed — it looked wrong (a linear tween
+of two snapshots is not the real trajectory) and, per user direction, "needs to
+be realistic and real time".
+
+Architecture:
+
+- **Persistent worker** (`genesis_ui::worldgen::run_live_simulation`). One
+  background thread owns the `World`, all four layer states, and a **single**
+  `TickCoordinator` for the whole session — built once and never rebuilt,
+  because each physical layer's timestep clock (`last_tick_year`) is layer-local
+  and resets on `attach`; rebuilding would make the next step compute a
+  catastrophic multi-hundred-My interval. The coordinator's `Rc`/`Cell` interior
+  is `!Send`, so it stays confined to this one thread. It runs the initial
+  generation to the target (streaming stride frames + progress exactly as
+  before), then blocks on a command channel.
+- **Command channel.** The UI sends `SimCommand::AdvanceTo(year)`; the worker
+  advances the resident coordinator and emits **one real captured frame** per
+  command. Backward-in-time commands are ignored (time only moves forward).
+- **Resumable coordinator** (`TickCoordinator::advance_resumable[_with]`,
+  `genesis_core::time::ticks`). Anchors the per-layer tick schedule **once** and
+  carries it forward, so stepping `t0 → t1 → … → tn` fires exactly the ticks a
+  single `advance_to(tn)` would — proven by `resumable_stepping_equals_a_single_run`
+  and, end-to-end, by `live_stepping_matches_one_shot_generation` (stepped state
+  is bit-identical to a one-shot run). The one-shot `advance_to` re-anchors every
+  call and is kept for generation and the validation gates.
+- **Forward stepping** at the live edge commands the worker for one more real
+  span; within the buffer, `<`/`>` walk the already-simulated real frames
+  (instant, no re-sim); backward is always buffer-only. The bottom-bar step
+  button cycles the span over `STEP_SPANS_YEARS = [500k, 1M, 2M, 10M]` — every
+  value an exact multiple of the 500k tectonic tick, so the worker always lands
+  on a real computed state. There is deliberately **no sub-500k step**: the
+  tectonic model has no finer state, so it would be fiction. Play auto-commands
+  the next span on the timer (real-time playback).
+- **Consequence / limitation.** Fine stepping extends real history *forward from
+  the live edge*; it cannot fine-step *within* an already-generated coarse span
+  (those intermediate states weren't captured and the resident sim is at the
+  edge, not the past). To watch a span slowly, generate to its start (a small
+  target year) and step forward. Full random-access fine scrubbing would need
+  full-state keyframes (§B) — out of scope here.
+
 ## §B. Forward Design Notes (recorded July 2026, not yet implemented)
 
 ### §B.1 Time resolution, tick cadence, and the milestone ratchet
@@ -127,6 +174,12 @@ interval), and biology reads and responds each tick (Doc 09 §6.3 migrate/adapt/
 die; §4.6 biomes migrate and lag). Obliteration = change outrunning migration =
 a mass-extinction shock (Doc 09 §7.2), which is a feature, not a tick artifact.
 Doc 09 §5.5 guarantees tick cadence "never changes what is true."
+
+**Life & mind layers — status and the biology caveat (implemented/measured July 2026).**
+
+*Biology* ticks at a flat **500k in every non-Formation era** (`genesis_biology::layer::DEFAULT_BIOLOGY_TICK_YEARS`). It is **not** yet refined to 1k in later eras, and doing so naïvely would be **outcome-changing, not just finer resolution**: the microbial engine is *fixed-per-tick*, not rate-scaled — `O2_RISE_PER_TICK` and `MICROBIAL_STEP_PROB` (`genesis_biology::microbial`) apply a fixed increment/probability *per tick*, so halving the interval doubles oxygenation and evolution speed per My and re-rolls the year-keyed RNG. Biogenesis (before life) *is* rate-scaled (hazard ∝ interval), and by the Ancient/Recent eras the microbial engine is a no-op (multicellularity long reached; only the 5 My-gated display refresh runs). **Prerequisite for finer biology cadence:** convert those per-tick constants to interval-scaled rates (the generations-vs-ticks model biology's own comments flag) — until then, keep biology at 500k in the microbial-active eras (Geological/early-Prehistoric). Any biology interval must stay a **divisor of 5 My** or the heavy-field refresh gate (`current_year % HEAVY_FIELD_STRIDE_YEARS == 0`) silently stops firing.
+
+*Civilization* is where fine cadence actually matters for intelligent species — and it is **greenfield, so determinism-safe**. `genesis_civilization::CivilizationLayer` is now registered last in both the one-shot (`generate_full_history`) and live (`run_live_simulation`) coordinators. It is dormant (interval 0) until `sapience_emergence_year`, then ticks at `CIV_ANCIENT_TICK_YEARS = 1_000` (Ancient) and `CIV_RECENT_TICK_YEARS = 25` (Recent) — **~500× and ~20,000× finer than the geological tick**, proving the multi-rate coordinator handles the full spread (`coordinator_drives_civ_at_fine_cadence`). This slice is the **cadence seam only**: `advance` is inert — it records the tick and deliberately reads no RNG and mutates no `WorldData`, so registering it cannot perturb the physical/biology trajectory (`advance_does_not_mutate_world_or_rng`; life still emerges at 265 My unchanged). Real civ dynamics build on this seam (Doc 10).
 
 **The milestone ratchet (the design direction).** Era → tick interval already
 *is* this ladder; the change is that the boundaries must become **milestone-

@@ -31,6 +31,11 @@ struct LayerState {
 /// Coordinates multiple [`SimulationLayer`] instances until a target year.
 pub struct TickCoordinator {
     layers: Vec<LayerState>,
+    /// Whether the per-layer tick schedule has been anchored (by the resumable
+    /// path). The one-shot [`Self::advance_to`] re-anchors every call and
+    /// ignores this; [`Self::advance_resumable`] anchors once and then carries
+    /// the schedule forward.
+    schedule_anchored: bool,
 }
 
 impl Default for TickCoordinator {
@@ -41,7 +46,10 @@ impl Default for TickCoordinator {
 
 impl TickCoordinator {
     pub fn new() -> Self {
-        Self { layers: Vec::new() }
+        Self {
+            layers: Vec::new(),
+            schedule_anchored: false,
+        }
     }
 
     pub fn add_layer(&mut self, layer: Box<dyn SimulationLayer>) {
@@ -77,8 +85,60 @@ impl TickCoordinator {
         params: &WorldParameters,
         on_tick: &mut dyn FnMut(&WorldData),
     ) {
+        // One-shot: re-anchor the schedule to the current year every call. This
+        // is correct for a single run-to-target (the generation path and the
+        // validation gates), but re-firing a zero-interval seam tick and
+        // realigning the grid make it wrong for incremental stepping — use
+        // [`Self::advance_resumable_with`] for that.
         self.init_next_ticks(world.current_year, params);
+        self.schedule_anchored = true;
+        self.run_ticks(target_year, world, rng, params, on_tick);
+    }
 
+    /// Incremental sibling of [`Self::advance_to`]: anchors the tick schedule
+    /// exactly once (on the first call) and carries it forward across calls, so
+    /// advancing in steps (`t0 → t1 → … → tn`) produces **the same trajectory**
+    /// as a single `advance_to(tn)`. Keep one coordinator alive across the whole
+    /// session and drive it with this for interactive, tick-by-tick stepping;
+    /// the layers' internal timestep bookkeeping (`last_tick_year`) stays valid
+    /// because the coordinator and its layers are never rebuilt.
+    pub fn advance_resumable(
+        &mut self,
+        target_year: WorldYear,
+        world: &mut WorldData,
+        rng: &WorldRng,
+        params: &WorldParameters,
+    ) {
+        self.advance_resumable_with(target_year, world, rng, params, &mut |_| {});
+    }
+
+    /// [`Self::advance_resumable`] with a per-tick observer (progress / capture).
+    pub fn advance_resumable_with(
+        &mut self,
+        target_year: WorldYear,
+        world: &mut WorldData,
+        rng: &WorldRng,
+        params: &WorldParameters,
+        on_tick: &mut dyn FnMut(&WorldData),
+    ) {
+        if !self.schedule_anchored {
+            self.init_next_ticks(world.current_year, params);
+            self.schedule_anchored = true;
+        }
+        self.run_ticks(target_year, world, rng, params, on_tick);
+    }
+
+    /// The shared stepping loop: fire every layer due at or before `target_year`
+    /// in registration order, advancing `world.current_year` to the earliest
+    /// pending tick each step. Callers anchor the schedule first.
+    fn run_ticks(
+        &mut self,
+        target_year: WorldYear,
+        world: &mut WorldData,
+        rng: &WorldRng,
+        params: &WorldParameters,
+        on_tick: &mut dyn FnMut(&WorldData),
+    ) {
         while world.current_year < target_year {
             let Some(next_year) = self.earliest_next_tick(target_year) else {
                 break;
@@ -312,6 +372,70 @@ mod tests {
         assert_eq!(
             *slow_log.lock().unwrap(),
             vec![WorldYear(0), WorldYear(100)]
+        );
+    }
+
+    #[test]
+    fn resumable_stepping_equals_a_single_run() {
+        // The core guarantee for interactive stepping: advancing in small
+        // increments must fire exactly the same tick years, in the same order,
+        // as one advance to the final target.
+        let single = RecordingLayer::new("single", 100);
+        let single_log = Arc::clone(&single.tick_years);
+        let mut coord_single = TickCoordinator::new();
+        coord_single.add_layer(Box::new(single));
+        let mut world = world_at(WorldYear::FORMATION);
+        let rng = WorldRng::from_effective_seed(1);
+        let params = WorldParameters::default();
+        coord_single.advance_to(WorldYear(1000), &mut world, &rng, &params);
+
+        let stepped = RecordingLayer::new("stepped", 100);
+        let stepped_log = Arc::clone(&stepped.tick_years);
+        let mut coord_stepped = TickCoordinator::new();
+        coord_stepped.add_layer(Box::new(stepped));
+        let mut world2 = world_at(WorldYear::FORMATION);
+        for target in (100..=1000).step_by(100) {
+            coord_stepped.advance_resumable(WorldYear(target), &mut world2, &rng, &params);
+        }
+
+        assert_eq!(
+            *single_log.lock().unwrap(),
+            *stepped_log.lock().unwrap(),
+            "resumable increments must reproduce the single-run tick trajectory"
+        );
+        assert_eq!(world.current_year, world2.current_year);
+    }
+
+    #[test]
+    fn resumable_stepping_off_boundaries_still_matches() {
+        // Stepping by amounts that do NOT land on the tick grid (e.g. 70-year
+        // clicks over a 100-year layer) must still, once the targets sweep past
+        // each boundary, fire every boundary tick exactly once and never twice.
+        let single = RecordingLayer::new("single", 100);
+        let single_log = Arc::clone(&single.tick_years);
+        let mut coord_single = TickCoordinator::new();
+        coord_single.add_layer(Box::new(single));
+        let mut world = world_at(WorldYear::FORMATION);
+        let rng = WorldRng::from_effective_seed(1);
+        let params = WorldParameters::default();
+        coord_single.advance_to(WorldYear(1000), &mut world, &rng, &params);
+
+        let stepped = RecordingLayer::new("stepped", 100);
+        let stepped_log = Arc::clone(&stepped.tick_years);
+        let mut coord_stepped = TickCoordinator::new();
+        coord_stepped.add_layer(Box::new(stepped));
+        let mut world2 = world_at(WorldYear::FORMATION);
+        let mut target = 70;
+        while target <= 1000 {
+            coord_stepped.advance_resumable(WorldYear(target), &mut world2, &rng, &params);
+            target += 70;
+        }
+        coord_stepped.advance_resumable(WorldYear(1000), &mut world2, &rng, &params);
+
+        assert_eq!(
+            *single_log.lock().unwrap(),
+            *stepped_log.lock().unwrap(),
+            "off-grid stepping must still fire each boundary tick exactly once"
         );
     }
 

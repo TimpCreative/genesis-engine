@@ -243,7 +243,16 @@ fn write_hex_dump(data: &genesis_core::data::WorldData, path: &str) {
 fn dry_below_sea_analysis(data: &genesis_core::data::WorldData) {
     let sea = data.sea_level_m;
     let n = data.elevation_mean.len();
-    let band_edges = [50.0f32, 100.0, 200.0, 300.0, 500.0, 1000.0, 2000.0, f32::INFINITY];
+    let band_edges = [
+        50.0f32,
+        100.0,
+        200.0,
+        300.0,
+        500.0,
+        1000.0,
+        2000.0,
+        f32::INFINITY,
+    ];
     let band_labels = [
         "<=50m", "<=100m", "<=200m", "<=300m", "<=500m", "<=1000m", "<=2000m", ">2000m",
     ];
@@ -305,13 +314,19 @@ fn dry_below_sea_analysis(data: &genesis_core::data::WorldData) {
     }
     let open_ocean_min = ((n as f64) * 0.01).ceil() as usize;
 
-    eprintln!("worst dry-below-sea cells (comp = below-sea component size; open_ocean if comp>={open_ocean_min}):");
+    eprintln!(
+        "worst dry-below-sea cells (comp = below-sea component size; open_ocean if comp>={open_ocean_min}):"
+    );
     for &(vs, i) in worst.iter().take(15) {
         let elev = data.elevation_mean[i];
         let cc = data.continental_crust.get(i).copied().unwrap_or(false);
         let bedrock = data.bedrock_type.get(i).copied().unwrap_or_default();
         let comp = comp_of[i];
-        let comp_size = if comp == usize::MAX { 0 } else { comp_sizes[comp] };
+        let comp_size = if comp == usize::MAX {
+            0
+        } else {
+            comp_sizes[comp]
+        };
         let is_open_ocean = comp_size >= open_ocean_min;
         let (mut wet_nb, mut below_nb, mut above_nb) = (0u32, 0u32, 0u32);
         let mut is_local_min = true;

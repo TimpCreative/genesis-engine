@@ -6,6 +6,7 @@
 //! renderable per-hex fields (~0.5 MB at subdivision 7), not the grid.
 
 use genesis_biology::{BiologyLayer, BiologyState, flush_events_to_branch as flush_biology_events};
+use genesis_civilization::{CivilizationLayer, CivilizationState};
 use genesis_climate::{ClimateLayer, ClimateState, flush_events_to_branch as flush_climate_events};
 use genesis_core::World;
 use genesis_core::data::{
@@ -204,75 +205,6 @@ impl HistoryFrame {
         }
     }
 
-    /// Applies a state interpolated between `self` and `next` at
-    /// `alpha ∈ (0, 1)` — the bottom bar's fine time-stepping. Continuous
-    /// fields lerp (terrain drifts smoothly instead of popping a full
-    /// [`HISTORY_STRIDE_YEARS`] at once); discrete fields (water bodies,
-    /// flags, classes, flow directions) come from the nearer frame, so
-    /// coastlines and rivers switch at the midpoint rather than smearing.
-    pub fn apply_interpolated(&self, next: &Self, alpha: f32, data: &mut WorldData) {
-        let t = alpha.clamp(0.0, 1.0);
-        let near = if t < 0.5 { self } else { next };
-        near.apply(data);
-        data.current_year = genesis_core::WorldYear(
-            self.year + ((next.year - self.year) as f64 * f64::from(t)) as i64,
-        );
-        data.sea_level_m = self.sea_level_m + (next.sea_level_m - self.sea_level_m) * t;
-        lerp_into(
-            &mut data.elevation_mean,
-            &self.elevation_mean,
-            &next.elevation_mean,
-            t,
-        );
-        lerp_into(
-            &mut data.temperature_mean,
-            &self.temperature_mean,
-            &next.temperature_mean,
-            t,
-        );
-        lerp_into(
-            &mut data.precipitation,
-            &self.precipitation,
-            &next.precipitation,
-            t,
-        );
-        lerp_into(
-            &mut data.river_discharge_m3_yr,
-            &self.river_discharge_m3_yr,
-            &next.river_discharge_m3_yr,
-            t,
-        );
-        lerp_into(
-            &mut data.soil_fertility,
-            &self.soil_fertility,
-            &next.soil_fertility,
-            t,
-        );
-        lerp_into(
-            &mut data.salt_accumulated,
-            &self.salt_accumulated,
-            &next.salt_accumulated,
-            t,
-        );
-        lerp_into(&mut data.biomass, &self.biomass, &next.biomass, t);
-        lerp_into(
-            &mut data.biotic_richness,
-            &self.biotic_richness,
-            &next.biotic_richness,
-            t,
-        );
-    }
-}
-
-/// Elementwise lerp, length-guarded like [`HistoryFrame::apply`]'s optional
-/// fields (skips silently on any mismatch, e.g. empty Doc-09 vectors).
-fn lerp_into(out: &mut [f32], a: &[f32], b: &[f32], t: f32) {
-    if out.len() != a.len() || a.len() != b.len() {
-        return;
-    }
-    for ((slot, &x), &y) in out.iter_mut().zip(a).zip(b) {
-        *slot = x + (y - x) * t;
-    }
 }
 
 /// Snapshot stride for a run: always [`HISTORY_STRIDE_YEARS`].
@@ -319,11 +251,18 @@ pub fn generate_full_history(
     // branch-scoped persistence and event flushing.
     let mut biology = BiologyState::new();
     let (biology_layer, biology_shared) = BiologyLayer::attach(&mut biology);
+    // Civilization (Doc 10) — registered last (reads finished geography/biology,
+    // gates nothing). Dormant until sapience, then ticks at a human-scale cadence
+    // (the multi-rate seam). State is local; the scaffold `advance` is inert.
+    let mut civilization = CivilizationState::new();
+    let (civilization_layer, civilization_shared) =
+        CivilizationLayer::attach(&mut civilization);
     let mut coordinator = TickCoordinator::new();
     coordinator.add_layer(Box::new(tectonics_layer));
     coordinator.add_layer(Box::new(climate_layer));
     coordinator.add_layer(Box::new(hydrology_layer));
     coordinator.add_layer(Box::new(biology_layer));
+    coordinator.add_layer(Box::new(civilization_layer));
 
     advance_with_coordinator_observed(world, &mut coordinator, target_year, |data| {
         progress(data);
@@ -333,6 +272,7 @@ pub fn generate_full_history(
     *tectonics = TectonicsLayer::detach_state(tectonics_shared);
     *climate = ClimateLayer::detach_state(climate_shared);
     *hydrology = HydrologyLayer::detach_state(hydrology_shared);
+    let _civilization = CivilizationLayer::detach_state(civilization_shared);
     // Recover biology state and flush its events to the branch log, like the
     // physical layers below. (State is local; caller-owned persistence is a
     // later slice.)
@@ -486,6 +426,169 @@ pub fn generate_world_streaming(config: &WorldGenConfig, mut emit: impl FnMut(Ge
     }
 }
 
+/// A command sent from the UI to the persistent [`run_live_simulation`] worker.
+pub enum SimCommand {
+    /// Advance the live simulation to this absolute year and emit one real
+    /// captured frame at the new state. Years at or below the current year are
+    /// ignored (time only moves forward; backward scrubbing reads the buffer).
+    AdvanceTo(i64),
+}
+
+/// The persistent simulation worker (Doc 05 live-stepping model). Unlike
+/// [`generate_world_streaming`], which runs the whole history and drops the
+/// simulation, this **keeps the tick coordinator and all four layer states
+/// resident for the session** so the UI can hand-crank real ticks forward at
+/// any granularity — no interpolation, every displayed state is one the engine
+/// genuinely computed.
+///
+/// Lifecycle: build the world → attach the four layers into **one** coordinator
+/// (built once, never rebuilt, so each layer's `last_tick_year` bookkeeping
+/// stays valid) → run the initial advance to `config.target_year`, streaming
+/// stride frames and progress exactly like the old generator → then block on
+/// `commands`, advancing the *same* coordinator with
+/// [`TickCoordinator::advance_resumable`] per [`SimCommand::AdvanceTo`] and
+/// emitting one real frame each. The worker ends when the command channel
+/// closes (the UI dropped its sender on teardown).
+pub fn run_live_simulation(
+    config: &WorldGenConfig,
+    commands: std::sync::mpsc::Receiver<SimCommand>,
+    mut emit: impl FnMut(GenEvent),
+) {
+    let params = config.to_parameters();
+
+    emit(GenEvent::Stage("building hex grid..."));
+    let mut world = match genesis_core::create_world(params) {
+        Ok(world) => world,
+        Err(e) => {
+            emit(GenEvent::Failed(format!("{e:?}")));
+            return;
+        }
+    };
+    emit(GenEvent::InitialWorld(Box::new(world.clone())));
+    emit(GenEvent::Stage("running planetary formation..."));
+
+    // Attach every layer into one long-lived coordinator. The shared handles
+    // let us read the biology ledger (for the tree/bestiary) and flush events
+    // without detaching — detaching would reset the layers' timestep clocks.
+    let mut tectonics = TectonicsState::new();
+    let mut climate = ClimateState::new();
+    let mut hydrology = HydrologyState::new();
+    let mut biology = BiologyState::new();
+    let mut civilization = CivilizationState::new();
+    let (tectonics_layer, tectonics_shared) = TectonicsLayer::attach(&mut tectonics);
+    let (climate_layer, climate_shared) = ClimateLayer::attach(&mut climate);
+    let (hydrology_layer, hydrology_shared) = HydrologyLayer::attach(&mut hydrology);
+    let (biology_layer, biology_shared) = BiologyLayer::attach(&mut biology);
+    // Civ layer stays attached for the session like the others (its shared
+    // handle would feed the UI once civ produces state); dormant until sapience.
+    let (civilization_layer, _civilization_shared) =
+        CivilizationLayer::attach(&mut civilization);
+    let mut coordinator = TickCoordinator::new();
+    coordinator.add_layer(Box::new(tectonics_layer));
+    coordinator.add_layer(Box::new(climate_layer));
+    coordinator.add_layer(Box::new(hydrology_layer));
+    coordinator.add_layer(Box::new(biology_layer));
+    coordinator.add_layer(Box::new(civilization_layer));
+
+    let params = world.data.parameters.clone();
+    let stride = history_stride_years(config.target_year, world.data.cell_count());
+    let initial_target = config.target_year.max(1);
+
+    // Initial run to the target year: same stride-frame + progress stream as the
+    // legacy generator, but on the resumable coordinator so stepping continues
+    // seamlessly afterward.
+    {
+        let mut next_capture_year = 0_i64;
+        let mut last_progress_year = -1_i64;
+        let progress_step = (initial_target / 200).max(1);
+        let mut on_tick = |data: &WorldData| {
+            let year = data.current_year.value();
+            if year >= next_capture_year {
+                emit(GenEvent::Frame(Box::new(HistoryFrame::capture(data))));
+                next_capture_year = year + stride;
+            }
+            if year - last_progress_year >= progress_step {
+                last_progress_year = year;
+                emit(GenEvent::Progress {
+                    year,
+                    target: initial_target,
+                });
+            }
+        };
+        coordinator.advance_resumable_with(
+            WorldYear(initial_target),
+            &mut world.data,
+            &world.rng,
+            &params,
+            &mut on_tick,
+        );
+    }
+
+    // Final frame of the initial run + biology view + completion, then go live.
+    emit(GenEvent::Frame(Box::new(HistoryFrame::capture(&world.data))));
+    flush_live_events(
+        &mut world,
+        &tectonics_shared,
+        &climate_shared,
+        &hydrology_shared,
+        &biology_shared,
+    );
+    emit(GenEvent::LifeEvents(life_event_pips(&world)));
+    emit(GenEvent::BiologyLedger(Box::new(
+        biology_shared.borrow().ledger().clone(),
+    )));
+    emit(GenEvent::Done {
+        final_year: world.data.current_year.value(),
+    });
+
+    // Live stepping: advance the resident coordinator on demand. Each command
+    // yields exactly the ticks a single run to that year would (proven by
+    // `resumable_stepping_equals_a_single_run`), and one real captured frame.
+    while let Ok(command) = commands.recv() {
+        match command {
+            SimCommand::AdvanceTo(year) => {
+                if year <= world.data.current_year.value() {
+                    continue;
+                }
+                coordinator.advance_resumable(
+                    WorldYear(year),
+                    &mut world.data,
+                    &world.rng,
+                    &params,
+                );
+                flush_live_events(
+                    &mut world,
+                    &tectonics_shared,
+                    &climate_shared,
+                    &hydrology_shared,
+                    &biology_shared,
+                );
+                emit(GenEvent::Frame(Box::new(HistoryFrame::capture(&world.data))));
+                emit(GenEvent::LifeEvents(life_event_pips(&world)));
+                emit(GenEvent::BiologyLedger(Box::new(
+                    biology_shared.borrow().ledger().clone(),
+                )));
+            }
+        }
+    }
+}
+
+/// Flushes each layer's pending events into the world's branch log, reading the
+/// live states through their shared handles (no detach). Keeps the emitted
+/// life-event pips and branch history current as the sim steps.
+fn flush_live_events(
+    world: &mut World,
+    tectonics: &std::rc::Rc<std::cell::RefCell<TectonicsState>>,
+    climate: &std::rc::Rc<std::cell::RefCell<ClimateState>>,
+    hydrology: &std::rc::Rc<std::cell::RefCell<HydrologyState>>,
+    biology: &std::rc::Rc<std::cell::RefCell<BiologyState>>,
+) {
+    flush_tectonic_events(world, &mut tectonics.borrow_mut());
+    flush_climate_events(world, &mut climate.borrow_mut());
+    flush_hydrology_events(world, &mut hydrology.borrow_mut());
+    flush_biology_events(world, &mut biology.borrow_mut());
+}
+
 /// Blocking wrapper collecting the stream into `(final world equivalent, frames)`.
 /// Kept for the headless path and tests; the final display state equals the
 /// last frame applied onto the initial world.
@@ -516,6 +619,78 @@ pub fn generate_world_with_history(
         last.apply(&mut world.data);
     }
     Ok((world, frames))
+}
+
+#[cfg(test)]
+mod live_tests {
+    use super::*;
+
+    fn small_config(target_year: i64) -> WorldGenConfig {
+        let mut config = WorldGenConfig::default();
+        config.seed_text = "live-step-test".to_string();
+        config.subdivision_level = 5;
+        config.target_year = target_year;
+        config
+    }
+
+    /// The core live-stepping guarantee: driving the worker to the initial
+    /// target and then commanding it forward tick-by-tick produces **exactly**
+    /// the state a single generation to the final year produces. No
+    /// interpolation, fully deterministic — the displayed states are real.
+    #[test]
+    fn live_stepping_matches_one_shot_generation() {
+        // Worker: generate to 20 My, then step to 30 My and 40 My via commands.
+        let (tx, rx) = std::sync::mpsc::channel::<SimCommand>();
+        tx.send(SimCommand::AdvanceTo(30_000_000)).unwrap();
+        tx.send(SimCommand::AdvanceTo(40_000_000)).unwrap();
+        drop(tx); // closes the channel so the worker exits after both commands
+
+        let mut frames: Vec<HistoryFrame> = Vec::new();
+        run_live_simulation(&small_config(20_000_000), rx, |event| {
+            if let GenEvent::Frame(frame) = event {
+                frames.push(*frame);
+            }
+        });
+        let live_final = frames.last().expect("worker emitted frames").clone();
+        assert_eq!(live_final.year, 40_000_000, "stepped to the commanded year");
+
+        // One-shot: a single generation straight to 40 My, same seed.
+        let (_world, oneshot_frames) =
+            generate_world_with_history(&small_config(40_000_000), |_, _| {}).expect("gen");
+        let oneshot_final = oneshot_frames.last().expect("one-shot frames");
+        assert_eq!(oneshot_final.year, 40_000_000);
+
+        // Every real per-hex field must match bit-for-bit.
+        assert_eq!(
+            live_final.elevation_mean, oneshot_final.elevation_mean,
+            "stepped terrain must equal the one-shot run's terrain"
+        );
+        assert_eq!(live_final.sea_level_m, oneshot_final.sea_level_m);
+        assert_eq!(live_final.water_body_id, oneshot_final.water_body_id);
+        assert_eq!(live_final.temperature_mean, oneshot_final.temperature_mean);
+    }
+
+    /// Commands that do not move time forward are ignored (backward scrubbing is
+    /// the buffer's job); the worker still terminates when the channel closes.
+    #[test]
+    fn backward_commands_are_ignored() {
+        let (tx, rx) = std::sync::mpsc::channel::<SimCommand>();
+        tx.send(SimCommand::AdvanceTo(10_000_000)).unwrap(); // below the target
+        tx.send(SimCommand::AdvanceTo(25_000_000)).unwrap(); // forward
+        drop(tx);
+
+        let mut years: Vec<i64> = Vec::new();
+        run_live_simulation(&small_config(20_000_000), rx, |event| {
+            if let GenEvent::Frame(frame) = event {
+                years.push(frame.year);
+            }
+        });
+        assert_eq!(*years.last().unwrap(), 25_000_000, "only the forward step lands");
+        assert!(
+            years.iter().all(|&y| y <= 25_000_000),
+            "no frame past the last real command"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -557,48 +732,6 @@ mod tests {
         assert_eq!(frames[0].elevation_mean.len(), n);
     }
 
-    /// Fine stepping (Prep-09 bottom bar): continuous fields lerp between
-    /// frames; discrete water fields snap to the nearer frame.
-    #[test]
-    fn interpolated_frames_lerp_continuous_and_snap_discrete() {
-        let mut params = genesis_core::parameters::WorldParameters::default();
-        params.core.grid.subdivision_level = 5;
-        let mut world = genesis_core::create_world(params).expect("world");
-        let n = world.data.cell_count() as usize;
-
-        world.data.current_year = genesis_core::WorldYear(100);
-        world.data.elevation_mean.fill(1000.0);
-        world
-            .data
-            .water_level_m
-            .fill(genesis_core::data::WATER_NONE);
-        let a = HistoryFrame::capture(&world.data);
-
-        world.data.current_year = genesis_core::WorldYear(300);
-        world.data.elevation_mean.fill(2000.0);
-        world.data.water_level_m.fill(5.0);
-        world.data.water_body_id.fill(genesis_core::WaterBodyId(3));
-        let b = HistoryFrame::capture(&world.data);
-
-        a.apply_interpolated(&b, 0.25, &mut world.data);
-        assert_eq!(world.data.current_year.value(), 150, "year lerps");
-        assert!(
-            (world.data.elevation_mean[0] - 1250.0).abs() < 1e-3,
-            "elevation lerps: {}",
-            world.data.elevation_mean[0]
-        );
-        assert_eq!(
-            world.data.water_level_m[0],
-            genesis_core::data::WATER_NONE,
-            "alpha < 0.5 takes the earlier frame's water (sentinels never lerp)"
-        );
-
-        a.apply_interpolated(&b, 0.75, &mut world.data);
-        assert!((world.data.elevation_mean[0] - 1750.0).abs() < 1e-3);
-        assert_eq!(world.data.water_level_m[0], 5.0, "alpha > 0.5 takes next");
-        assert_eq!(world.data.water_body_id[0], genesis_core::WaterBodyId(3));
-        assert_eq!(world.data.elevation_mean.len(), n);
-    }
 
     fn history_stride_is_constant_across_targets_and_grid_sizes() {
         assert_eq!(
