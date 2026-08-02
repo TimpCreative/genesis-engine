@@ -59,6 +59,12 @@ pub struct ColorsDirty(pub bool);
 #[derive(Resource, Default)]
 pub struct PointerCapturedByUi(pub bool);
 
+/// The lineage (species or clade) whose distribution is painted on the map, or
+/// `None`. Set by the UI when a species/clade is selected; consumed by the color
+/// pipeline to tint each hex by `clade_concentration`.
+#[derive(Resource, Default)]
+pub struct SelectedClade(pub Option<genesis_core::biology_view::LineageSelector>);
+
 /// Pan/zoom state for the 2D equirectangular view.
 #[derive(Resource)]
 pub struct CameraState {

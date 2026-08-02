@@ -123,8 +123,7 @@ pub fn terrain_texture_m(world_seed: u64, plate_id: PlateId, direction: [f64; 3]
         let r = (1.0 - z * z).max(0.0).sqrt();
         let axis = [r * phi.cos(), r * phi.sin(), z];
         let phase = (h3 >> 11) as f64 / (1u64 << 53) as f64 * std::f64::consts::TAU;
-        let projection =
-            axis[0] * direction[0] + axis[1] * direction[1] + axis[2] * direction[2];
+        let projection = axis[0] * direction[0] + axis[1] * direction[1] + axis[2] * direction[2];
         t += (TEXTURE_OMEGA_RAD * projection + phase).sin();
     }
     // Five ±1 components: normalize by the ~2.2 rms-to-peak so the mask
@@ -174,12 +173,7 @@ pub fn target_offset_at_world(
         return 0.0;
     };
     let birth = birth_hex_at(data, plate, cache, world_hex);
-    target_offset_at_birth(
-        &data.grid,
-        data.parameters.core.seed.value,
-        plate_id,
-        birth,
-    )
+    target_offset_at_birth(&data.grid, data.parameters.core.seed.value, plate_id, birth)
 }
 
 /// Swell at a world hex, resolved through plate ownership and the projection
@@ -203,12 +197,7 @@ pub fn swell_at_world(
         return 0.0;
     };
     let birth = birth_hex_at(data, plate, cache, world_hex);
-    swell_at_birth(
-        &data.grid,
-        data.parameters.core.seed.value,
-        plate_id,
-        birth,
-    )
+    swell_at_birth(&data.grid, data.parameters.core.seed.value, plate_id, birth)
 }
 
 #[cfg(test)]
@@ -245,7 +234,11 @@ mod tests {
             let z = 1.0 - 2.0 * (k as f64 + 0.5) / 128.0;
             let r = (1.0 - z * z).sqrt();
             let phi = golden * k as f64;
-            values.push(epeirogenic_swell_m(7, PlateId(1), [r * phi.cos(), r * phi.sin(), z]));
+            values.push(epeirogenic_swell_m(
+                7,
+                PlateId(1),
+                [r * phi.cos(), r * phi.sin(), z],
+            ));
         }
         let min = values.iter().cloned().fold(f32::INFINITY, f32::min);
         let max = values.iter().cloned().fold(f32::NEG_INFINITY, f32::max);

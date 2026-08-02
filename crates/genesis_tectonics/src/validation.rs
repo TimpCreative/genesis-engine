@@ -874,9 +874,9 @@ mod continental_relief {
 #[cfg(test)]
 mod vast_plains {
     use super::*;
+    use genesis_core::HexId;
     use genesis_core::create_world;
     use genesis_core::time::WorldYear;
-    use genesis_core::HexId;
 
     /// A cell is "plains" when the 2-ring neighborhood's total relief is
     /// under 200 m — the West-Siberian-Plain grade of flatness.
@@ -958,10 +958,12 @@ mod vast_plains {
         let results: Vec<(u64, i64, usize, usize)> = std::thread::scope(|scope| {
             let handles: Vec<_> = jobs
                 .iter()
-                .map(|&(s, y)| scope.spawn(move || {
-                    let (largest, land) = largest_plain(s, y);
-                    (s, y, largest, land)
-                }))
+                .map(|&(s, y)| {
+                    scope.spawn(move || {
+                        let (largest, land) = largest_plain(s, y);
+                        (s, y, largest, land)
+                    })
+                })
                 .collect();
             handles.into_iter().map(|h| h.join().unwrap()).collect()
         });
@@ -983,13 +985,12 @@ mod vast_plains {
     }
 }
 
-
 #[cfg(test)]
 mod mountain_belts {
     use super::*;
+    use genesis_core::HexId;
     use genesis_core::create_world;
     use genesis_core::time::WorldYear;
-    use genesis_core::HexId;
 
     fn measure(seed: u64, year: i64) -> (String, usize, f64, f64) {
         let mut params = validation_parameters();
@@ -1090,10 +1091,12 @@ mod mountain_belts {
         let results: Vec<(u64, i64, String, usize, f64, f64)> = std::thread::scope(|scope| {
             let handles: Vec<_> = jobs
                 .iter()
-                .map(|&(s, y)| scope.spawn(move || {
-                    let (line, belts, share, width) = measure(s, y);
-                    (s, y, line, belts, share, width)
-                }))
+                .map(|&(s, y)| {
+                    scope.spawn(move || {
+                        let (line, belts, share, width) = measure(s, y);
+                        (s, y, line, belts, share, width)
+                    })
+                })
                 .collect();
             handles.into_iter().map(|h| h.join().unwrap()).collect()
         });
@@ -1121,13 +1124,12 @@ mod mountain_belts {
     }
 }
 
-
 #[cfg(test)]
 mod render_probe {
     use super::*;
+    use genesis_core::HexId;
     use genesis_core::create_world;
     use genesis_core::time::WorldYear;
-    use genesis_core::HexId;
 
     fn render(seed: u64, year: i64, path: &str) {
         let mut params = validation_parameters();
@@ -1148,7 +1150,11 @@ mod render_probe {
                 let e = data.elevation_mean[hex.0 as usize];
                 let (r, g, b) = if e <= 0.0 {
                     let t = (1.0 + (e / 5000.0).max(-1.0)) as f32;
-                    ((10.0 + 30.0 * t) as u8, (30.0 + 70.0 * t) as u8, (80.0 + 120.0 * t) as u8)
+                    (
+                        (10.0 + 30.0 * t) as u8,
+                        (30.0 + 70.0 * t) as u8,
+                        (80.0 + 120.0 * t) as u8,
+                    )
                 } else if e < 300.0 {
                     (60, 130, 60)
                 } else if e < 800.0 {

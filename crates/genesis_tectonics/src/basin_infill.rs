@@ -342,7 +342,13 @@ mod tests {
             .map(|nb| world.data.elevation_mean[nb.0 as usize])
             .fold(f32::MAX, f32::min);
         let depth = rim - (sea - 1_500.0);
-        let deep = plant_pit(&mut world, &mut state.registry, &state.projection, pit, depth);
+        let deep = plant_pit(
+            &mut world,
+            &mut state.registry,
+            &state.projection,
+            pit,
+            depth,
+        );
         world.data.water_level_m[pit] = WATER_NONE;
         assert!(
             deep < sea - DRY_SUBSEA_MAX_DEPTH_M,

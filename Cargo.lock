@@ -2623,6 +2623,9 @@ dependencies = [
 [[package]]
 name = "genesis_civilization"
 version = "0.1.0"
+dependencies = [
+ "genesis_core",
+]
 
 [[package]]
 name = "genesis_climate"
@@ -2706,6 +2709,7 @@ dependencies = [
  "arboard",
  "bevy",
  "genesis_biology",
+ "genesis_civilization",
  "genesis_climate",
  "genesis_core",
  "genesis_hydrology",

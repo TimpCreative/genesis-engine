@@ -852,11 +852,11 @@ mod integration_tests {
         // Projection round-trip test: match features by their raw elevation
         // fingerprint, so it runs on the structure engine (Doc 06-CAL calibration
         // rewrites elevation_mean and would break the fingerprint).
-        let (world_1b, state_1b) = run_validation_world_with(
-            WorldYear(VALIDATION_TARGET_YEAR_ONE_BILLION),
-            |p| p.core.terrain.enabled = false,
-        )
-        .expect("1B validation run");
+        let (world_1b, state_1b) =
+            run_validation_world_with(WorldYear(VALIDATION_TARGET_YEAR_ONE_BILLION), |p| {
+                p.core.terrain.enabled = false
+            })
+            .expect("1B validation run");
         let (world_45b, state_45b) =
             run_validation_world_with(WorldYear(VALIDATION_TARGET_YEAR_FULL), |p| {
                 p.core.terrain.enabled = false

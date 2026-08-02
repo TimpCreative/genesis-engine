@@ -33,6 +33,7 @@ impl Plugin for GenesisRenderPlugin {
             .init_resource::<CurrentRenderMode>()
             .init_resource::<CurrentProjection>()
             .init_resource::<PointerCapturedByUi>()
+            .init_resource::<crate::resources::SelectedClade>()
             .add_systems(Startup, setup_camera)
             .add_systems(
                 Update,

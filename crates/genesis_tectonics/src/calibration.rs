@@ -106,14 +106,26 @@ impl HypsometricCurve {
             (slope_bottom_p, t.abyssal_depth_m),
             (shelf_break_p, t.shelf_depth_m),
             (ocean_frac, 0.0),
-            (ocean_frac + coastal_band, t.continental_modal_height_m * 0.35),
+            (
+                ocean_frac + coastal_band,
+                t.continental_modal_height_m * 0.35,
+            ),
             (ocean_frac + land * 0.35, t.continental_modal_height_m),
-            (ocean_frac + land * 0.72, t.continental_modal_height_m + 500.0),
-            (ocean_frac + land * 0.9, t.continental_modal_height_m + 1200.0),
+            (
+                ocean_frac + land * 0.72,
+                t.continental_modal_height_m + 500.0,
+            ),
+            (
+                ocean_frac + land * 0.9,
+                t.continental_modal_height_m + 1200.0,
+            ),
             // Sharp summit tail: ≥ ~3000 m confined to the top ~3% of land
             // (Earth: ~1.5%); the old straight run to the peak put 8% of
             // land above 3000 m and rendered summit slabs, not spines.
-            (ocean_frac + land * 0.97, t.continental_modal_height_m + 2700.0),
+            (
+                ocean_frac + land * 0.97,
+                t.continental_modal_height_m + 2700.0,
+            ),
             (1.0, peak),
         ];
 
@@ -434,8 +446,7 @@ mod tests {
             // Arbitrary structure field: a smooth-ish gradient plus noise.
             let n = world.data.cell_count() as usize;
             for i in 0..n {
-                world.data.elevation_mean[i] =
-                    ((i * 2654435761) % 10000) as f32 - 5000.0;
+                world.data.elevation_mean[i] = ((i * 2654435761) % 10000) as f32 - 5000.0;
             }
             world.data.parameters.core.terrain.land_fraction = target;
             let t = world.data.parameters.core.terrain;
@@ -516,7 +527,10 @@ mod tests {
                         .all(|nb| world.data.elevation_mean[nb.0 as usize] > sea)
             })
             .count();
-        assert_eq!(perforations, 0, "found {perforations} interior perforations");
+        assert_eq!(
+            perforations, 0,
+            "found {perforations} interior perforations"
+        );
     }
 
     #[test]
@@ -542,15 +556,17 @@ mod tests {
         let (land0, elev0) = build(0.0);
         let (land3, elev3) = build(3.0);
         assert_eq!(land0, land3, "island seeding must preserve the land count");
-        assert_ne!(elev0, elev3, "island_density > 0 should relocate some cells");
+        assert_ne!(
+            elev0, elev3,
+            "island_density > 0 should relocate some cells"
+        );
     }
 
     #[test]
     fn temporal_lowpass_lags_a_sudden_structure_change() {
         let structure_a = |world: &mut genesis_core::World, n: usize| {
             for i in 0..n {
-                world.data.elevation_mean[i] =
-                    (i.wrapping_mul(2654435761) % 10000) as f32 - 5000.0;
+                world.data.elevation_mean[i] = (i.wrapping_mul(2654435761) % 10000) as f32 - 5000.0;
             }
         };
         let structure_b = |world: &mut genesis_core::World, n: usize| {

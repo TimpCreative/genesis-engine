@@ -7,7 +7,7 @@
 //! world arrive over a channel.
 
 use std::sync::Mutex;
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::mpsc::{Receiver, Sender, channel};
 
 use bevy::input::mouse::{AccumulatedMouseScroll, MouseScrollUnit};
 use bevy::prelude::*;
@@ -16,8 +16,8 @@ use bevy::window::PrimaryWindow;
 use genesis_core::data::BiomeId;
 use genesis_render::{
     ActiveBiologyView, ColorsDirty, CurrentProjection, CurrentRenderMode, HexEntityCache,
-    HexMeshIndex, PointerCapturedByUi, RenderMode, RiversDirty, SelectedHex, WorldDirty,
-    WorldResource, biome_color, heatmap_color, precipitation_to_color, regime_to_color,
+    HexMeshIndex, PointerCapturedByUi, RenderMode, RiversDirty, SelectedClade, SelectedHex,
+    WorldDirty, WorldResource, biome_color, heatmap_color, precipitation_to_color, regime_to_color,
     soil_class_color, temperature_to_color,
 };
 
@@ -27,7 +27,7 @@ use crate::hex_inspect::{
     inspector_hotkeys, refresh_tab_colors, spawn_hex_inspect_ui, update_hex_inspector,
     update_hex_tooltip, update_hovered_hex,
 };
-use crate::worldgen::{GenEvent, HistoryFrame, WorldGenConfig, generate_world_streaming};
+use crate::worldgen::{GenEvent, HistoryFrame, SimCommand, WorldGenConfig, run_live_simulation};
 
 /// Top-level application screen.
 #[derive(States, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -61,8 +61,9 @@ pub enum UiAction {
     JumpToYear(i64),
     ToggleBestiary,
     ToggleTree,
+    ToggleClassification,
     ToggleProjection,
-    ToggleFineStep,
+    CycleStepSpan,
 }
 
 /// Marks the top-bar projection button's label so it can show the active
@@ -77,6 +78,8 @@ pub enum OpenOverlay {
     None,
     Bestiary,
     Tree,
+    /// The scientific-classification browser (Kingdom → … → Species by rank).
+    Classification,
 }
 
 /// Root of the Bestiary overlay; its content is rebuilt on open.
@@ -89,6 +92,11 @@ pub struct BestiaryContent;
 pub struct TreeOverlay;
 #[derive(Component)]
 pub struct TreeContent;
+/// Root of the scientific-classification overlay; content rebuilt on open.
+#[derive(Component)]
+pub struct ClassificationOverlay;
+#[derive(Component)]
+pub struct ClassificationContent;
 /// True while an overlay's content matches the current world/hex/year.
 #[derive(Resource, Default)]
 pub struct OverlayBuilt(pub bool);
@@ -155,6 +163,10 @@ impl BestiarySort {
 pub struct BestiarySortButton;
 #[derive(Component)]
 pub struct BestiarySortLabel;
+/// "Show all species" button on the hex-local Bestiary — clears the selected hex
+/// so the list returns to the global catalog.
+#[derive(Component)]
+pub struct BestiaryShowAllButton;
 
 /// A clickable Tree-of-Life row (its lineage id, species id, and whether it has
 /// children — a leaf opens detail, an internal node toggles expand).
@@ -352,15 +364,35 @@ pub struct ActiveConfig(pub WorldGenConfig);
 #[derive(Resource)]
 pub struct GenerationTask(pub Mutex<Receiver<GenEvent>>);
 
-/// Buffered history for timeline scrubbing. Grows while generation streams
-/// (YouTube-style buffering); `complete` flips when the thread finishes.
+/// Sender for the persistent live-simulation worker ([`worldgen::run_live_simulation`]).
+/// The UI pushes [`SimCommand`]s (advance to year N) and the worker streams back
+/// real captured frames on the [`GenerationTask`] channel. Dropped on teardown,
+/// which ends the worker.
+#[derive(Resource)]
+pub struct SimControl {
+    sender: Mutex<Sender<SimCommand>>,
+    /// The furthest year the worker has been asked to reach — so repeated
+    /// forward presses queue additional spans without waiting for each frame to
+    /// stream back.
+    pub requested_year: i64,
+}
+
+impl SimControl {
+    /// Sends a command to the worker; a closed channel (worker gone) is ignored.
+    pub fn send(&self, command: SimCommand) {
+        if let Ok(tx) = self.sender.lock() {
+            let _ = tx.send(command);
+        }
+    }
+}
+
+/// Buffered history of **real** simulated states. Forward stepping past the
+/// buffered edge commands the live worker for one more real frame; backward and
+/// within-buffer stepping read this buffer. Nothing is interpolated.
 #[derive(Resource)]
 pub struct WorldTimeline {
     pub frames: Vec<HistoryFrame>,
     pub current: usize,
-    /// Interpolation position within [current, current+1) for fine stepping;
-    /// 0.0 = exactly on the buffered frame.
-    pub alpha: f32,
     pub playing: bool,
     pub play_timer: Timer,
     pub target_year: i64,
@@ -368,6 +400,21 @@ pub struct WorldTimeline {
     /// Set when `current` changed before the display world existed; the next
     /// poll applies the frame once the inserted `WorldResource` is visible.
     pub needs_apply: bool,
+    /// True while `current` tracks the live edge: a newly streamed frame from
+    /// the worker auto-advances the view onto it (so a forward press at the edge
+    /// shows the new real state as soon as it arrives).
+    pub following_edge: bool,
+}
+
+impl WorldTimeline {
+    /// The furthest simulated year in the buffer (the live edge).
+    pub fn edge_year(&self) -> i64 {
+        self.frames.last().map(|f| f.year).unwrap_or(0)
+    }
+    /// True when `current` sits on the last buffered frame.
+    pub fn at_edge(&self) -> bool {
+        self.current + 1 >= self.frames.len()
+    }
 }
 
 /// Key-repeat state for hold-to-scrub.
@@ -390,19 +437,38 @@ impl Default for SeedBackspaceRepeat {
     }
 }
 
-/// Fine time-step, as a fraction of the 10 My frame stride (Prep-09 bottom
-/// bar): 0.2 → 2 My per press. Sub-stride states are interpolated between
-/// the buffered frames ([`HistoryFrame::apply_interpolated`]) — continuous
-/// fields lerp, water/rivers switch at the midpoint — so slow terrain drift
-/// reads as drift instead of a 10 My pop.
-pub const FINE_STEP_FRACTION: f32 = 0.2;
+/// Selectable forward-step spans (years), cycled by the bottom-bar button.
+/// Every value is an exact multiple of the 500k Geological tick, so stepping
+/// the live worker by one of these lands on real computed states — 500 ky is
+/// one true tectonic tick, the finest the model computes; 10 My matches the
+/// historical overview stride. There is deliberately no sub-500k option: the
+/// tectonic model has no finer state (plates do not move measurably in less),
+/// so it would be fiction.
+pub const STEP_SPANS_YEARS: [i64; 4] = [500_000, 1_000_000, 2_000_000, 10_000_000];
 
-/// Bottom-bar step size: false = one frame (10 My), true = fine
-/// ([`FINE_STEP_FRACTION`] of a frame, 2 My).
+/// Bottom-bar forward-step span: index into [`STEP_SPANS_YEARS`].
 #[derive(Resource, Default)]
-pub struct FineStep(pub bool);
+pub struct StepSpan(pub usize);
 
-/// Marks the step-size toggle's label ("Step: 10 My" / "Step: 2 My").
+impl StepSpan {
+    pub fn years(&self) -> i64 {
+        STEP_SPANS_YEARS[self.0 % STEP_SPANS_YEARS.len()]
+    }
+    pub fn cycle(&mut self) {
+        self.0 = (self.0 + 1) % STEP_SPANS_YEARS.len();
+    }
+    /// Human label, e.g. "Step: 500 ky" / "Step: 10 My".
+    pub fn label(&self) -> String {
+        let y = self.years();
+        if y >= 1_000_000 {
+            format!("Step: {} My", y / 1_000_000)
+        } else {
+            format!("Step: {} ky", y / 1_000)
+        }
+    }
+}
+
+/// Marks the step-size button's label so it can show the active span.
 #[derive(Component)]
 pub struct StepSizeLabel;
 
@@ -443,11 +509,12 @@ impl Plugin for GenesisUiPlugin {
             .init_resource::<TreeExpandInit>()
             .init_resource::<SpeciesHistory>()
             .init_resource::<ScrubRepeat>()
-            .init_resource::<FineStep>()
+            .init_resource::<StepSpan>()
             .init_resource::<SeedBackspaceRepeat>()
             .init_resource::<HoveredHex>()
             .init_resource::<InspectorTab>()
             .init_resource::<InspectorVisible>()
+            .add_systems(Startup, install_ui_font)
             .add_systems(OnEnter(AppScreen::MainMenu), spawn_main_menu)
             .add_systems(OnEnter(AppScreen::Setup), spawn_setup_screen)
             .add_systems(OnEnter(AppScreen::Generating), spawn_generating_screen)
@@ -516,9 +583,10 @@ impl Plugin for GenesisUiPlugin {
                             species_detail_panel,
                             scroll_overlays,
                             refresh_ui_scroll_capture,
-                            handle_bestiary_sort,
+                            (handle_bestiary_sort, handle_bestiary_show_all),
                             handle_tree_clicks,
                             hover_tooltip,
+                            clear_clade_when_overlays_closed,
                         )
                             .chain(),
                     )
@@ -538,6 +606,8 @@ const PANEL_BG: Color = Color::srgba(0.08, 0.09, 0.12, 0.92);
 const BUTTON_BG: Color = Color::srgb(0.17, 0.19, 0.24);
 const BUTTON_BG_HOVER: Color = Color::srgb(0.25, 0.29, 0.38);
 const ACCENT: Color = Color::srgb(0.35, 0.65, 0.95);
+/// Width of the right-docked biology sidebar (Bestiary / Tree / Classification).
+const SIDEBAR_WIDTH: f32 = 380.0;
 /// Bestiary species-card background, and its hover/selected tint.
 const SPECIES_CARD_BG: Color = Color::srgba(0.10, 0.12, 0.16, 0.95);
 const SPECIES_CARD_HOVER: Color = Color::srgba(0.16, 0.20, 0.27, 0.98);
@@ -579,6 +649,9 @@ fn teardown_world(
     commands.remove_resource::<WorldResource>();
     commands.remove_resource::<WorldTimeline>();
     commands.remove_resource::<GenerationTask>();
+    // Dropping the command sender closes the worker's channel, so its blocking
+    // `recv` returns and the persistent simulation thread exits cleanly.
+    commands.remove_resource::<SimControl>();
     // Selection outline is despawned when SelectedHex clears.
 }
 
@@ -610,6 +683,30 @@ fn button(action: UiAction) -> (Button, UiAction, Node, BackgroundColor) {
         },
         BackgroundColor(BUTTON_BG),
     )
+}
+
+/// Replaces Bevy's built-in `FiraMono-subset` (basic Latin only — box-drawing,
+/// arrows, and geometric glyphs render as tofu `□`) with a bundled DejaVu Sans
+/// Mono. It covers the tree connectors (`│ ├ └ ─`), triangles/arrows
+/// (`▸ ▾ ‹ → ↻ ✕`), and punctuation (`· – — °`) the biology UI leans on, and is
+/// still monospaced so the family-tree connectors keep their alignment.
+///
+/// Bevy loads its default font at `AssetId::default()` (see `bevy_text`), and
+/// every `TextFont` in this app resolves to that handle — so overwriting that one
+/// asset re-fonts the entire UI without touching any spawn site. DejaVu Sans Mono
+/// is freely redistributable (Bitstream Vera / public-domain license, bundled at
+/// `assets/fonts/LICENSE_DEJAVU.txt`).
+fn install_ui_font(mut fonts: ResMut<Assets<Font>>) {
+    const DEJAVU_MONO: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/assets/fonts/DejaVuSansMono.ttf"
+    ));
+    match Font::try_from_bytes(DEJAVU_MONO.to_vec()) {
+        Ok(font) => {
+            let _ = fonts.insert(&Handle::<Font>::default(), font);
+        }
+        Err(e) => warn!("bundled UI font failed to load; keeping Bevy default: {e}"),
+    }
 }
 
 fn label(text: &str, size: f32) -> (Text, TextFont, TextColor) {
@@ -837,13 +934,65 @@ fn format_param(config: &WorldGenConfig, param: Param) -> String {
 }
 
 pub fn format_year(year: i64) -> String {
+    // Resolves down to ~1 My so era/status labels are no longer floored at the
+    // old 10 My display quantum. The primary stepping readout uses
+    // [`format_year_stepped`] for finer resolution matched to the step span.
     if year >= 1_000_000_000 {
-        format!("{:.2}B", year as f64 / 1e9)
+        format!("{:.3}B", year as f64 / 1e9)
     } else if year >= 1_000_000 {
-        format!("{:.0}M", year as f64 / 1e6)
+        format!("{:.1}M", year as f64 / 1e6)
+    } else if year >= 1_000 {
+        format!("{:.0}k", year as f64 / 1e3)
     } else {
         format!("{year}")
     }
+}
+
+/// Year label whose precision resolves `resolution_years` — the current step
+/// span — so a fine step is always visible instead of flooring at the coarse
+/// unit (the "0.00 B, 10 My floor" bug). Below ~10 ky resolution it switches to
+/// an exact, thousands-grouped year for civ-scale stepping.
+pub fn format_year_stepped(year: i64, resolution_years: i64) -> String {
+    let res = resolution_years.max(1);
+    if res < 10_000 {
+        return format!("{} yr", group_thousands(year));
+    }
+    let a = year.unsigned_abs();
+    if a >= 1_000_000_000 {
+        format!("{:.*} By", decimals_for(1_000_000_000, res), year as f64 / 1e9)
+    } else if a >= 1_000_000 {
+        format!("{:.*} My", decimals_for(1_000_000, res), year as f64 / 1e6)
+    } else if a >= 1_000 {
+        format!("{:.*} ky", decimals_for(1_000, res), year as f64 / 1e3)
+    } else {
+        format!("{year} yr")
+    }
+}
+
+/// Decimal places of `unit_years` needed so one display step (a ULP) is no
+/// coarser than `res` — i.e. the smallest `d` with `unit / 10^d <= res`.
+fn decimals_for(unit_years: i64, res: i64) -> usize {
+    let mut d = 0usize;
+    let mut ulp = unit_years as f64;
+    while ulp > res as f64 && d < 9 {
+        ulp /= 10.0;
+        d += 1;
+    }
+    d
+}
+
+/// Formats an integer year with thousands separators (e.g. `4,500,500,000`).
+fn group_thousands(year: i64) -> String {
+    let neg = year < 0;
+    let digits = year.unsigned_abs().to_string();
+    let mut out = String::new();
+    for (i, ch) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    if neg { format!("-{out}") } else { out }
 }
 
 fn adjust_param(config: &mut WorldGenConfig, param: Param, direction: i8) {
@@ -1144,15 +1293,22 @@ fn spawn_generating_screen(mut commands: Commands) {
 }
 
 pub fn start_generation(commands: &mut Commands, config: WorldGenConfig) {
-    let (tx, rx) = channel();
+    // Two channels: events stream back from the worker; commands (advance to
+    // year N) flow to it. The worker runs the initial generation, then stays
+    // resident to hand-crank real ticks forward on demand (live stepping).
+    let (event_tx, event_rx) = channel();
+    let (command_tx, command_rx) = channel::<SimCommand>();
+    let requested_year = config.target_year.max(1);
     std::thread::spawn(move || {
-        // Progress throttling and frame striding happen inside the generator;
-        // worst-case channel backlog is the frame memory budget (Doc 05 §A).
-        generate_world_streaming(&config, |event| {
-            let _ = tx.send(event);
+        run_live_simulation(&config, command_rx, |event| {
+            let _ = event_tx.send(event);
         });
     });
-    commands.insert_resource(GenerationTask(Mutex::new(rx)));
+    commands.insert_resource(GenerationTask(Mutex::new(event_rx)));
+    commands.insert_resource(SimControl {
+        sender: Mutex::new(command_tx),
+        requested_year,
+    });
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1222,13 +1378,13 @@ fn poll_generation(
                 commands.insert_resource(WorldTimeline {
                     frames: Vec::new(),
                     current: 0,
-                    alpha: 0.0,
                     // Play from year 0 as history streams in (YouTube-style).
                     playing: true,
                     play_timer: Timer::from_seconds(0.25, TimerMode::Repeating),
                     target_year: config.0.target_year.max(1),
                     complete: false,
                     needs_apply: false,
+                    following_edge: false,
                 });
                 timeline = None;
                 world_dirty.0 = true;
@@ -1239,20 +1395,26 @@ fn poll_generation(
                 };
                 let first = timeline.frames.is_empty();
                 timeline.frames.push(*frame);
-                if first {
+                let landed = timeline.frames.len() - 1;
+                // Show the new real state now if it's the first frame or the
+                // viewer is tracking the live edge (a forward press / live play
+                // just commanded this frame). Otherwise it buffers silently and
+                // the playback timer / scrub drives `current`.
+                if first || timeline.following_edge {
+                    timeline.current = landed;
                     if let Some(world_res) = world_res.as_mut()
-                        && let Some(frame) = timeline.frames.first()
+                        && let Some(frame) = timeline.frames.get(timeline.current)
                     {
                         frame.apply(&mut world_res.0.data);
                         colors_dirty.0 = true;
                     } else {
                         timeline.needs_apply = true;
                     }
-                    // The world is visible from its first buffered year on;
-                    // the rest of history streams in behind the viewer.
-                    if *screen.get() == AppScreen::Generating {
-                        next_screen.set(AppScreen::Viewing);
-                    }
+                }
+                // The world is visible from its first buffered year on; the rest
+                // of history streams in behind the viewer.
+                if first && *screen.get() == AppScreen::Generating {
+                    next_screen.set(AppScreen::Viewing);
                 }
             }
             GenEvent::LifeEvents(pips) => {
@@ -1269,10 +1431,12 @@ fn poll_generation(
                 )));
             }
             GenEvent::Done { .. } => {
+                // The initial run reached the target. The worker stays alive for
+                // live stepping, so we keep the event channel open (do NOT remove
+                // GenerationTask) and just mark the initial buffer complete.
                 if let Some(timeline) = timeline.as_mut() {
                     timeline.complete = true;
                 }
-                commands.remove_resource::<GenerationTask>();
             }
             GenEvent::Failed(err) => {
                 if let Ok(mut text) = progress_text.single_mut() {
@@ -1282,6 +1446,7 @@ fn poll_generation(
                     timeline.complete = true;
                 }
                 commands.remove_resource::<GenerationTask>();
+                commands.remove_resource::<SimControl>();
             }
         }
     }
@@ -1365,34 +1530,53 @@ fn spawn_viewing_hud(
                     bar.spawn(button(UiAction::ToggleTree)).with_children(|b| {
                         b.spawn(label("Tree of Life", 14.0));
                     });
+                    bar.spawn(button(UiAction::ToggleClassification))
+                        .with_children(|b| {
+                            b.spawn(label("Classification", 14.0));
+                        });
                     bar.spawn(button(UiAction::ToggleBestiary))
                         .with_children(|b| {
                             b.spawn(label("Bestiary", 14.0));
                         });
                 });
 
-            // Full-screen Bestiary + Tree overlays (hidden; filled on open).
-            for (is_bestiary, title) in [(true, "Bestiary"), (false, "Tree of Life")] {
+            // Bestiary / Tree / Classification — each a right-docked SIDEBAR
+            // (like the hex inspector), so the map stays visible and usable.
+            for kind in 0u8..3 {
+                let (title, close) = match kind {
+                    0 => ("Bestiary", UiAction::ToggleBestiary),
+                    1 => ("Tree of Life", UiAction::ToggleTree),
+                    _ => ("Classification", UiAction::ToggleClassification),
+                };
                 let mut overlay = parent.spawn((
                     BlocksMapPick,
                     FocusPolicy::Block,
                     Interaction::default(),
                     Node {
                         position_type: PositionType::Absolute,
-                        width: Val::Percent(100.0),
-                        height: Val::Percent(100.0),
+                        right: Val::Px(0.0),
+                        top: Val::Px(crate::hex_inspect::TOP_BAR_CLEARANCE),
+                        bottom: Val::Px(crate::hex_inspect::BOTTOM_BAR_CLEARANCE),
+                        width: Val::Px(SIDEBAR_WIDTH),
                         display: Display::None,
                         flex_direction: FlexDirection::Column,
-                        padding: UiRect::all(Val::Px(20.0)),
-                        row_gap: Val::Px(12.0),
+                        padding: UiRect::all(Val::Px(12.0)),
+                        row_gap: Val::Px(10.0),
                         ..default()
                     },
-                    BackgroundColor(Color::srgba(0.04, 0.05, 0.07, 0.97)),
+                    BackgroundColor(Color::srgba(0.05, 0.06, 0.09, 0.98)),
+                    ZIndex(15),
                 ));
-                if is_bestiary {
-                    overlay.insert(BestiaryOverlay);
-                } else {
-                    overlay.insert(TreeOverlay);
+                match kind {
+                    0 => {
+                        overlay.insert(BestiaryOverlay);
+                    }
+                    1 => {
+                        overlay.insert(TreeOverlay);
+                    }
+                    _ => {
+                        overlay.insert(ClassificationOverlay);
+                    }
                 }
                 overlay.with_children(|o| {
                     o.spawn(Node {
@@ -1402,46 +1586,37 @@ fn spawn_viewing_hud(
                         ..default()
                     })
                     .with_children(|h| {
-                        h.spawn(label(title, 28.0));
-                        let close = if is_bestiary {
-                            UiAction::ToggleBestiary
-                        } else {
-                            UiAction::ToggleTree
-                        };
+                        h.spawn(label(title, 20.0));
                         h.spawn(button(close)).with_children(|b| {
-                            b.spawn(label("Close [Esc]", 16.0));
+                            b.spawn(label("✕", 15.0));
                         });
                     });
                     let mut content = o.spawn((
                         // Scrollable. `RelativeCursorPosition` detects hover
-                        // geometrically (works even when the cursor is over a child
-                        // button, unlike `Interaction`); `ScrollPosition` holds the
-                        // offset (Bevy 0.18).
+                        // geometrically (works even over a child button); a single
+                        // column now that it's a narrow rail.
                         RelativeCursorPosition::default(),
                         ScrollPosition::default(),
                         Node {
-                            flex_direction: if is_bestiary {
-                                FlexDirection::Row
-                            } else {
-                                FlexDirection::Column
-                            },
-                            flex_wrap: if is_bestiary {
-                                FlexWrap::Wrap
-                            } else {
-                                FlexWrap::NoWrap
-                            },
+                            flex_direction: FlexDirection::Column,
+                            flex_wrap: FlexWrap::NoWrap,
                             align_content: AlignContent::FlexStart,
-                            column_gap: Val::Px(10.0),
-                            row_gap: Val::Px(10.0),
+                            row_gap: Val::Px(8.0),
                             flex_grow: 1.0,
                             overflow: Overflow::scroll_y(),
                             ..default()
                         },
                     ));
-                    if is_bestiary {
-                        content.insert(BestiaryContent);
-                    } else {
-                        content.insert(TreeContent);
+                    match kind {
+                        0 => {
+                            content.insert(BestiaryContent);
+                        }
+                        1 => {
+                            content.insert(TreeContent);
+                        }
+                        _ => {
+                            content.insert(ClassificationContent);
+                        }
                     }
                 });
             }
@@ -1454,34 +1629,35 @@ fn spawn_viewing_hud(
                     BlocksMapPick,
                     FocusPolicy::Block,
                     Interaction::default(),
+                    // Docked in the same right rail as the lists, above them.
                     Node {
                         position_type: PositionType::Absolute,
-                        width: Val::Percent(100.0),
-                        height: Val::Percent(100.0),
+                        right: Val::Px(0.0),
+                        top: Val::Px(crate::hex_inspect::TOP_BAR_CLEARANCE),
+                        bottom: Val::Px(crate::hex_inspect::BOTTOM_BAR_CLEARANCE),
+                        width: Val::Px(SIDEBAR_WIDTH),
                         display: Display::None,
                         flex_direction: FlexDirection::Column,
-                        justify_content: JustifyContent::Center,
-                        align_items: AlignItems::Center,
                         ..default()
                     },
-                    BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.55)),
+                    BackgroundColor(Color::srgba(0.06, 0.07, 0.10, 1.0)),
+                    ZIndex(16),
                 ))
                 .with_children(|panel| {
                     panel
                         .spawn((
-                            // Absorbs clicks so the backdrop stays put.
                             FocusPolicy::Block,
                             Interaction::default(),
                             Node {
-                                width: Val::Px(440.0),
-                                max_height: Val::Percent(82.0),
+                                width: Val::Percent(100.0),
+                                height: Val::Percent(100.0),
                                 flex_direction: FlexDirection::Column,
-                                padding: UiRect::all(Val::Px(20.0)),
+                                padding: UiRect::all(Val::Px(14.0)),
                                 row_gap: Val::Px(8.0),
                                 overflow: Overflow::clip(),
                                 ..default()
                             },
-                            BackgroundColor(Color::srgba(0.09, 0.11, 0.15, 1.0)),
+                            BackgroundColor(Color::NONE),
                         ))
                         .with_children(|card| {
                             card.spawn((
@@ -1699,9 +1875,9 @@ fn spawn_viewing_hud(
                                 .with_children(|b| {
                                     b.spawn(label(">", 16.0));
                                 });
-                            row.spawn(button(UiAction::ToggleFineStep))
+                            row.spawn(button(UiAction::CycleStepSpan))
                                 .with_children(|b| {
-                                    let (text, font, color) = label("Step: 10 My", 14.0);
+                                    let (text, font, color) = label("Step: 500 ky", 14.0);
                                     b.spawn((text, font, color, StepSizeLabel));
                                 });
                             row.spawn((
@@ -1786,24 +1962,13 @@ fn spawn_viewing_hud(
         });
 }
 
-/// Applies the timeline's current frame to the rendered world.
+/// Applies the timeline's current (real, buffered) frame to the rendered world.
 fn apply_current_frame(
     timeline: &WorldTimeline,
     world_res: &mut WorldResource,
     colors_dirty: &mut ColorsDirty,
     rivers_dirty: &mut RiversDirty,
 ) {
-    if timeline.alpha > 0.0
-        && let (Some(a), Some(b)) = (
-            timeline.frames.get(timeline.current),
-            timeline.frames.get(timeline.current + 1),
-        )
-    {
-        a.apply_interpolated(b, timeline.alpha, &mut world_res.0.data);
-        colors_dirty.0 = true;
-        rivers_dirty.dirty = true;
-        return;
-    }
     if let Some(frame) = timeline.frames.get(timeline.current) {
         frame.apply(&mut world_res.0.data);
         colors_dirty.0 = true;
@@ -1811,11 +1976,74 @@ fn apply_current_frame(
     }
 }
 
+/// Steps the view one buffered frame in `dir` (±1); at the live edge, a forward
+/// step instead commands the worker to simulate one more real span (returns
+/// `true` so the caller knows a frame will stream in rather than being applied
+/// now). Backward and within-buffer steps move `current` and return `false`.
+fn step_view(timeline: &mut WorldTimeline, dir: i64, span_years: i64, control: Option<&SimControl>)
+-> bool {
+    // Forward at the live edge extends real history: command the worker to
+    // simulate one more `span`. The new real frame streams back and the view
+    // follows onto it (`following_edge`).
+    if dir > 0 && timeline.at_edge() {
+        if let Some(control) = control {
+            let next = timeline.edge_year() + span_years;
+            let target = next.max(control.requested_year);
+            control.send(SimCommand::AdvanceTo(target));
+            timeline.following_edge = true;
+            timeline.playing = false;
+            return true;
+        }
+        return false;
+    }
+
+    // Within the buffer, move by ~`span` worth of real years, snapping to the
+    // nearest captured frame in that direction (at least one frame, so a press
+    // always moves). A larger span skips proportionally more coarse frames; a
+    // span finer than the local capture gap moves a single frame. This makes
+    // the selected step size govern the jump everywhere the frames exist —
+    // where they don't (a coarse-captured span), one frame is the floor.
+    if timeline.frames.is_empty() {
+        return false;
+    }
+    let last = timeline.frames.len() - 1;
+    let cur_year = timeline.frames[timeline.current].year;
+    let target_year = cur_year + dir * span_years;
+    let mut idx = nearest_frame_index(&timeline.frames, target_year);
+    // Guarantee at least one frame of movement in the pressed direction.
+    if dir > 0 && idx <= timeline.current {
+        idx = (timeline.current + 1).min(last);
+    } else if dir < 0 && idx >= timeline.current {
+        idx = timeline.current.saturating_sub(1);
+    }
+    timeline.current = idx;
+    // Following the edge only resumes if a forward step actually reached it.
+    timeline.following_edge = dir > 0 && timeline.at_edge();
+    false
+}
+
+/// Index of the buffered frame whose year is closest to `target_year`
+/// (ascending frames; ties to the earlier index). Deterministic.
+fn nearest_frame_index(frames: &[HistoryFrame], target_year: i64) -> usize {
+    let mut best = 0usize;
+    let mut best_dist = i64::MAX;
+    for (i, frame) in frames.iter().enumerate() {
+        let dist = (frame.year - target_year).abs();
+        if dist < best_dist {
+            best_dist = dist;
+            best = i;
+        }
+    }
+    best
+}
+
+#[allow(clippy::too_many_arguments)]
 fn timeline_keyboard(
     keys: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
     mut repeat: ResMut<ScrubRepeat>,
-    fine: Res<FineStep>,
+    span: Res<StepSpan>,
+    control: Option<Res<SimControl>>,
     timeline: Option<ResMut<WorldTimeline>>,
     world_res: Option<ResMut<WorldResource>>,
     mut colors_dirty: ResMut<ColorsDirty>,
@@ -1854,53 +2082,22 @@ fn timeline_keyboard(
 
     if step_now {
         timeline.playing = false;
-        step_timeline_sized(&mut timeline, held, fine.0);
-        apply_current_frame(
-            &timeline,
-            &mut world_res,
-            &mut colors_dirty,
-            &mut rivers_dirty,
-        );
+        let commanded = step_view(&mut timeline, held, span.years(), control.as_deref());
+        if !commanded {
+            apply_current_frame(
+                &timeline,
+                &mut world_res,
+                &mut colors_dirty,
+                &mut rivers_dirty,
+            );
+        }
     }
-}
-
-fn step_timeline(timeline: &mut WorldTimeline, step: i64) {
-    let last = timeline.frames.len().saturating_sub(1) as i64;
-    let next = (timeline.current as i64 + step).clamp(0, last);
-    timeline.current = next as usize;
-    timeline.alpha = 0.0;
-}
-
-/// Steps by a whole frame (10 My) or a fine fraction of one
-/// ([`FINE_STEP_FRACTION`] → 2 My, interpolated between buffered frames).
-fn step_timeline_sized(timeline: &mut WorldTimeline, step: i64, fine: bool) {
-    if !fine {
-        step_timeline(timeline, step);
-        return;
-    }
-    let last = timeline.frames.len().saturating_sub(1) as f32;
-    let mut pos = timeline.current as f32 + timeline.alpha + step as f32 * FINE_STEP_FRACTION;
-    pos = pos.clamp(0.0, last);
-    let mut index = pos.floor();
-    let mut alpha = pos - index;
-    // Snap floating-point dust onto exact frames so alpha == 0.0 renders the
-    // true buffered state, not a hairline interpolation.
-    if alpha < 1.0e-3 {
-        alpha = 0.0;
-    } else if alpha > 1.0 - 1.0e-3 {
-        index += 1.0;
-        alpha = 0.0;
-    }
-    timeline.current = (index as usize).min(last as usize);
-    timeline.alpha = if timeline.current as f32 >= last {
-        0.0
-    } else {
-        alpha
-    };
 }
 
 fn timeline_playback(
     time: Res<Time>,
+    span: Res<StepSpan>,
+    control: Option<Res<SimControl>>,
     timeline: Option<ResMut<WorldTimeline>>,
     world_res: Option<ResMut<WorldResource>>,
     mut colors_dirty: ResMut<ColorsDirty>,
@@ -1917,15 +2114,23 @@ fn timeline_playback(
         return;
     }
     if timeline.current + 1 >= timeline.frames.len() {
-        // At the live edge: stall (stay playing) while frames still stream in,
-        // like a video buffering; only stop at the true end of history.
+        // At the live edge. During the initial buffered run, stall until more
+        // frames stream in (video-buffering) and stop at the true end. Once the
+        // initial run is complete, keep *playing live* by commanding the worker
+        // to simulate the next real span — real-time playback, no interpolation.
         if timeline.complete {
-            timeline.playing = false;
+            if let Some(control) = control.as_deref() {
+                let next = timeline.edge_year() + span.years();
+                let target = next.max(control.requested_year);
+                control.send(SimCommand::AdvanceTo(target));
+                timeline.following_edge = true;
+            } else {
+                timeline.playing = false;
+            }
         }
         return;
     }
     timeline.current += 1;
-    timeline.alpha = 0.0;
     apply_current_frame(
         &timeline,
         &mut world_res,
@@ -1938,6 +2143,7 @@ fn timeline_playback(
 fn refresh_hud(
     timeline: Option<Res<WorldTimeline>>,
     mode: Res<CurrentRenderMode>,
+    span: Res<StepSpan>,
     mut hud: Query<&mut Text, With<HudText>>,
     mut bars: ParamSet<(
         Query<&mut Node, With<TimelinePlayhead>>,
@@ -1951,15 +2157,11 @@ fn refresh_hud(
     let Some(frame) = timeline.frames.get(timeline.current) else {
         return;
     };
-    let target = timeline.target_year.max(1) as f32;
     let buffered_year = timeline.frames.last().map(|f| f.year).unwrap_or(0);
-    // Fine stepping sits between frames: show the interpolated year.
-    let display_year = match timeline.frames.get(timeline.current + 1) {
-        Some(next) if timeline.alpha > 0.0 => {
-            frame.year + ((next.year - frame.year) as f64 * f64::from(timeline.alpha)) as i64
-        }
-        _ => frame.year,
-    };
+    // The timeline bar spans up to the target; live stepping can push the real
+    // year past it (the playhead just pins at the end).
+    let target = timeline.target_year.max(buffered_year).max(1) as f32;
+    let display_year = frame.year;
 
     if let Ok(mut text) = hud.single_mut() {
         let generating = if timeline.complete {
@@ -1972,8 +2174,8 @@ fn refresh_hud(
             )
         };
         text.0 = format!(
-            "{generating}Year {}  |  Mode: {} [M]  |  [L] legend  |  scrub/hold < >, Space plays, Esc for menu",
-            format_year(display_year),
+            "{generating}Year {}  |  Mode: {} [M]  |  [L] legend  |  < > step (Step cycles size), Space plays, Esc for menu",
+            format_year_stepped(display_year, span.years()),
             mode.0.label(),
         );
     }
@@ -2177,13 +2379,15 @@ fn refresh_projection_tab(
     }
 }
 
-/// Bottom-bar time stepping: `<` / `>` at the selected step size, and the
-/// step-size toggle itself (10 My frame ⇄ 2 My interpolated fine step). Its
-/// own system so `handle_actions` stays under Bevy's 16-param limit.
-#[allow(clippy::type_complexity)]
+/// Bottom-bar time stepping: `<` / `>` step one real frame at the selected span
+/// (forward at the live edge commands the worker for one more real state), and
+/// the step-size button cycles the span (500 ky · 1 My · 2 My · 10 My). Its own
+/// system so `handle_actions` stays under Bevy's 16-param limit.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn handle_timeline_step_buttons(
     interactions: ChangedButtons<&'static UiAction>,
-    mut fine: ResMut<FineStep>,
+    mut span: ResMut<StepSpan>,
+    control: Option<Res<SimControl>>,
     timeline: Option<ResMut<WorldTimeline>>,
     world_res: Option<ResMut<WorldResource>>,
     mut colors_dirty: ResMut<ColorsDirty>,
@@ -2197,17 +2401,25 @@ fn handle_timeline_step_buttons(
             continue;
         }
         match action {
-            UiAction::ToggleFineStep => {
-                fine.0 = !fine.0;
+            UiAction::CycleStepSpan => {
+                span.cycle();
                 if let Ok(mut text) = step_label.single_mut() {
-                    text.0 = if fine.0 { "Step: 2 My" } else { "Step: 10 My" }.to_string();
+                    text.0 = span.label();
                 }
             }
             UiAction::TimelineStep(step) => {
                 if let (Some(timeline), Some(world_res)) = (timeline.as_mut(), world_res.as_mut()) {
                     timeline.playing = false;
-                    step_timeline_sized(timeline, *step, fine.0);
-                    apply_current_frame(timeline, world_res, &mut colors_dirty, &mut rivers_dirty);
+                    let commanded =
+                        step_view(timeline, *step, span.years(), control.as_deref());
+                    if !commanded {
+                        apply_current_frame(
+                            timeline,
+                            world_res,
+                            &mut colors_dirty,
+                            &mut rivers_dirty,
+                        );
+                    }
                 }
             }
             _ => {}
@@ -2398,6 +2610,14 @@ fn overlay_hotkeys(
         };
         built.0 = false;
     }
+    if keys.just_pressed(KeyCode::KeyC) {
+        *open = if *open == OpenOverlay::Classification {
+            OpenOverlay::None
+        } else {
+            OpenOverlay::Classification
+        };
+        built.0 = false;
+    }
 }
 
 /// Shows/hides the Bestiary + Tree overlays and (re)builds their content from
@@ -2414,10 +2634,33 @@ fn update_overlays(
     biology: Option<Res<ActiveBiologyView>>,
     timeline: Option<Res<WorldTimeline>>,
     children: Query<&Children>,
-    mut bestiary: Query<&mut Node, (With<BestiaryOverlay>, Without<TreeOverlay>)>,
-    mut tree: Query<&mut Node, (With<TreeOverlay>, Without<BestiaryOverlay>)>,
+    #[allow(clippy::type_complexity)] mut bestiary: Query<
+        &mut Node,
+        (
+            With<BestiaryOverlay>,
+            Without<TreeOverlay>,
+            Without<ClassificationOverlay>,
+        ),
+    >,
+    #[allow(clippy::type_complexity)] mut tree: Query<
+        &mut Node,
+        (
+            With<TreeOverlay>,
+            Without<BestiaryOverlay>,
+            Without<ClassificationOverlay>,
+        ),
+    >,
+    #[allow(clippy::type_complexity)] mut classification: Query<
+        &mut Node,
+        (
+            With<ClassificationOverlay>,
+            Without<BestiaryOverlay>,
+            Without<TreeOverlay>,
+        ),
+    >,
     bestiary_content: Query<Entity, With<BestiaryContent>>,
     tree_content: Query<Entity, With<TreeContent>>,
+    classification_content: Query<Entity, With<ClassificationContent>>,
 ) {
     if open.is_changed() {
         if let Ok(mut n) = bestiary.single_mut() {
@@ -2429,6 +2672,13 @@ fn update_overlays(
         }
         if let Ok(mut n) = tree.single_mut() {
             n.display = if *open == OpenOverlay::Tree {
+                Display::Flex
+            } else {
+                Display::None
+            };
+        }
+        if let Ok(mut n) = classification.single_mut() {
+            n.display = if *open == OpenOverlay::Classification {
                 Display::Flex
             } else {
                 Display::None
@@ -2505,13 +2755,44 @@ fn update_overlays(
                             BackgroundColor(BUTTON_BG),
                         ))
                         .with_children(|b| {
-                            b.spawn(label(&format!("Sort: {sort_label}  ⟳"), 14.0));
+                            b.spawn(label(&format!("Sort: {sort_label}  ↻"), 14.0));
                         });
                         h.spawn((
                             label(&format!("{} living species", species.len()), 14.0).0,
                             label("", 14.0).1,
                             TextColor(Color::srgb(0.70, 0.75, 0.82)),
                         ));
+                    });
+                } else {
+                    // Hex-local: make it obvious *why* the list is short (you
+                    // clicked a hex), and give a one-click path back to the full
+                    // catalog — otherwise the silent switch reads as a glitch.
+                    c.spawn(Node {
+                        width: Val::Percent(100.0),
+                        flex_direction: FlexDirection::Row,
+                        justify_content: JustifyContent::SpaceBetween,
+                        align_items: AlignItems::Center,
+                        column_gap: Val::Px(12.0),
+                        ..default()
+                    })
+                    .with_children(|h| {
+                        h.spawn((
+                            label("◆ Life at this hex", 14.0).0,
+                            label("", 14.0).1,
+                            TextColor(ACCENT),
+                        ));
+                        h.spawn((
+                            BestiaryShowAllButton,
+                            Button,
+                            Node {
+                                padding: UiRect::axes(Val::Px(12.0), Val::Px(6.0)),
+                                ..default()
+                            },
+                            BackgroundColor(BUTTON_BG),
+                        ))
+                        .with_children(|b| {
+                            b.spawn(label("Show all species", 13.0));
+                        });
                     });
                 }
                 if species.is_empty() {
@@ -2528,7 +2809,7 @@ fn update_overlays(
                         Button,
                         SpeciesCard(sp.species_id),
                         Node {
-                            width: Val::Px(240.0),
+                            width: Val::Percent(100.0),
                             flex_direction: FlexDirection::Column,
                             padding: UiRect::all(Val::Px(10.0)),
                             row_gap: Val::Px(4.0),
@@ -2574,6 +2855,22 @@ fn update_overlays(
                 bio.0.as_ref(),
                 timeline.as_deref(),
                 &tree_expanded.0,
+                false, // family tree: branch lines, no ranks
+            );
+            built.0 = true;
+        }
+        OpenOverlay::Classification => {
+            let Ok(content) = classification_content.single() else {
+                return;
+            };
+            clear(&mut commands, content);
+            build_tree_content(
+                &mut commands,
+                content,
+                bio.0.as_ref(),
+                timeline.as_deref(),
+                &tree_expanded.0,
+                true, // classification: rank labels, indented
             );
             built.0 = true;
         }
@@ -2592,6 +2889,8 @@ fn handle_species_card_clicks(
     mut selected: ResMut<SelectedSpecies>,
     mut built: ResMut<SpeciesDetailBuilt>,
     mut history: ResMut<SpeciesHistory>,
+    mut clade: ResMut<SelectedClade>,
+    mut colors_dirty: ResMut<ColorsDirty>,
 ) {
     for (interaction, card, mut bg) in &mut cards {
         match interaction {
@@ -2605,6 +2904,9 @@ fn handle_species_card_clicks(
                 selected.0 = Some(card.0);
                 built.0 = false;
                 bg.0 = SPECIES_CARD_HOVER;
+                // Paint this species' distribution on the map.
+                clade.0 = Some(genesis_core::LineageSelector::Species(card.0));
+                colors_dirty.0 = true;
             }
             Interaction::Hovered => bg.0 = SPECIES_CARD_HOVER,
             Interaction::None => bg.0 = SPECIES_CARD_BG,
@@ -2630,13 +2932,19 @@ fn species_detail_panel(
     children: Query<&Children>,
     mut commands: Commands,
     biology: Option<Res<ActiveBiologyView>>,
+    mut clade: ResMut<SelectedClade>,
+    mut colors_dirty: ResMut<ColorsDirty>,
 ) {
-    // Back: retrace to the previously-viewed species.
+    // Back: retrace to the previously-viewed species — and re-paint its range on
+    // the map (without this, the map kept showing the species you navigated away
+    // from).
     if back.iter().any(|i| *i == Interaction::Pressed)
         && let Some(prev) = history.0.pop()
     {
         selected.0 = Some(prev);
         built.0 = false;
+        clade.0 = Some(genesis_core::LineageSelector::Species(prev));
+        colors_dirty.0 = true;
     }
     // Close on the button, or whenever no overlay is open. (The detail opens from
     // both the Bestiary and the Tree of Life.)
@@ -2644,6 +2952,12 @@ fn species_detail_panel(
     if (closed || *open == OpenOverlay::None) && selected.0.is_some() {
         selected.0 = None;
         history.0.clear(); // fresh trail next time
+        // Returning to the list (or closing the sidebar) stops painting a range,
+        // so the map reflects where you actually are.
+        if clade.0.is_some() {
+            clade.0 = None;
+            colors_dirty.0 = true;
+        }
     }
 
     let visible = *open != OpenOverlay::None && selected.0.is_some();
@@ -2686,6 +3000,10 @@ fn species_detail_panel(
     let web = selected
         .0
         .map(|id| bio.0.food_web(id, genesis_core::WorldYear(year)))
+        .unwrap_or_default();
+    let relatives = selected
+        .0
+        .map(|id| bio.0.relatives(id, genesis_core::WorldYear(year)))
         .unwrap_or_default();
     commands.entity(content).with_children(|c| {
         let Some(d) = detail else {
@@ -2829,6 +3147,47 @@ fn species_detail_panel(
                 });
             }
         }
+
+        // Relatives — evolutionarily-closest species (clickable to navigate).
+        if !relatives.is_empty() {
+            c.spawn((
+                label("Relatives", 13.0).0,
+                label("", 13.0).1,
+                TextColor(ACCENT),
+            ))
+            .insert(Node {
+                margin: UiRect::top(Val::Px(10.0)),
+                ..default()
+            });
+            c.spawn(Node {
+                flex_direction: FlexDirection::Row,
+                flex_wrap: FlexWrap::Wrap,
+                column_gap: Val::Px(6.0),
+                row_gap: Val::Px(4.0),
+                ..default()
+            })
+            .with_children(|row| {
+                for sp in &relatives {
+                    row.spawn((
+                        Button,
+                        SpeciesCard(sp.species_id),
+                        HoverTip(sp.description.clone()),
+                        Node {
+                            padding: UiRect::axes(Val::Px(8.0), Val::Px(3.0)),
+                            ..default()
+                        },
+                        BackgroundColor(SPECIES_CARD_BG),
+                    ))
+                    .with_children(|chip| {
+                        chip.spawn((
+                            label(&sp.name, 11.5).0,
+                            label("", 11.5).1,
+                            TextColor(Color::srgb(0.85, 0.9, 0.85)),
+                        ));
+                    });
+                }
+            });
+        }
     });
     built.0 = true;
 }
@@ -2860,16 +3219,31 @@ fn scroll_overlays(
     }
 }
 
-/// Tells the renderer whether a full-screen overlay owns the pointer, so the map
-/// doesn't pan/zoom under the Bestiary / Tree / species detail.
+/// Tells the renderer whether the pointer is over a scroll container (the biology
+/// sidebar / detail rail), so the wheel scrolls the rail there but still pans/zooms
+/// the map everywhere else — the map stays usable beside the docked sidebar.
 fn refresh_ui_scroll_capture(
-    open: Res<OpenOverlay>,
-    selected_species: Res<SelectedSpecies>,
+    containers: Query<&RelativeCursorPosition, With<ScrollPosition>>,
     mut capture: ResMut<PointerCapturedByUi>,
 ) {
-    let captured = *open != OpenOverlay::None || selected_species.0.is_some();
-    if capture.0 != captured {
-        capture.0 = captured;
+    let over = containers.iter().any(|c| {
+        c.normalized
+            .is_some_and(|n| (0.0..=1.0).contains(&n.x) && (0.0..=1.0).contains(&n.y))
+    });
+    if capture.0 != over {
+        capture.0 = over;
+    }
+}
+
+/// Stops painting a clade on the map once the biology sidebar is closed.
+fn clear_clade_when_overlays_closed(
+    open: Res<OpenOverlay>,
+    mut clade: ResMut<SelectedClade>,
+    mut colors_dirty: ResMut<ColorsDirty>,
+) {
+    if *open == OpenOverlay::None && clade.0.is_some() {
+        clade.0 = None;
+        colors_dirty.0 = true;
     }
 }
 
@@ -2885,9 +3259,21 @@ fn handle_bestiary_sort(
     }
 }
 
+/// "Show all species" on the hex-local Bestiary: clears the selected hex so the
+/// list rebuilds as the global catalog (`update_overlays` rebuilds when it sees
+/// `SelectedHex` change).
+fn handle_bestiary_show_all(
+    buttons: Query<&Interaction, (Changed<Interaction>, With<BestiaryShowAllButton>)>,
+    mut selected_hex: ResMut<SelectedHex>,
+) {
+    if buttons.iter().any(|i| *i == Interaction::Pressed) && selected_hex.0.is_some() {
+        selected_hex.0 = None;
+    }
+}
+
 /// Tree-row interactions: hover highlight, expand/collapse a branch, or open a
 /// leaf's species detail (the collapsible + clickable family tree).
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn handle_tree_clicks(
     mut rows: Query<
         (&Interaction, &TreeRowButton, &mut BackgroundColor),
@@ -2898,6 +3284,8 @@ fn handle_tree_clicks(
     mut selected_species: ResMut<SelectedSpecies>,
     mut detail_built: ResMut<SpeciesDetailBuilt>,
     mut history: ResMut<SpeciesHistory>,
+    mut clade: ResMut<SelectedClade>,
+    mut colors_dirty: ResMut<ColorsDirty>,
 ) {
     for (interaction, row, mut bg) in &mut rows {
         match interaction {
@@ -2907,6 +3295,9 @@ fn handle_tree_clicks(
                         expanded.0.insert(row.lineage_id);
                     }
                     built.0 = false; // re-lay-out the tree
+                    // Paint the whole clade's distribution on the map.
+                    clade.0 = Some(genesis_core::LineageSelector::Clade(row.lineage_id));
+                    colors_dirty.0 = true;
                 } else {
                     if let Some(old) = selected_species.0
                         && old != row.species_id
@@ -2915,6 +3306,8 @@ fn handle_tree_clicks(
                     }
                     selected_species.0 = Some(row.species_id);
                     detail_built.0 = false;
+                    clade.0 = Some(genesis_core::LineageSelector::Species(row.species_id));
+                    colors_dirty.0 = true;
                 }
             }
             Interaction::Hovered => bg.0 = Color::srgba(1.0, 1.0, 1.0, 0.08),
@@ -2989,6 +3382,7 @@ fn build_tree_content(
     view: &dyn genesis_core::BiologyView,
     timeline: Option<&WorldTimeline>,
     expanded: &std::collections::BTreeSet<u64>,
+    show_ranks: bool,
 ) {
     let year = timeline
         .and_then(|t| t.frames.get(t.current))
@@ -3061,14 +3455,20 @@ fn build_tree_content(
             ..default()
         })
         .with_children(|col| {
-            col.spawn(label(
-                &format!(
-                    "As of {}  ·  {living} living of {} lineages, back to LUCA  ·  ▸ expand · click a leaf for detail",
+            let header = if show_ranks {
+                format!(
+                    "Classification as of {}  ·  {} lineages by rank  ·  ▸ expand",
                     format_year(year),
                     tree.nodes.len()
-                ),
-                14.0,
-            ));
+                )
+            } else {
+                format!(
+                    "As of {}  ·  {living} living of {} lineages, back to LUCA  ·  ▸ expand · click a leaf",
+                    format_year(year),
+                    tree.nodes.len()
+                )
+            };
+            col.spawn(label(&header, 14.0));
             for (row, (idx, _d, prefix, _is_last)) in order.iter().enumerate() {
                 if row >= MAX_ROWS {
                     col.spawn((
@@ -3101,6 +3501,8 @@ fn build_tree_content(
                     node.name, node.rank, node.defining_trait, format_year(node.origin_year), extinct_note,
                 );
                 let prefix = prefix.clone();
+                let depth = *_d;
+                let rank = node.rank.clone();
                 col.spawn((
                     Button,
                     TreeRowButton {
@@ -3112,33 +3514,64 @@ fn build_tree_content(
                     Node {
                         flex_direction: FlexDirection::Row,
                         align_items: AlignItems::Center,
+                        // Classification indents by depth; the family tree uses
+                        // fixed-width branch-line cells instead.
+                        margin: if show_ranks {
+                            UiRect::left(Val::Px((depth.min(10) as f32) * 16.0))
+                        } else {
+                            UiRect::ZERO
+                        },
                         padding: UiRect::axes(Val::Px(2.0), Val::Px(1.0)),
                         ..default()
                     },
                     BackgroundColor(Color::NONE),
                 ))
                 .with_children(|r| {
-                    // Fixed-width branch-line cells (aligned regardless of font).
-                    for ch in &prefix {
+                    if show_ranks {
+                        // Rank-forward: "Order — Ventopus".
+                        let rank_label = capitalize_first(&rank);
                         r.spawn((
-                            label(&ch.to_string(), 13.0).0,
+                            label(&format!("{arrow}{rank_label}", ), 12.0).0,
+                            label("", 12.0).1,
+                            TextColor(Color::srgb(0.55, 0.70, 0.95)),
+                        ));
+                        r.spawn((
+                            label(&format!("  {}{dagger}", node.name), 13.0).0,
                             label("", 13.0).1,
-                            TextColor(guide_color),
-                            Node {
-                                width: Val::Px(13.0),
-                                ..default()
-                            },
+                            TextColor(color),
+                        ));
+                    } else {
+                        // Fixed-width branch-line cells (aligned regardless of font).
+                        for ch in &prefix {
+                            r.spawn((
+                                label(&ch.to_string(), 13.0).0,
+                                label("", 13.0).1,
+                                TextColor(guide_color),
+                                Node {
+                                    width: Val::Px(13.0),
+                                    ..default()
+                                },
+                            ));
+                        }
+                        r.spawn((
+                            label(&format!(" {arrow}{}{dagger}", node.name), 13.0).0,
+                            label("", 13.0).1,
+                            TextColor(color),
                         ));
                     }
-                    r.spawn((
-                        label(&format!(" {arrow}{}{dagger}", node.name), 13.0).0,
-                        label("", 13.0).1,
-                        TextColor(color),
-                    ));
                 });
             }
         });
     });
+}
+
+/// Capitalizes the first letter (for rank labels: "order" → "Order").
+fn capitalize_first(s: &str) -> String {
+    let mut c = s.chars();
+    match c.next() {
+        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+        None => String::new(),
+    }
 }
 
 /// [L] toggles the legend; the panel's `Display` follows `LegendVisible`.
@@ -3246,11 +3679,19 @@ fn handle_actions(
                 };
                 overlay_built.0 = false;
             }
+            UiAction::ToggleClassification => {
+                *open_overlay = if *open_overlay == OpenOverlay::Classification {
+                    OpenOverlay::None
+                } else {
+                    OpenOverlay::Classification
+                };
+                overlay_built.0 = false;
+            }
             // Handled by `handle_projection_toggle` (a dedicated system keeps
             // `handle_actions` under Bevy's 16-param limit).
             UiAction::ToggleProjection => {}
             // Handled by `handle_timeline_step_buttons` (same reason).
-            UiAction::ToggleFineStep => {}
+            UiAction::CycleStepSpan => {}
             UiAction::JumpToYear(year) => {
                 if let (Some(tl), Some(wr), Some(cd), Some(rd)) = (
                     timeline.as_mut(),
@@ -3266,13 +3707,13 @@ fn handle_actions(
                     {
                         tl.playing = false;
                         tl.current = idx;
-                        tl.alpha = 0.0;
+                        tl.following_edge = tl.at_edge();
                         apply_current_frame(tl, wr, cd, rd);
                     }
                 }
             }
             // Handled by `handle_timeline_step_buttons` (dedicated system:
-            // needs the FineStep resource; keeps `handle_actions` under
+            // needs the StepSpan resource; keeps `handle_actions` under
             // Bevy's param limit).
             UiAction::TimelineStep(_) => {}
             UiAction::PlayPause => {
@@ -3316,41 +3757,109 @@ mod tests {
         let mut params = genesis_core::parameters::WorldParameters::default();
         params.core.grid.subdivision_level = 5;
         let world = genesis_core::create_world(params).expect("world");
-        let frame = HistoryFrame::capture(&world.data);
+        let mut frame = HistoryFrame::capture(&world.data);
+        let base = frame.clone();
+        let mut buffer = Vec::new();
+        for i in 0..frames {
+            frame = base.clone();
+            frame.year = i as i64 * 10_000_000;
+            buffer.push(frame);
+        }
         WorldTimeline {
-            frames: vec![frame; frames],
+            frames: buffer,
             current: 0,
-            alpha: 0.0,
             playing: false,
             play_timer: Timer::from_seconds(0.25, TimerMode::Repeating),
             target_year: 1,
             complete: true,
             needs_apply: false,
+            following_edge: false,
         }
     }
 
     #[test]
-    fn fine_steps_accumulate_and_cross_frames() {
+    fn stepping_within_buffer_moves_one_frame_no_command() {
+        // Without a SimControl (offline), forward/backward just walk the real
+        // buffered frames; no command is issued and nothing is interpolated.
         let mut tl = timeline_with(3);
-        for _ in 0..4 {
-            step_timeline_sized(&mut tl, 1, true);
-        }
+        assert!(!step_view(&mut tl, 1, 500_000, None));
+        assert_eq!(tl.current, 1);
+        assert!(!step_view(&mut tl, 1, 500_000, None));
+        assert_eq!(tl.current, 2);
+        // At the edge with no worker: forward is a no-op (no command possible).
+        assert!(!step_view(&mut tl, 1, 500_000, None));
+        assert_eq!(tl.current, 2, "clamps at the live edge when offline");
+        // Backward walks the buffer and leaves the edge.
+        assert!(!step_view(&mut tl, -1, 500_000, None));
+        assert_eq!(tl.current, 1);
+        assert!(!tl.following_edge);
+        // Down to the start and clamp.
+        assert!(!step_view(&mut tl, -1, 500_000, None));
+        assert!(!step_view(&mut tl, -1, 500_000, None));
         assert_eq!(tl.current, 0);
-        assert!((tl.alpha - 0.8).abs() < 1e-3, "four fine steps = 0.8");
-        step_timeline_sized(&mut tl, 1, true);
-        assert_eq!(tl.current, 1, "fifth fine step lands exactly on frame 1");
-        assert_eq!(tl.alpha, 0.0, "exact frames render un-interpolated");
-        // Backward across the boundary.
-        step_timeline_sized(&mut tl, -1, true);
-        assert_eq!(tl.current, 0);
-        assert!((tl.alpha - 0.8).abs() < 1e-3);
-        // Coarse step snaps to whole frames and clears alpha.
-        step_timeline_sized(&mut tl, 1, false);
-        assert_eq!((tl.current, tl.alpha), (1, 0.0));
-        // Clamped at the ends, alpha cleared at the last frame.
-        for _ in 0..20 {
-            step_timeline_sized(&mut tl, 1, true);
+    }
+
+    #[test]
+    fn step_span_cycles_real_multiples_of_the_tectonic_tick() {
+        let mut span = StepSpan::default();
+        assert_eq!(span.years(), 500_000, "default is one real 500k tick");
+        assert_eq!(span.label(), "Step: 500 ky");
+        span.cycle();
+        assert_eq!(span.years(), 1_000_000);
+        span.cycle();
+        assert_eq!(span.years(), 2_000_000);
+        span.cycle();
+        assert_eq!((span.years(), span.label().as_str()), (10_000_000, "Step: 10 My"));
+        span.cycle();
+        assert_eq!(span.years(), 500_000, "wraps back to the finest tick");
+        // Every span is an exact multiple of the 500k tectonic tick, so the
+        // worker always lands on real computed states.
+        for s in STEP_SPANS_YEARS {
+            assert_eq!(s % 500_000, 0, "span {s} is not a whole tectonic tick");
         }
-        assert_eq!((tl.current, tl.alpha), (2, 0.0), "clamps at history's end");
+    }
+
+    #[test]
+    fn span_scales_within_buffer_jump_size() {
+        // A finely-captured buffer (500k spacing): the step span controls how
+        // many real frames a press crosses, so the selected size actually
+        // matters within the buffer (not always one frame).
+        let mut tl = timeline_with(21); // years 0, 0.5M, 1M, ... 10M
+        for f in tl.frames.iter_mut().enumerate() {
+            f.1.year = f.0 as i64 * 500_000;
+        }
+        // 2 My span jumps four 500k frames.
+        step_view(&mut tl, 1, 2_000_000, None);
+        assert_eq!(tl.frames[tl.current].year, 2_000_000);
+        // 500k span jumps one frame.
+        step_view(&mut tl, 1, 500_000, None);
+        assert_eq!(tl.frames[tl.current].year, 2_500_000);
+        // 10 My span clamps at the live edge.
+        step_view(&mut tl, 1, 10_000_000, None);
+        assert_eq!(tl.frames[tl.current].year, 10_000_000, "clamps at the edge");
+        // Backward by 1 My crosses two frames.
+        step_view(&mut tl, -1, 1_000_000, None);
+        assert_eq!(tl.frames[tl.current].year, 9_000_000);
+    }
+
+    #[test]
+    fn stepped_year_label_resolves_the_step() {
+        // The bug: billions-with-2-decimals floored at 10 My, so 500k/1M steps
+        // showed no change. The stepped formatter must render distinct labels
+        // for consecutive fine steps at billion scale.
+        let y = 4_500_000_000;
+        let a = format_year_stepped(y, 500_000);
+        let b = format_year_stepped(y + 500_000, 500_000);
+        assert_ne!(a, b, "500k step must change the label: {a} == {b}");
+        // Coarse span stays readable (few decimals).
+        assert_eq!(format_year_stepped(4_500_000_000, 10_000_000), "4.50 By");
+        // My scale resolves fine steps too.
+        assert_ne!(
+            format_year_stepped(5_000_000, 500_000),
+            format_year_stepped(5_500_000, 500_000)
+        );
+        // Civ-scale resolution shows exact grouped years.
+        assert_eq!(format_year_stepped(4_500_500_123, 1), "4,500,500,123 yr");
+        assert_eq!(group_thousands(1_000_000), "1,000,000");
     }
 }

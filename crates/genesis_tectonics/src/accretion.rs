@@ -488,8 +488,8 @@ pub fn maintain_crust_supply(
     if current >= target_cells {
         return;
     }
-    let budget = ((n as f64 * CONTINENTALIZATION_MAX_PER_TICK).ceil() as usize)
-        .min(target_cells - current);
+    let budget =
+        ((n as f64 * CONTINENTALIZATION_MAX_PER_TICK).ceil() as usize).min(target_cells - current);
 
     // Highest-standing oceanic crust first (descending elevation, HexId tie).
     let mut candidates: Vec<u32> = (0..n as u32)
@@ -512,8 +512,7 @@ pub fn maintain_crust_supply(
         let hex = HexId(cell);
         let mut did = false;
         modify_surface_at_world_hex(registry, data, cache, hex, tick_year, |feature| {
-            if feature.continental_crust
-                || feature.elevation_m < CONTINENTALIZATION_MIN_ELEVATION_M
+            if feature.continental_crust || feature.elevation_m < CONTINENTALIZATION_MIN_ELEVATION_M
             {
                 return;
             }

@@ -216,8 +216,7 @@ pub fn apply_land_erosion(
                 // flicker belt cells across the mountain band and break the
                 // §7.1 persistence guarantee; rooted belts get their variance
                 // from root structure, rootless interiors from the swell.
-                let floor = (crate::initial_terrain::CONTINENTAL_BASE_ELEVATION_M
-                    + feature.root_m)
+                let floor = (crate::initial_terrain::CONTINENTAL_BASE_ELEVATION_M + feature.root_m)
                     .min(pre);
                 if feature.elevation_m < floor {
                     feature.elevation_m = floor;
@@ -494,8 +493,7 @@ fn apply_hydrology_elevation_deltas(
                 // crustal-root floor but never below it (min(pre) so a
                 // tectonically thinned surface is never lifted back up).
                 let pre = feature.elevation_m;
-                let floor = (crate::initial_terrain::CONTINENTAL_BASE_ELEVATION_M
-                    + feature.root_m)
+                let floor = (crate::initial_terrain::CONTINENTAL_BASE_ELEVATION_M + feature.root_m)
                     .min(pre);
                 feature.elevation_m = (pre + delta).max(floor);
             } else {
@@ -578,8 +576,7 @@ pub fn apply_isostasy(
                     && feature.elevation_m > rebound_floor
                     && rebound_fraction > 0.0
                 {
-                    feature.elevation_m +=
-                        (target - feature.elevation_m) * rebound_fraction;
+                    feature.elevation_m += (target - feature.elevation_m) * rebound_fraction;
                 }
             } else if feature.elevation_m < sea_level_m
                 && feature.elevation_m > baseline
@@ -625,7 +622,12 @@ fn apply_ice_load_isostasy(
             let load = loads[i];
             let freeboard = if crust[i] {
                 CONTINENTAL_FREEBOARD_M
-                    + crate::epeirogeny::target_offset_at_world(data, registry, cache, HexId(i as u32))
+                    + crate::epeirogeny::target_offset_at_world(
+                        data,
+                        registry,
+                        cache,
+                        HexId(i as u32),
+                    )
             } else {
                 0.0
             };

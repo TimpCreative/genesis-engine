@@ -185,10 +185,7 @@ fn bank_fossil_root(plate: &mut crate::plate::Plate, hex: HexId, root_m: f32) {
     if !feature.continental_crust {
         return;
     }
-    feature.root_m = feature
-        .root_m
-        .max(root_m)
-        .min(crate::elevation::ROOT_MAX_M);
+    feature.root_m = feature.root_m.max(root_m).min(crate::elevation::ROOT_MAX_M);
     let min_surface = CONTINENTAL_BASE_ELEVATION_M + feature.root_m * FOSSIL_SURFACE_OVER_ROOT;
     if feature.elevation_m < min_surface {
         feature.elevation_m = min_surface;

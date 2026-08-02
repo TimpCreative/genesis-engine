@@ -425,6 +425,41 @@ pub fn heatmap_color(v: f32) -> Color {
     )
 }
 
+/// Paints a selected clade's distribution over the base map. Where the clade is
+/// **absent** the hex dims to a dark, desaturated slate (terrain stays faintly
+/// legible for orientation); where it is **present** the hex glows on a
+/// bright green → yellow-green → gold ramp whose brightness tracks concentration
+/// — brilliant where the lineage is densest, fading to a dimmer-but-still-vivid
+/// green where sparse. High contrast against the dark background makes the range
+/// read at a glance (the previous version lerped toward a near-black heatmap, so
+/// even occupied hexes looked dark).
+pub fn clade_tint(base: Color, concentration: f32) -> Color {
+    let b = base.to_srgba();
+    let lum = 0.30 * b.red + 0.59 * b.green + 0.11 * b.blue;
+    if concentration <= 0.0 {
+        // Absent: dim, slightly cool slate — dark enough that the glow pops, but
+        // terrain shape is still discernible underneath.
+        let g = 0.06 + 0.17 * lum;
+        return Color::srgb(g, g, g * 1.15);
+    }
+    // Present: brightness follows concentration. `concentration` is (fraction of
+    // guilds filled × richness), so it clusters low — a gentle gamma lifts it
+    // into the vivid range without collapsing the gradient (highs stay clearly
+    // brighter than lows).
+    let e = concentration.clamp(0.0, 1.0).powf(0.6);
+    // All three stops sit well above the background luminance, so even the low
+    // end reads unambiguously as "the clade lives here."
+    const LOW: [f32; 3] = [0.20, 0.52, 0.30]; // sparse — dim vivid green
+    const MID: [f32; 3] = [0.52, 0.86, 0.26]; // common — yellow-green
+    const HIGH: [f32; 3] = [1.00, 0.95, 0.55]; // densest — brilliant gold
+    let rgb = if e < 0.5 {
+        lerp_rgb(LOW, MID, e / 0.5)
+    } else {
+        lerp_rgb(MID, HIGH, (e - 0.5) / 0.5)
+    };
+    Color::srgb(rgb[0], rgb[1], rgb[2])
+}
+
 /// Doc 08 §12.1 water-aware terrain ramp.
 fn water_aware_elevation_color(data: &WorldData, hex_idx: usize, is_pentagon: bool) -> Color {
     let elev = data.elevation_mean[hex_idx];
@@ -532,22 +567,25 @@ pub fn soil_class_color(class: genesis_core::data::SoilClass, fertility: f32) ->
     Color::srgb(r * (1.0 - 0.3 * fertility), g * (0.7 + 0.3 * fertility), b)
 }
 
-/// Distinct fill per Köppen-like regime (Doc 07 §10), loosely following the
-/// conventional Köppen map palette.
+/// Distinct fill per climate regime (Doc 07 §10), using **ecological** colors a
+/// layperson expects — lush green in the wet tropics, sandy tan in deserts, dark
+/// conifer green in the boreal north, white at the poles — rather than the
+/// Köppen convention (where the tropics are blue), which read as confusing on a
+/// physical-looking map.
 pub fn regime_to_color(regime: genesis_core::data::ClimateRegimePlaceholder) -> Color {
     use genesis_core::data::ClimateRegimePlaceholder as R;
     let (r, g, b) = match regime {
         R::Unset => (0.25, 0.25, 0.25),
-        R::Tropical => (0.00, 0.35, 0.85),
-        R::Subtropical => (0.25, 0.60, 0.95),
-        R::HotDesert => (0.95, 0.35, 0.20),
-        R::ColdDesert => (0.95, 0.65, 0.45),
-        R::Mediterranean => (0.95, 0.85, 0.20),
-        R::Temperate => (0.35, 0.75, 0.30),
-        R::ContinentalCool => (0.15, 0.55, 0.35),
-        R::Boreal => (0.40, 0.65, 0.75),
-        R::Tundra => (0.70, 0.75, 0.80),
-        R::Polar => (0.92, 0.94, 0.97),
+        R::Tropical => (0.11, 0.50, 0.20),      // lush rainforest green
+        R::Subtropical => (0.34, 0.62, 0.26),   // warm green
+        R::HotDesert => (0.85, 0.74, 0.47),     // sand tan
+        R::ColdDesert => (0.76, 0.71, 0.52),    // pale khaki steppe
+        R::Mediterranean => (0.66, 0.66, 0.30), // olive / dry gold
+        R::Temperate => (0.30, 0.62, 0.30),     // grass green
+        R::ContinentalCool => (0.22, 0.50, 0.28), // deeper forest green
+        R::Boreal => (0.16, 0.40, 0.32),        // dark conifer green
+        R::Tundra => (0.62, 0.64, 0.56),        // grey-brown
+        R::Polar => (0.92, 0.94, 0.97),         // snow / ice white
     };
     Color::srgb(r, g, b)
 }
@@ -879,6 +917,62 @@ mod tests {
         assert!(
             (rgb[0] - 0.85).abs() < 0.05 && (rgb[1] - 0.82).abs() < 0.05,
             "SaltFlat body must stay pale tan, got {rgb:?}"
+        );
+    }
+
+    #[test]
+    fn clade_tint_present_is_bright_and_graded() {
+        let base = Color::srgb(0.3, 0.4, 0.5);
+        let absent = color_to_rgb(clade_tint(base, 0.0));
+        let sparse = color_to_rgb(clade_tint(base, 0.08));
+        let common = color_to_rgb(clade_tint(base, 0.35));
+        let dense = color_to_rgb(clade_tint(base, 0.9));
+
+        // Any presence must be clearly brighter than the dimmed background.
+        assert!(
+            luminance(sparse) > luminance(absent) + 0.15,
+            "sparse presence must pop over background: {} vs {}",
+            luminance(sparse),
+            luminance(absent)
+        );
+        // Brightness rises monotonically with concentration (a real gradient).
+        assert!(
+            luminance(sparse) < luminance(common) && luminance(common) < luminance(dense),
+            "concentration must grade brighter: {} < {} < {}",
+            luminance(sparse),
+            luminance(common),
+            luminance(dense)
+        );
+        // The densest end glows warm (not the old near-black indigo).
+        assert!(
+            dense[0] > 0.7 && dense[1] > 0.7,
+            "peak concentration must be brilliant, got {dense:?}"
+        );
+        // Absent stays dark so the range reads at a glance.
+        assert!(
+            luminance(absent) < 0.3,
+            "absent hexes must stay dim, got {}",
+            luminance(absent)
+        );
+    }
+
+    #[test]
+    fn regime_tropical_is_green_not_blue() {
+        use genesis_core::data::ClimateRegimePlaceholder as R;
+        let trop = color_to_rgb(regime_to_color(R::Tropical));
+        assert!(
+            trop[1] > trop[2] && trop[1] > trop[0],
+            "tropical regime must read green, not blue: {trop:?}"
+        );
+        let desert = color_to_rgb(regime_to_color(R::HotDesert));
+        assert!(
+            desert[0] > desert[2] && desert[1] > desert[2],
+            "hot desert must read sandy tan, not white/blue: {desert:?}"
+        );
+        let polar = color_to_rgb(regime_to_color(R::Polar));
+        assert!(
+            polar.iter().all(|&c| c > 0.85),
+            "polar must read snow-white: {polar:?}"
         );
     }
 

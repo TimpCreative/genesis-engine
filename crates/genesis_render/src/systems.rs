@@ -283,19 +283,22 @@ pub fn update_window_title(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn update_hex_colors(
     world_res: Option<Res<WorldResource>>,
     render_mode: Res<CurrentRenderMode>,
     biology: Option<Res<ActiveBiologyView>>,
+    selected_clade: Res<crate::resources::SelectedClade>,
     mut colors_dirty: ResMut<ColorsDirty>,
     index: Res<HexMeshIndex>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
-    // Re-tint when the mode changes, the colors are flagged dirty, or the biology
-    // view was (re)registered (so biology layers fill in once the world loads).
+    // Re-tint when the mode changes, the colors are flagged dirty, the biology
+    // view was (re)registered, or the painted clade changed.
     if !render_mode.is_changed()
         && !colors_dirty.0
         && !biology.as_ref().is_some_and(|b| b.is_changed())
+        && !selected_clade.is_changed()
     {
         return;
     }
@@ -313,6 +316,7 @@ pub fn update_hex_colors(
     let grid = &data.grid;
     let n = data.cell_count() as usize;
     let bio = biology.as_ref().map(|b| b.0.as_ref());
+    let clade = selected_clade.0;
 
     for chunk in &index.chunks {
         let Some(mesh) = meshes.get_mut(&chunk.mesh) else {
@@ -328,9 +332,11 @@ pub fn update_hex_colors(
             if idx >= n {
                 continue;
             }
-            let color = hex_color_for_mode(data, idx, render_mode.0, grid.is_pentagon(hex), bio)
-                .to_linear()
-                .to_f32_array();
+            let mut c = hex_color_for_mode(data, idx, render_mode.0, grid.is_pentagon(hex), bio);
+            if let (Some(sel), Some(b)) = (clade, bio) {
+                c = crate::color::clade_tint(c, b.clade_concentration(data, hex, sel));
+            }
+            let color = c.to_linear().to_f32_array();
             let start = base as usize;
             for v in &mut colors[start..start + count as usize] {
                 *v = color;
@@ -351,6 +357,7 @@ pub fn render_world_if_dirty(
     projection_mode: Res<CurrentProjection>,
     camera_state: Res<CameraState>,
     biology: Option<Res<ActiveBiologyView>>,
+    selected_clade: Res<crate::resources::SelectedClade>,
     mut world_dirty: ResMut<WorldDirty>,
     mut cache: ResMut<HexEntityCache>,
     mut index: ResMut<HexMeshIndex>,
@@ -446,9 +453,11 @@ pub fn render_world_if_dirty(
         };
 
         let idx = hex.0 as usize;
-        let color = hex_color_for_mode(data, idx, render_mode.0, grid.is_pentagon(hex), bio)
-            .to_linear()
-            .to_f32_array();
+        let mut c = hex_color_for_mode(data, idx, render_mode.0, grid.is_pentagon(hex), bio);
+        if let (Some(sel), Some(b)) = (selected_clade.0, bio) {
+            c = crate::color::clade_tint(c, b.clade_concentration(data, hex, sel));
+        }
+        let color = c.to_linear().to_f32_array();
 
         // Triangle fan: center vertex + ring, offset into the chunk buffers.
         let base = positions.len() as u32;

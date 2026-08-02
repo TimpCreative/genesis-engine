@@ -266,7 +266,8 @@ pub fn apply_erosion(
                         hex_area,
                         &mut deposited_m3,
                     );
-                    ocean_sink_m3 += (remaining + wash) * (1.0 - DELTA_RETAINED_FRACTION) * hex_area;
+                    ocean_sink_m3 +=
+                        (remaining + wash) * (1.0 - DELTA_RETAINED_FRACTION) * hex_area;
                     data.hydro_flags[i] |= HydroFlags::DELTA;
                 } else {
                     ocean_sink_m3 += (remaining + wash) * hex_area;

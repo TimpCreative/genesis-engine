@@ -90,6 +90,11 @@ const TAB_ACTIVE: Color = Color::srgb(0.28, 0.42, 0.62);
 const INSPECTOR_WIDTH: f32 = 320.0;
 /// Height reserved for the Viewing-screen top bar, so the dock sits below it.
 pub const TOP_BAR_CLEARANCE: f32 = 48.0;
+/// Height reserved for the bottom timeline strip (year readout + transport row +
+/// era bar ≈ 82 px, plus a gap), so right-rail docks clear it instead of hiding
+/// their lowest content behind it. Used by the hex inspector and the biology
+/// sidebars alike.
+pub const BOTTOM_BAR_CLEARANCE: f32 = 94.0;
 
 type TabButtonInteraction<'w, 's> = Query<
     'w,
@@ -157,7 +162,7 @@ pub fn spawn_hex_inspect_ui(mut commands: Commands) {
                 // Clear the top bar (layer tabs + Tree/Bestiary buttons) so the
                 // dock only covers the map, never the fixed chrome.
                 top: Val::Px(TOP_BAR_CLEARANCE),
-                bottom: Val::Px(56.0),
+                bottom: Val::Px(BOTTOM_BAR_CLEARANCE),
                 width: Val::Px(INSPECTOR_WIDTH),
                 flex_direction: FlexDirection::Column,
                 padding: UiRect::all(Val::Px(10.0)),
