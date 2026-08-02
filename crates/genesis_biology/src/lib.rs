@@ -28,7 +28,8 @@ pub use biome::{assign_biomes, biome_name};
 pub use core_graph::core_morphospace;
 pub use events::flush_events_to_branch;
 pub use evolution::{
-    NeutralPayoff, SelectivePayoff, WalkParams, biased_walk_step, candidate_weights,
+    EnvProfile, EnvironmentPayoff, NeutralPayoff, SelectivePayoff, WalkParams, biased_walk_step,
+    candidate_weights,
 };
 pub use guild::{Guild, GuildRoster, core_guilds, fills_guild};
 pub use layer::{BiologyLayer, DEFAULT_BIOLOGY_TICK_YEARS};

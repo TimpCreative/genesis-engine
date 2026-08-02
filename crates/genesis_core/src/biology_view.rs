@@ -113,6 +113,14 @@ pub struct SpeciesDetail {
     pub classification: Vec<(String, String)>,
 }
 
+/// What lineage to paint on the map. `Species` is a `SpeciesPeek::species_id`
+/// (== name_seed); `Clade` is a `TreeNodePeek::id` (paints the whole subtree).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LineageSelector {
+    Species(u64),
+    Clade(u64),
+}
+
 /// A species' trophic neighborhood — the "who eats whom" web (Doc 09 §5.3),
 /// materialized on demand for its region.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -178,5 +186,17 @@ pub trait BiologyView: Send + Sync {
     /// Ventopus" (Doc 09 §9). Default `None`.
     fn dominant_clade(&self, _year: WorldYear) -> Option<String> {
         None
+    }
+
+    /// The species most closely related to `species_id` — its living siblings and
+    /// cousins in the tree of life (Doc 09 §9). Default empty.
+    fn relatives(&self, _species_id: u64, _year: WorldYear) -> Vec<SpeciesPeek> {
+        Vec::new()
+    }
+
+    /// Presence/strength of `target` (or its descendants) at `hex` ∈ [0,1] — for
+    /// painting a clade's distribution on the map. 0.0 = absent. Default `0.0`.
+    fn clade_concentration(&self, _data: &WorldData, _hex: HexId, _target: LineageSelector) -> f32 {
+        0.0
     }
 }

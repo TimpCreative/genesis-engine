@@ -49,6 +49,105 @@ impl SelectivePayoff for NeutralPayoff {
     }
 }
 
+/// A region's representative environment (Doc 09B), sampled from its hexes, used
+/// to bias which adaptations a clade evolves there.
+#[derive(Clone, Copy, Debug)]
+pub struct EnvProfile {
+    pub temperature_c: f32,
+    /// 0 wet … 1 arid (land only).
+    pub aridity: f32,
+    /// 0 land … 1 all-ocean.
+    pub marine_fraction: f32,
+    /// 0 poor … 1 rich.
+    pub nutrient: f32,
+    /// 0 stable … 1 heavily disturbed (ice/volcanism).
+    pub disturbance: f32,
+    pub co2_ppm: f32,
+    /// Seed-only placeholder: the payoff is exactly `1.0`, so the pure-seed path
+    /// is byte-identical to the old `NeutralPayoff` (determinism preserved).
+    pub neutral: bool,
+}
+
+impl EnvProfile {
+    /// A neutral profile — every environmental multiplier collapses to 1.0.
+    pub fn neutral() -> Self {
+        Self {
+            temperature_c: 15.0,
+            aridity: 0.5,
+            marine_fraction: 0.5,
+            nutrient: 0.5,
+            disturbance: 0.0,
+            co2_ppm: 280.0,
+            neutral: true,
+        }
+    }
+}
+
+/// Environment-aware selection (Doc 09B): biases trait choice toward the region's
+/// climate — cold → thermoregulation/insulation/large body; arid → water-conserving
+/// integument; marine → swimming/filter-feeding (land traits suppressed); high-CO₂
+/// → producers; nutrient-poor → efficiency. All multipliers are ≥ a small floor so
+/// no region is ever starved of legal steps (the tree can't be truncated).
+pub struct EnvironmentPayoff<'a> {
+    graph: &'a TraitGraph,
+    p: EnvProfile,
+}
+
+impl<'a> EnvironmentPayoff<'a> {
+    pub fn new(graph: &'a TraitGraph, p: EnvProfile) -> Self {
+        Self { graph, p }
+    }
+}
+
+impl SelectivePayoff for EnvironmentPayoff<'_> {
+    fn payoff(&self, step: TraitId, _facts: &FactContext) -> f32 {
+        if self.p.neutral {
+            return 1.0;
+        }
+        use crate::morphospace::{TraitAxis, TraitTag};
+        let n = self.graph.node(step);
+        let name = n.name.as_str();
+        let has = |subs: &[&str]| subs.iter().any(|s| name.contains(s));
+        let cold = ((12.0 - self.p.temperature_c) / 20.0).clamp(0.0, 1.0);
+        let arid = self.p.aridity;
+        let marine = self.p.marine_fraction;
+        let co2 = ((self.p.co2_ppm - 280.0) / 400.0).clamp(0.0, 1.0);
+        let poor = 1.0 - self.p.nutrient;
+
+        let mut w = 1.0f32;
+        if n.axis == TraitAxis::Thermoregulation {
+            w *= 1.0 + 1.5 * cold;
+        }
+        if has(&["fur", "feather", "blubber", "insulat"]) {
+            w *= 1.0 + 1.5 * cold;
+        }
+        if has(&["size_large", "size_mega"]) {
+            w *= 1.0 + 0.4 * cold;
+        }
+        if has(&["cuticle", "bark", "scale", "shell", "spores", "seed_analog"]) {
+            w *= 1.0 + 1.2 * arid * (1.0 - marine);
+        }
+        if has(&["swim", "gill", "fin", "jet", "filter"]) {
+            w *= 1.0 + 1.5 * marine;
+        }
+        if has(&["limbed_walk", "powered_flight", "fur", "feather"]) {
+            w *= 1.0 - 0.6 * marine;
+        }
+        if n.tags.contains(&TraitTag::Autotroph)
+            || n.tags.contains(&TraitTag::ProducerBasin)
+            || has(&["photosynth"])
+        {
+            w *= 1.0 + 1.0 * co2;
+        }
+        // Nutrient-poor regions penalize expensive traits, reward frugal metabolisms.
+        w *= 1.0 - 0.5 * poor * (n.base_energy_cost.max(0.0) / 2.0).min(1.0);
+        if has(&["mixotrophy", "absorptive_decomposition", "detritivore"]) {
+            w *= 1.0 + 0.6 * poor;
+        }
+        w.max(0.05)
+    }
+}
+
 /// The fact context a walk evaluates against: `env` scalars plus the genome's
 /// traits.
 fn walk_facts(genome: &TraitSet, env: &FactContext) -> FactContext {

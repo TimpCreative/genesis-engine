@@ -206,6 +206,7 @@ pub(crate) const NODES: &[N] = &[
             "core:chitin",
             "core:mineral_endoskeleton",
             "core:mineral_exoskeleton",
+            "core:heterotrophy",
         ],
         proximity: &[
             ("core:bark", 0.6),
@@ -235,7 +236,7 @@ pub(crate) const NODES: &[N] = &[
         name: "core:mineral_endoskeleton",
         axis: Structure,
         tier: 1,
-        prerequisites: &["core:differentiated_tissue"],
+        prerequisites: &["core:heterotrophy", "core:differentiated_tissue"],
         exclusions: &["core:mineral_exoskeleton", "core:cellulose_wall"],
         proximity: &[
             ("core:limbed_walk", 0.5),
@@ -448,7 +449,7 @@ pub(crate) const NODES: &[N] = &[
         name: "core:nerve_net",
         axis: Nervous,
         tier: 2,
-        prerequisites: &["core:multicellular"],
+        prerequisites: &["core:heterotrophy", "core:multicellular"],
         exclusions: &[],
         proximity: &[
             ("core:ganglia", 0.7),
@@ -968,14 +969,16 @@ mod tests {
         );
     }
 
-    /// A greedy walk from a chemosynthetic microbial root reaches multicellular
-    /// and a nervous system — the progression Doc 09 §17 #2 expects.
+    /// A walk from a heterotrophic (animal-lineage) root reaches multicellular
+    /// and a nervous system — the progression Doc 09 §17 #2 expects. Nerves are
+    /// gated on `heterotrophy` now (only animals get them), so the root carries it.
     #[test]
     fn walk_reaches_multicellularity_and_nerves() {
         let g = core_morphospace();
         let mut genome: TraitSet = [
             g.id_of("core:chemosynthesis").unwrap(),
             g.id_of("core:unicellular").unwrap(),
+            g.id_of("core:heterotrophy").unwrap(),
         ]
         .into_iter()
         .collect();

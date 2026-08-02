@@ -9,6 +9,8 @@
 //! not only after generation finishes); the exact simulated ledger refines the
 //! origin years if it arrives. Everything is deterministic (Doc 09 §8.3).
 
+use std::sync::OnceLock;
+
 use genesis_core::biology_view::{
     Assemblage, BiologyView, FoodWeb, GuildSummary, LifeEventCategory, LifeEventPip, SpeciesDetail,
     SpeciesPeek, TreeNodePeek, TreePeek,
@@ -32,6 +34,8 @@ const BIOMASS_FULL: f32 = 1100.0; // matches population::TROPHIC_TOTAL_SCALE
 const DISPLAY_SPECIES_PER_GUILD: u32 = 6;
 /// Max prey/predator/competitor species shown in a food-web panel.
 const FOOD_WEB_LIMIT: usize = 8;
+/// Max related species (siblings/cousins) shown in the detail panel.
+const RELATIVES_LIMIT: usize = 8;
 const SPECIES_S_MAX: u32 = 400;
 const SPECIES_K: f32 = 0.35;
 /// Fallback multicellular-radiation year used when the adapter builds its own
@@ -45,6 +49,10 @@ pub struct GeneratedBiologyView {
     roster: GuildRoster,
     namer: Namer,
     ledger: Option<Ledger>,
+    /// Lazily-built spatial range model (Doc 09 §6.4 redesign). A pure function
+    /// of `(seed, ledger, first-queried WorldData)`, primed once on first spatial
+    /// query — so it stays deterministic while living behind `&self`.
+    range: OnceLock<RangeIndex>,
 }
 
 impl GeneratedBiologyView {
@@ -67,6 +75,7 @@ impl GeneratedBiologyView {
             roster,
             namer: Namer::load(NamingScheme::Latin),
             ledger: Some(ledger),
+            range: OnceLock::new(),
         }
     }
 
@@ -79,25 +88,124 @@ impl GeneratedBiologyView {
     }
 
     fn realm_at(&self, data: &WorldData, i: usize) -> Realm {
-        let water = data.water_level_m.get(i).copied().unwrap_or(WATER_NONE);
-        if !(water.is_finite() && water > data.elevation_mean[i]) {
-            return Realm::Terrestrial;
+        realm_at_hex(data, i)
+    }
+
+    /// A lineage's presence field at hex `i` ∈ [0,1] — the heart of the range
+    /// model (Doc 09 §6.4 redesign). Cosmopolitan lineages (`region == None`,
+    /// e.g. the basal seeds) blanket every habitable hex, graded only by
+    /// habitability. An endemic lineage's presence is `proximity × climate ×
+    /// habitability`, where proximity is a great-circle falloff from its frozen
+    /// birthplace (so ranges wrap the globe and feather at the edges) and climate
+    /// is a Gaussian match of the hex's temperature/moisture to the birthplace's
+    /// (so ranges bend along isotherms/isohyets, live, as the world changes).
+    fn presence(&self, idx: &RangeIndex, data: &WorldData, i: usize, l: &LineageRecord) -> f32 {
+        let hab = data.biotic_richness.get(i).copied().unwrap_or(0.0);
+        if hab <= 0.0 || data.biome.get(i).map(|b| b.0) == Some(BARREN_ID) {
+            return 0.0;
         }
-        let freshwater = data
-            .water_body_id
-            .get(i)
-            .copied()
-            .and_then(|id| data.water_bodies.get(&id))
-            .map(|b| {
-                use genesis_core::data::WaterBodyKind::{Lake, SaltLake};
-                matches!(b.kind, Lake | SaltLake)
-            })
-            .unwrap_or(false);
-        if freshwater {
-            Realm::Freshwater
-        } else {
-            Realm::Marine
+        if l.region.is_none() {
+            return hab; // cosmopolitan blanket
         }
+        let lid = l.id.0 as usize;
+        let o = idx.origin_dir[lid];
+        let d = data.grid.cell_center_direction(HexId(i as u32));
+        // Cosine of the great-circle angle between hex and birthplace (wraps the
+        // sphere and the poles with no seam); 1 - cos ≈ θ²/2, so `prox` is
+        // Gaussian in angular distance.
+        let c = o[0] * d[0] as f32 + o[1] * d[1] as f32 + o[2] * d[2] as f32;
+        let prox = (-RANGE_K_PROX * (1.0 - c)).exp();
+        let dt = (data.temperature_mean[i] - idx.t0[lid]) / RANGE_SIGMA_T;
+        let dm = (moisture(data.precipitation[i]) - idx.m0[lid]) / RANGE_SIGMA_M;
+        let clim = (-(dt * dt + dm * dm)).exp();
+        prox * clim * hab
+    }
+
+    /// The single shared predicate: every lineage whose range covers hex `i`,
+    /// grouped by trophic guild in cascade order and passed through the exact same
+    /// occupancy contingency the old `occupied_guild_names` used. All three
+    /// spatial consumers (occupied guilds, the Bestiary assemblage, and the map
+    /// paint) route through this, so the map provably matches the species list.
+    fn present_lineages_at(&self, data: &WorldData, i: usize) -> Vec<PresentLineage<'_>> {
+        let Some(ledger) = self.ledger.as_ref() else {
+            return Vec::new();
+        };
+        let r = data.biotic_richness.get(i).copied().unwrap_or(0.0);
+        if r <= 0.0 || data.biome.get(i).map(|b| b.0) == Some(BARREN_ID) {
+            return Vec::new();
+        }
+        let roster = &self.roster;
+        let idx = self
+            .range
+            .get_or_init(|| RangeIndex::build(ledger, data, roster));
+        let year = data.current_year;
+        let realm = realm_at_hex(data, i);
+        let order = cascade_order(realm);
+        let mut out: Vec<PresentLineage<'_>> = Vec::new();
+        let mut occupied: Vec<&'static str> = Vec::new();
+        for (k, &gname) in order.iter().enumerate() {
+            let Some(gid) = roster.iter().find(|g| g.name == gname).map(|g| g.id) else {
+                continue;
+            };
+            let Some(bucket) = idx.by_guild.get(&gid) else {
+                continue;
+            };
+            let mut hits: Vec<PresentLineage<'_>> = Vec::new();
+            for &lid in bucket {
+                let l = &ledger.lineages[lid as usize];
+                if !l.alive_at(year) {
+                    continue;
+                }
+                let s = self.presence(idx, data, i, l);
+                // Cosmopolitan seeds are present on any habitable hex (preserving
+                // the old blanket); endemics must clear the soft range threshold.
+                let present = if l.region.is_none() {
+                    s > 0.0
+                } else {
+                    s >= RANGE_TAU
+                };
+                if present {
+                    hits.push(PresentLineage {
+                        guild_name: gname,
+                        lineage: l,
+                        strength: s,
+                    });
+                }
+            }
+            if hits.is_empty() {
+                continue;
+            }
+            // Identical trophic contingency to the old occupancy cascade: producer
+            // + decomposer are guaranteed; herbivores need producers and enough R;
+            // predators need herbivores and more R (see the old view.rs:141-148).
+            let allowed = match k {
+                0 | 1 => true,
+                2 => r > 0.15 && occupied.contains(&order[0]),
+                _ => r > 0.35 && occupied.contains(&order[2]),
+            };
+            if !allowed {
+                continue;
+            }
+            occupied.push(gname);
+            // Place-specific endemics lead (the interesting, distinct-per-area
+            // species), then strongest presence first; the cosmopolitan basal
+            // seeds sort last as filler so every hex still lists *something*
+            // without every list leading with the same generic organism.
+            hits.sort_by(|a, b| {
+                a.lineage
+                    .region
+                    .is_none()
+                    .cmp(&b.lineage.region.is_none())
+                    .then_with(|| {
+                        b.strength
+                            .partial_cmp(&a.strength)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                    .then(a.lineage.name_seed.cmp(&b.lineage.name_seed))
+            });
+            out.extend(hits);
+        }
+        out
     }
 
     fn occupied_guild_names(&self, data: &WorldData, i: usize) -> Vec<&'static str> {
@@ -105,10 +213,9 @@ impl GeneratedBiologyView {
         if r <= 0.0 || data.biome.get(i).map(|b| b.0) == Some(BARREN_ID) {
             return Vec::new();
         }
-        let realm = self.realm_at(data, i);
-        let order = cascade_order(realm);
-        let Some(ledger) = &self.ledger else {
+        if self.ledger.is_none() {
             // Pre-ledger fallback: a plain richness cascade.
+            let order = cascade_order(self.realm_at(data, i));
             let budget = (occupied_guild_count(r) as usize).max(1);
             return order
                 .iter()
@@ -116,36 +223,17 @@ impl GeneratedBiologyView {
                 .copied()
                 .filter(|name| self.roster.iter().any(|g| g.name == *name))
                 .collect();
-        };
-        // Real occupancy (Doc 09 §4.3): a guild is occupied only if the region
-        // actually has an extant lineage that fills it. Producers/decomposers are
-        // guaranteed; higher trophic levels are contingent on their prey guild
-        // being occupied and enough energy (R) to support them.
-        let (lat, lon) = data.grid.center_lat_lon(HexId(i as u32));
-        let region = geo_region(lat, lon);
-        let year = data.current_year;
-        let mut occupied: Vec<&'static str> = Vec::new();
-        for (idx, name) in order.iter().enumerate() {
-            let Some(gid) = self.roster.iter().find(|g| g.name == *name).map(|g| g.id) else {
-                continue;
-            };
-            if ledger
-                .extant_in_guild_region(gid, region, year)
-                .next()
-                .is_none()
-            {
-                continue; // no lineage fills this role here
-            }
-            let allowed = match idx {
-                0 | 1 => true,                                 // producer, decomposer: guaranteed
-                2 => r > 0.15 && occupied.contains(&order[0]), // herbivore needs producers
-                _ => r > 0.35 && occupied.contains(&order[2]), // predator needs herbivores
-            };
-            if allowed {
-                occupied.push(*name);
+        }
+        // Real spatial occupancy (Doc 09 §4.3 + §6.4 redesign): the distinct
+        // guilds whose range actually covers this hex, via the shared predicate —
+        // so this list matches the Bestiary assemblage and the map paint exactly.
+        let mut names: Vec<&'static str> = Vec::new();
+        for p in self.present_lineages_at(data, i) {
+            if !names.contains(&p.guild_name) {
+                names.push(p.guild_name);
             }
         }
-        occupied
+        names
     }
 
     /// A lineage's display name: "Root (LUCA)", a Latin binomial for a species
@@ -244,41 +332,35 @@ impl GeneratedBiologyView {
 
     fn assemblage_from_ledger(&self, ledger: &Ledger, data: &WorldData, hex: HexId) -> Assemblage {
         let i = hex.0 as usize;
-        let year = data.current_year;
         let r = self.richness_at(data, hex);
         let biome = self.biome_name(self.biome_at(data, hex));
-        let (lat, lon) = data.grid.center_lat_lon(hex);
-        let region = geo_region(lat, lon);
-        let guilds = self.occupied_guild_names(data, i);
+        // The species whose ranges actually cover this hex (strongest first per
+        // guild), via the shared predicate — so the Bestiary here is exactly what
+        // the map paints. Capped per guild for a readable list.
+        let present = self.present_lineages_at(data, i);
+        let total = species_in_guild(r, SPECIES_S_MAX, SPECIES_K);
         let mut species = Vec::new();
-        for gname in &guilds {
-            let Some(gid) = self.roster.iter().find(|g| g.name == *gname).map(|g| g.id) else {
-                continue;
-            };
-            // Endemic: only this region's clades of the guild (Doc 09 §6.4), so
-            // the assemblage is coherent within a region and distinct across them.
-            let mut lineages: Vec<&LineageRecord> =
-                ledger.extant_in_guild_region(gid, region, year).collect();
-            if lineages.is_empty() {
+        let mut guild_names: Vec<&'static str> = Vec::new();
+        let mut per_guild: std::collections::BTreeMap<&'static str, usize> = Default::default();
+        for p in &present {
+            let shown = per_guild.entry(p.guild_name).or_insert(0);
+            if *shown >= DISPLAY_SPECIES_PER_GUILD as usize {
                 continue;
             }
-            lineages.sort_by_key(|l| l.name_seed);
-            let total = species_in_guild(r, SPECIES_S_MAX, SPECIES_K);
-            let shown = (total.min(DISPLAY_SPECIES_PER_GUILD) as usize).min(lineages.len());
-            let offset = (mix(self.seed, region as u64) as usize) % lineages.len();
-            for k in 0..shown {
-                let l = lineages[(offset + k) % lineages.len()];
-                let family = self.family_name(ledger, l);
-                let description = format!(
-                    "A {biome} {gname} (family {family}); ~{total} species share its guild here."
-                );
-                species.push(self.peek_from_lineage(ledger, l, gname, description));
+            *shown += 1;
+            if !guild_names.contains(&p.guild_name) {
+                guild_names.push(p.guild_name);
             }
+            let gname = p.guild_name;
+            let family = self.family_name(ledger, p.lineage);
+            let description =
+                format!("A {biome} {gname} (family {family}); ~{total} species share its guild here.");
+            species.push(self.peek_from_lineage(ledger, p.lineage, gname, description));
         }
         Assemblage {
             biome_name: biome,
             richness: r,
-            occupied_guilds: guilds.len() as u32,
+            occupied_guilds: guild_names.len() as u32,
             guild_capacity: cascade_order(self.realm_at(data, i)).len() as u32,
             species,
         }
@@ -292,6 +374,216 @@ fn mix(a: u64, b: u64) -> u64 {
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
     z ^ (z >> 31)
+}
+
+// ---------------------------------------------------------------------------
+// Range model (Doc 09 §6.4 redesign): Origin-Envelope Presence Fields.
+//
+// Replaces the old lat/lon-box endemism — where a range was a rectangle that
+// couldn't wrap the globe and had hard straight edges — with a smooth field: a
+// lineage is born at a deterministic birthplace inside its region, and its range
+// fades outward by great-circle distance × climate match × habitability. This
+// wraps the sphere with no date-line seam and feathers naturally at the edges,
+// while the coarse `region` field is kept purely to seed distinct clades per area.
+// ---------------------------------------------------------------------------
+
+/// Range-shape tuning. `K_PROX` sets how fast a range fades with great-circle
+/// distance from its birthplace (bigger ⇒ tighter); `SIGMA_*` set the climate
+/// tolerance; `TAU` is the presence a hex needs to count as within an endemic's
+/// range. Global (not yet per-lineage) — see limitations.
+const RANGE_K_PROX: f32 = 6.0;
+const RANGE_SIGMA_T: f32 = 12.0;
+const RANGE_SIGMA_M: f32 = 0.30;
+const RANGE_TAU: f32 = 0.05;
+
+/// Saturating moisture ∈ [0,1) from annual precipitation — the same 800 mm shape
+/// as `richness::moisture_factor`, so the range envelope speaks the same climate
+/// language the richness model does.
+fn moisture(precip_mm: f32) -> f32 {
+    1.0 - (-precip_mm.max(0.0) / 800.0).exp()
+}
+
+/// The ecological realm of a hex — free-standing so the range index can gate
+/// birthplaces by realm without a view in hand (mirrors `realm_at`).
+fn realm_at_hex(data: &WorldData, i: usize) -> Realm {
+    let water = data.water_level_m.get(i).copied().unwrap_or(WATER_NONE);
+    if !(water.is_finite() && water > data.elevation_mean[i]) {
+        return Realm::Terrestrial;
+    }
+    let freshwater = data
+        .water_body_id
+        .get(i)
+        .copied()
+        .and_then(|id| data.water_bodies.get(&id))
+        .map(|b| {
+            use genesis_core::data::WaterBodyKind::{Lake, SaltLake};
+            matches!(b.kind, Lake | SaltLake)
+        })
+        .unwrap_or(false);
+    if freshwater {
+        Realm::Freshwater
+    } else {
+        Realm::Marine
+    }
+}
+
+/// A hex supports life at all (not barren, positive richness).
+fn hex_habitable(data: &WorldData, i: usize) -> bool {
+    data.biotic_richness.get(i).copied().unwrap_or(0.0) > 0.0
+        && data.biome.get(i).map(|b| b.0) != Some(BARREN_ID)
+}
+
+/// Deterministic uniform in (0,1) from a mixed 64-bit hash (top 53 bits → f64).
+fn uniform01(z: u64) -> f64 {
+    ((z >> 11) as f64 + 1.0) / ((1u64 << 53) as f64 + 1.0)
+}
+
+/// One lineage present at a hex, with the strength of its presence there.
+struct PresentLineage<'a> {
+    guild_name: &'static str,
+    lineage: &'a LineageRecord,
+    strength: f32,
+}
+
+/// The precomputed spatial range model: per-lineage birthplace direction + frozen
+/// climate niche, guild buckets, and an Euler tour for O(1) subtree tests. Built
+/// once, then read-only — a pure function of `(ledger, WorldData)` (the seed
+/// enters through the ledger's `name_seed`s).
+#[derive(PartialEq)]
+struct RangeIndex {
+    /// Unit direction of each lineage's birthplace hex (`[0;3]` where unused).
+    origin_dir: Vec<[f32; 3]>,
+    /// Temperature (°C) and moisture at the birthplace — the preferred niche.
+    t0: Vec<f32>,
+    m0: Vec<f32>,
+    /// Guild-bearing lineages (endemic *and* cosmopolitan) bucketed by guild.
+    by_guild: std::collections::BTreeMap<GuildId, Vec<u32>>,
+    /// Euler-tour entry/exit times, for `in_subtree` interval tests.
+    tin: Vec<u32>,
+    tout: Vec<u32>,
+}
+
+impl RangeIndex {
+    /// Builds the index against `data`. Deterministic: every loop iterates in
+    /// LineageId / HexId-ascending order and uses `BTreeMap`/`BTreeSet` (never a
+    /// `HashMap`), so two builds on the same `(ledger, data)` are byte-identical.
+    fn build(ledger: &Ledger, data: &WorldData, roster: &GuildRoster) -> RangeIndex {
+        let n = ledger.len();
+        let mut origin_dir = vec![[0.0f32; 3]; n];
+        let mut t0 = vec![0.0f32; n];
+        let mut m0 = vec![0.0f32; n];
+
+        // --- Euler tour (parents precede children in push order) ---
+        let mut children: Vec<Vec<u32>> = vec![Vec::new(); n];
+        let mut roots: Vec<u32> = Vec::new();
+        for l in ledger.iter() {
+            match l.parent {
+                Some(p) => children[p.0 as usize].push(l.id.0 as u32),
+                None => roots.push(l.id.0 as u32),
+            }
+        }
+        let mut tin = vec![0u32; n];
+        let mut tout = vec![0u32; n];
+        let mut timer = 0u32;
+        enum Visit {
+            Enter(u32),
+            Exit(u32),
+        }
+        let mut stack: Vec<Visit> = roots.iter().rev().map(|&r| Visit::Enter(r)).collect();
+        while let Some(v) = stack.pop() {
+            match v {
+                Visit::Enter(x) => {
+                    tin[x as usize] = timer;
+                    timer += 1;
+                    stack.push(Visit::Exit(x));
+                    for &c in children[x as usize].iter().rev() {
+                        stack.push(Visit::Enter(c));
+                    }
+                }
+                Visit::Exit(x) => tout[x as usize] = timer,
+            }
+        }
+
+        // --- Guild buckets (ascending id) + which guilds are marine ---
+        let mut by_guild: std::collections::BTreeMap<GuildId, Vec<u32>> = Default::default();
+        for l in ledger.iter() {
+            if l.guild != GuildId::NONE {
+                by_guild.entry(l.guild).or_default().push(l.id.0 as u32);
+            }
+        }
+        let marine_guilds: std::collections::BTreeSet<GuildId> = cascade_order(Realm::Marine)
+            .iter()
+            .filter_map(|name| roster.iter().find(|g| g.name == *name).map(|g| g.id))
+            .collect();
+
+        // --- Region → member hexes (ascending), one pass ---
+        let ncells = data.cell_count() as usize;
+        let mut region_hexes: Vec<Vec<u32>> = vec![Vec::new(); BIOGEOGRAPHIC_REGIONS as usize];
+        for i in 0..ncells {
+            let (lat, lon) = data.grid.center_lat_lon(HexId(i as u32));
+            let reg = geo_region(lat, lon) as usize;
+            if reg < region_hexes.len() {
+                region_hexes[reg].push(i as u32);
+            }
+        }
+
+        // --- Birthplace per endemic, guild-bearing lineage ---
+        for l in ledger.iter() {
+            let (Some(region), true) = (l.region, l.guild != GuildId::NONE) else {
+                continue;
+            };
+            let want_marine = marine_guilds.contains(&l.guild);
+            let hexes = &region_hexes[region as usize];
+            // Efraimidis–Spirakis weighted reservoir (weight = richness): keep the
+            // hex with the largest key ln(u)/w, iterating in HexId order — so the
+            // birthplace lands in the region's most habitable spot, deterministically.
+            let mut best_key = f64::NEG_INFINITY;
+            let mut best: Option<u32> = None;
+            for &h in hexes {
+                let hi = h as usize;
+                if !hex_habitable(data, hi) {
+                    continue;
+                }
+                if (realm_at_hex(data, hi) == Realm::Marine) != want_marine {
+                    continue;
+                }
+                let w = data.biotic_richness[hi].max(1e-4) as f64;
+                let key = uniform01(mix(l.name_seed, h as u64)).ln() / w;
+                if key > best_key {
+                    best_key = key;
+                    best = Some(h);
+                }
+            }
+            // Fallback (region has no realm-matched habitable hex): any hex in the
+            // box — the clade then paints faintly, which is acceptable.
+            let origin = best.or_else(|| hexes.first().copied()).unwrap_or(0);
+            let lid = l.id.0 as usize;
+            let d = data.grid.cell_center_direction(HexId(origin));
+            origin_dir[lid] = [d[0] as f32, d[1] as f32, d[2] as f32];
+            let oi = origin as usize;
+            t0[lid] = data.temperature_mean.get(oi).copied().unwrap_or(0.0);
+            m0[lid] = moisture(data.precipitation.get(oi).copied().unwrap_or(0.0));
+        }
+
+        RangeIndex {
+            origin_dir,
+            t0,
+            m0,
+            by_guild,
+            tin,
+            tout,
+        }
+    }
+
+    /// Whether lineage `l` lies in the subtree rooted at `root` — an O(1)
+    /// Euler-tour interval test (replaces the old per-hex subtree rebuild).
+    fn in_subtree(&self, root: u64, l: u64) -> bool {
+        let (ri, li) = (root as usize, l as usize);
+        if ri >= self.tin.len() || li >= self.tin.len() {
+            return false;
+        }
+        self.tin[li] >= self.tin[ri] && self.tin[li] < self.tout[ri]
+    }
 }
 
 /// Depth from the root for every lineage (LUCA = 0). Relies on the ledger being
@@ -365,7 +657,7 @@ fn notable_prominence(graph: &TraitGraph, l: &LineageRecord) -> f32 {
 /// The biogeographic region a hex falls in (0..`BIOGEOGRAPHIC_REGIONS`): a coarse
 /// latitude-band × longitude-sector grid, so endemic clades vary across the world
 /// yet stay coherent within a region (Doc 09 §6.4).
-fn geo_region(lat_rad: f64, lon_rad: f64) -> u16 {
+pub(crate) fn geo_region(lat_rad: f64, lon_rad: f64) -> u16 {
     let band: u16 = if lat_rad < -0.35 {
         0
     } else if lat_rad < 0.35 {
@@ -752,6 +1044,99 @@ impl BiologyView for GeneratedBiologyView {
         let clade = ledger.get(genesis_core::data::LineageId(best_id))?;
         Some(format!("Age of the {}", self.lineage_name(clade)))
     }
+
+    fn relatives(&self, species_id: u64, year: WorldYear) -> Vec<SpeciesPeek> {
+        let Some(ledger) = &self.ledger else {
+            return Vec::new();
+        };
+        let Some(lineage) = ledger.iter().find(|l| l.name_seed == species_id) else {
+            return Vec::new();
+        };
+        let Some(parent) = lineage.parent else {
+            return Vec::new();
+        };
+        let guild_name = |l: &LineageRecord| {
+            self.roster
+                .iter()
+                .find(|g| g.id == l.guild)
+                .map(|g| g.name)
+                .unwrap_or("life")
+        };
+        let mut out: Vec<SpeciesPeek> = Vec::new();
+        let mut seen = std::collections::BTreeSet::new();
+        let mut add = |l: &LineageRecord, note: &str, out: &mut Vec<SpeciesPeek>| {
+            if l.name_seed != species_id
+                && l.guild != GuildId::NONE
+                && l.alive_at(year)
+                && seen.insert(l.name_seed)
+            {
+                out.push(self.peek_from_lineage(ledger, l, guild_name(l), note.to_string()));
+            }
+        };
+        // Siblings first (same parent), then cousins (grandparent's grandchildren).
+        for l in ledger.iter().filter(|l| l.parent == Some(parent)) {
+            add(l, "sibling — same immediate ancestor", &mut out);
+        }
+        if out.len() < RELATIVES_LIMIT
+            && let Some(gp) = ledger.get(parent).and_then(|p| p.parent)
+        {
+            let uncles: std::collections::BTreeSet<u64> = ledger
+                .iter()
+                .filter(|l| l.parent == Some(gp))
+                .map(|l| l.id.0)
+                .collect();
+            for l in ledger
+                .iter()
+                .filter(|l| l.parent.is_some_and(|p| uncles.contains(&p.0)))
+            {
+                if out.len() >= RELATIVES_LIMIT {
+                    break;
+                }
+                add(l, "cousin — shares a deeper ancestor", &mut out);
+            }
+        }
+        out.truncate(RELATIVES_LIMIT);
+        out
+    }
+
+    fn clade_concentration(
+        &self,
+        data: &WorldData,
+        hex: HexId,
+        target: genesis_core::biology_view::LineageSelector,
+    ) -> f32 {
+        use genesis_core::biology_view::LineageSelector::{Clade, Species};
+        let Some(ledger) = &self.ledger else {
+            return 0.0;
+        };
+        // Resolve the selection to the id of its subtree root.
+        let root = match target {
+            Clade(id) => id,
+            Species(seed) => match ledger.iter().find(|l| l.name_seed == seed) {
+                Some(l) => l.id.0,
+                None => return 0.0,
+            },
+        };
+        let i = hex.0 as usize;
+        // The same present-lineages the Bestiary lists (and this primes the range
+        // index). The concentration is the strongest presence of any species in
+        // the selected subtree — a smoothly graded field, so the heatmap fades
+        // instead of stepping, and it is > 0 here iff a subtree species is listed.
+        let present = self.present_lineages_at(data, i);
+        if present.is_empty() {
+            return 0.0;
+        }
+        let Some(idx) = self.range.get() else {
+            return 0.0;
+        };
+        let mut best = 0.0f32;
+        for p in &present {
+            if idx.in_subtree(root, p.lineage.id.0) {
+                best = best.max(p.strength);
+            }
+        }
+        best
+    }
 }
 
 #[cfg(test)]
@@ -1011,5 +1396,140 @@ mod tests {
         let early = view.tree_snapshot(WorldYear(310_000_000)).nodes.len();
         let late = view.tree_snapshot(WorldYear(1_000_000_000)).nodes.len();
         assert!(early < late, "more branches have arisen by the later year");
+    }
+
+    // ---- Range model (Doc 09 §6.4 redesign) ----
+
+    /// An alive, guild-bearing, endemic (`region = Some`) species' id — the kind
+    /// whose range the map paints as a bounded blob.
+    fn an_endemic_species(view: &GeneratedBiologyView, year: WorldYear) -> u64 {
+        view.ledger
+            .as_ref()
+            .unwrap()
+            .iter()
+            .find(|l| l.alive_at(year) && l.region.is_some() && l.guild != GuildId::NONE)
+            .expect("a living endemic species")
+            .name_seed
+    }
+
+    #[test]
+    fn range_index_build_is_deterministic() {
+        // Two builds on the same (ledger, world) must be byte-identical — guards
+        // against any HashMap / float-order leak in the index.
+        let graph = core_morphospace();
+        let roster = core_guilds(&graph);
+        let ledger = build_radiation(&graph, &roster, 42, WorldYear(300_000_000));
+        let world = rich_world();
+        let a = RangeIndex::build(&ledger, &world, &roster);
+        let b = RangeIndex::build(&ledger, &world, &roster);
+        assert!(a == b, "RangeIndex::build must be deterministic");
+    }
+
+    #[test]
+    fn endemic_range_crosses_region_boxes_and_is_graded() {
+        // The whole point of the redesign: a range is no longer a lat/lon box.
+        // A single endemic species' painted range must span more than one of the
+        // 12 geo_region boxes (so it is not walled at a box edge) and take a
+        // spread of concentration values (a soft gradient, not a 1/0 step).
+        use genesis_core::biology_view::LineageSelector::Species;
+        let view = GeneratedBiologyView::new(42);
+        let world = rich_world();
+        let year = world.current_year;
+        let id = an_endemic_species(&view, year);
+
+        let mut regions = std::collections::BTreeSet::new();
+        let mut positive = 0usize;
+        let mut peak = 0.0f32;
+        let mut min_pos = f32::INFINITY;
+        for h in 0..world.cell_count() {
+            let c = view.clade_concentration(&world, HexId(h), Species(id));
+            if c > 0.0 {
+                positive += 1;
+                peak = peak.max(c);
+                min_pos = min_pos.min(c);
+                let (lat, lon) = world.grid.center_lat_lon(HexId(h));
+                regions.insert(geo_region(lat, lon));
+            }
+        }
+        assert!(positive > 0, "the species must paint somewhere");
+        assert!(
+            regions.len() > 1,
+            "an endemic range must cross region-box boundaries, spanned {} box(es)",
+            regions.len()
+        );
+        assert!(
+            positive < world.cell_count() as usize,
+            "an endemic range must stay bounded, not blanket the globe"
+        );
+        assert!(
+            peak - min_pos > 0.1,
+            "concentration must be graded (soft gradient), got peak {peak} min {min_pos}"
+        );
+    }
+
+    #[test]
+    fn ranges_are_continuous_between_neighbours() {
+        // Soft edges + globe wrap in one property: between any two physically
+        // adjacent hexes (which, near the date line, sit on opposite sides of the
+        // old longitude seam), a clade's concentration may not jump by a large
+        // amount. The old boxed model stepped 1→0 across a box wall; this must not.
+        use genesis_core::biology_view::LineageSelector::Species;
+        let view = GeneratedBiologyView::new(42);
+        let world = rich_world(); // uniform climate ⇒ only proximity varies
+        let year = world.current_year;
+        let id = an_endemic_species(&view, year);
+
+        let conc: Vec<f32> = (0..world.cell_count())
+            .map(|h| view.clade_concentration(&world, HexId(h), Species(id)))
+            .collect();
+        let mut worst = 0.0f32;
+        for h in 0..world.cell_count() {
+            let a = conc[h as usize];
+            for nb in world.grid.neighbors(HexId(h)) {
+                let b = conc[nb.0 as usize];
+                worst = worst.max((a - b).abs());
+            }
+        }
+        // Adjacent hexes are ~1–2° apart, so a smooth field barely changes across
+        // one step. A hard box wall would give ~0.8 here.
+        assert!(
+            worst < 0.25,
+            "range must be spatially continuous (incl. across the date line); \
+             worst neighbour jump was {worst}"
+        );
+    }
+
+    #[test]
+    fn map_paint_matches_present_species() {
+        // The consistency invariant: the map paints a clade at a hex iff a species
+        // of that clade is actually present there — both routed through the one
+        // shared predicate, so they cannot diverge.
+        use genesis_core::biology_view::LineageSelector::Species;
+        let view = GeneratedBiologyView::new(42);
+        let world = rich_world();
+        let year = world.current_year;
+        let id = an_endemic_species(&view, year);
+        let root = view
+            .ledger
+            .as_ref()
+            .unwrap()
+            .iter()
+            .find(|l| l.name_seed == id)
+            .unwrap()
+            .id
+            .0;
+
+        for h in (0..world.cell_count()).step_by(23) {
+            let painted = view.clade_concentration(&world, HexId(h), Species(id)) > 0.0;
+            let idx = view.range.get().expect("primed by clade_concentration");
+            let present = view
+                .present_lineages_at(&world, h as usize)
+                .iter()
+                .any(|p| idx.in_subtree(root, p.lineage.id.0));
+            assert_eq!(
+                painted, present,
+                "map paint must match the present-species set at hex {h}"
+            );
+        }
     }
 }

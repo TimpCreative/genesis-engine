@@ -70,6 +70,72 @@ impl SelectivePayoff for MicrobialPayoff {
     }
 }
 
+/// Samples each biogeographic region's representative environment from the world
+/// (Doc 09B) so the radiation can adapt clades to their local climate. Uses the
+/// same `geo_region` mapping the map read-back uses, and richness-style factors.
+fn region_profiles(world: &WorldData) -> crate::speciation::RegionProfiles {
+    use crate::evolution::EnvProfile;
+    const R: usize = crate::speciation::BIOGEOGRAPHIC_REGIONS as usize;
+    let mut temp = [0f32; R];
+    let mut marine = [0f32; R];
+    let mut nutrient = [0f32; R];
+    let mut arid = [0f32; R];
+    let mut disturb = [0f32; R];
+    let mut land_n = [0f32; R];
+    let mut n = [0f32; R];
+    for i in 0..world.cell_count() as usize {
+        let (lat, lon) = world
+            .grid
+            .center_lat_lon(genesis_core::grid::HexId(i as u32));
+        let r = crate::view::geo_region(lat, lon) as usize;
+        let water = world.water_level_m[i];
+        let wet = water.is_finite() && water > world.elevation_mean[i];
+        temp[r] += world.temperature_mean[i];
+        n[r] += 1.0;
+        if world.ice_mask.get(i).copied().unwrap_or(false) {
+            disturb[r] += 1.0;
+        }
+        if wet {
+            marine[r] += 1.0;
+            let depth = (water - world.elevation_mean[i]).max(0.0);
+            nutrient[r] += (1.0 - (depth / 2000.0).min(1.0)).max(0.3); // shelf-rich, abyss-poor
+        } else {
+            land_n[r] += 1.0;
+            nutrient[r] += world
+                .soil_fertility
+                .get(i)
+                .copied()
+                .unwrap_or(0.0)
+                .clamp(0.0, 1.0);
+            let precip = world.precipitation[i].max(0.0);
+            let moisture = 1.0 - (-precip / 800.0).exp(); // richness.rs shape
+            arid[r] += 1.0 - moisture;
+        }
+    }
+    let co2 = world.co2_ppm;
+    let mut out = [EnvProfile::neutral(); R];
+    for r in 0..R {
+        let cnt = n[r];
+        if cnt <= 0.0 {
+            continue; // region has no hexes → stay neutral
+        }
+        out[r] = EnvProfile {
+            temperature_c: temp[r] / cnt,
+            marine_fraction: marine[r] / cnt,
+            nutrient: nutrient[r] / cnt,
+            aridity: if land_n[r] > 0.0 {
+                arid[r] / land_n[r]
+            } else {
+                0.0
+            },
+            disturbance: disturb[r] / cnt,
+            co2_ppm: co2,
+            neutral: false,
+        };
+    }
+    crate::speciation::RegionProfiles(out)
+}
+
 /// Advances the microbial biosphere by one innovation step this tick.
 pub(crate) fn microbial_step(state: &mut BiologyState, world: &mut WorldData, rng: &WorldRng) {
     if state.milestones.contains(&Milestone::Multicellularity) {
@@ -77,11 +143,15 @@ pub(crate) fn microbial_step(state: &mut BiologyState, world: &mut WorldData, rn
         // after multicellularity opens the macroscopic radiation (Doc 09 §6).
         if state.ledger.is_empty() {
             let seed = world.parameters.core.seed.value;
-            let ledger = crate::speciation::build_radiation(
+            // Environment-aware radiation (Doc 09B): each region's clades adapt to
+            // its real climate, sampled from the world's hexes.
+            let profiles = region_profiles(world);
+            let ledger = crate::speciation::build_radiation_with(
                 &state.graph,
                 &state.guilds,
                 seed,
                 world.current_year,
+                &profiles,
             );
             state.ledger = ledger;
         }

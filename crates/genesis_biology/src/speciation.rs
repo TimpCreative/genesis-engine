@@ -18,7 +18,7 @@ use genesis_core::time::WorldYear;
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
 
-use crate::evolution::{NeutralPayoff, WalkParams, biased_walk_step};
+use crate::evolution::{EnvProfile, EnvironmentPayoff, WalkParams, biased_walk_step};
 use crate::guild::{GuildRoster, fills_guild, rule_specificity};
 use crate::ledger::{Ledger, LineageRecord};
 use crate::morphospace::{TraitGraph, TraitSet};
@@ -55,13 +55,38 @@ fn mix(a: u64, b: u64) -> u64 {
     z ^ (z >> 31)
 }
 
-/// Builds the recorded tree of life for a world (Doc 09 §6). `base_year` is the
-/// multicellular radiation year; branches arise progressively after it.
+/// One environment profile per biogeographic region (Doc 09B), aligned with
+/// [`crate::view::geo_region`]. `neutral()` reproduces the seed-only radiation.
+pub struct RegionProfiles(pub [EnvProfile; BIOGEOGRAPHIC_REGIONS as usize]);
+
+impl RegionProfiles {
+    pub fn neutral() -> Self {
+        Self([EnvProfile::neutral(); BIOGEOGRAPHIC_REGIONS as usize])
+    }
+}
+
+/// Builds the recorded tree of life with a neutral (environment-agnostic)
+/// radiation — a pure function of the seed. The sim path uses
+/// [`build_radiation_with`] to make regions adapt to their climate.
 pub fn build_radiation(
     graph: &TraitGraph,
     roster: &GuildRoster,
     seed: u64,
     base_year: WorldYear,
+) -> Ledger {
+    build_radiation_with(graph, roster, seed, base_year, &RegionProfiles::neutral())
+}
+
+/// Builds the recorded tree of life for a world (Doc 09 §6). `base_year` is the
+/// multicellular radiation year; branches arise progressively after it. Each
+/// region's clades are biased toward its `EnvProfile` (Doc 09B), so cold regions
+/// evolve insulation, arid regions water-conservation, oceans swimmers, etc.
+pub fn build_radiation_with(
+    graph: &TraitGraph,
+    roster: &GuildRoster,
+    seed: u64,
+    base_year: WorldYear,
+    profiles: &RegionProfiles,
 ) -> Ledger {
     let mut ledger = Ledger::default();
     let id_of = |name: &str| graph.id_of(name).expect("core trait");
@@ -154,12 +179,13 @@ pub fn build_radiation(
         // regions get distinct endemic clades (Doc 09 §6.4).
         for region in 0..BIOGEOGRAPHIC_REGIONS {
             let env = FactContext::new();
+            let payoff = EnvironmentPayoff::new(graph, profiles.0[region as usize]);
             let Some(step) = biased_walk_step(
                 graph,
                 &kgenome,
                 &env,
                 &WalkParams::default(),
-                &NeutralPayoff,
+                &payoff,
                 &mut rng,
             ) else {
                 continue;
@@ -190,6 +216,7 @@ pub fn build_radiation(
                 seed,
                 base_year,
                 &mut remaining,
+                &payoff,
             );
         }
     }
@@ -305,6 +332,7 @@ fn radiate(
     seed: u64,
     base_year: WorldYear,
     remaining: &mut usize,
+    payoff: &dyn crate::evolution::SelectivePayoff,
 ) {
     if depth > MAX_DEPTH || *remaining == 0 {
         return;
@@ -315,14 +343,8 @@ fn radiate(
         if *remaining == 0 {
             break;
         }
-        let Some(step) = biased_walk_step(
-            graph,
-            genome,
-            &env,
-            &WalkParams::default(),
-            &NeutralPayoff,
-            rng,
-        ) else {
+        let Some(step) = biased_walk_step(graph, genome, &env, &WalkParams::default(), payoff, rng)
+        else {
             break;
         };
         let mut child = genome.clone();
@@ -357,6 +379,7 @@ fn radiate(
             seed,
             base_year,
             remaining,
+            payoff,
         );
     }
 }
@@ -436,6 +459,75 @@ mod tests {
             .map(|l| l.guild.0)
             .collect();
         assert!(guilds.len() >= 4, "expected diverse guilds, got {guilds:?}");
+    }
+
+    #[test]
+    fn basins_stay_coherent_no_photosynthesizing_animals() {
+        // Trait coherence (Doc 09 §2.3): the metabolism basins don't mix, so there
+        // are no photosynthesizing predators. Nerves/bones require heterotrophy;
+        // cellulose walls require photosynthesis; the metabolisms are exclusive.
+        let graph = core_morphospace();
+        let roster = core_guilds(&graph);
+        let ledger = build_radiation(&graph, &roster, 42, WorldYear(400_000_000));
+        let id = |n: &str| graph.id_of(n).unwrap();
+        let (photo, hetero) = (id("core:oxygenic_photosynthesis"), id("core:heterotrophy"));
+        let (nerve, endo, cellulose) = (
+            id("core:nerve_net"),
+            id("core:mineral_endoskeleton"),
+            id("core:cellulose_wall"),
+        );
+        for l in ledger.iter() {
+            let g = &l.trait_set;
+            assert!(
+                !(g.contains(photo) && g.contains(hetero)),
+                "metabolisms not exclusive"
+            );
+            assert!(
+                !(g.contains(photo) && g.contains(nerve)),
+                "photosynthesizing animal (nerves)"
+            );
+            assert!(
+                !(g.contains(photo) && g.contains(endo)),
+                "photosynthesizing animal (bones)"
+            );
+            assert!(
+                !(g.contains(hetero) && g.contains(cellulose)),
+                "animal with plant cell walls"
+            );
+        }
+    }
+
+    #[test]
+    fn environment_shapes_the_radiation_deterministically() {
+        let graph = core_morphospace();
+        let roster = core_guilds(&graph);
+        let y = WorldYear(400_000_000);
+        // Neutral profiles reproduce the seed-only radiation exactly (determinism
+        // + endemism tests stay valid).
+        assert_eq!(
+            build_radiation(&graph, &roster, 42, y),
+            build_radiation_with(&graph, &roster, 42, y, &RegionProfiles::neutral())
+        );
+        // A cold and a warm world evolve different trait sets from the same seed.
+        let profile = |t: f32, marine: f32| EnvProfile {
+            temperature_c: t,
+            aridity: 0.4,
+            marine_fraction: marine,
+            nutrient: 0.5,
+            disturbance: 0.0,
+            co2_ppm: 280.0,
+            neutral: false,
+        };
+        let cold = RegionProfiles([profile(-25.0, 0.0); BIOGEOGRAPHIC_REGIONS as usize]);
+        let warm = RegionProfiles([profile(30.0, 1.0); BIOGEOGRAPHIC_REGIONS as usize]);
+        let cold_l = build_radiation_with(&graph, &roster, 42, y, &cold);
+        let warm_l = build_radiation_with(&graph, &roster, 42, y, &warm);
+        assert_ne!(
+            cold_l, warm_l,
+            "environment should change which traits evolve"
+        );
+        // Same environment → identical ledger (deterministic).
+        assert_eq!(cold_l, build_radiation_with(&graph, &roster, 42, y, &cold));
     }
 
     #[test]
