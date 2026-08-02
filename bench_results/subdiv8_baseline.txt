@@ -1,0 +1,13 @@
+=== perf_full_history_subdiv8_milestones ===
+os=macos
+arch=aarch64
+available_parallelism=16
+RAYON_NUM_THREADS=serial-or-default
+subdivision_level=8
+seed=42
+milestone target_year=1000000000 elapsed_secs=248.900 hex_count=65612 plate_count=12
+milestone target_year=2500000000 elapsed_secs=569.127 hex_count=65612 plate_count=11
+milestone target_year=4500000000 elapsed_secs=1206.005 hex_count=65612 plate_count=10
+=== end perf_full_history_subdiv8_milestones ===
+7ef37c790d97f5558fb2af0a0ea08f010017ddf3
+Sun Jul 19 01:27:24 UTC 2026

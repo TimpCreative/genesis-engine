@@ -98,6 +98,23 @@ impl SimulationLayer for TectonicsLayer {
                 event_granularity,
             );
 
+            // Calibrate the formation world so downstream layers see the target
+            // hypsometry and pinned datum from year 0 (Doc 06-CAL). Seeds the
+            // temporal ranking EMA (interval 0).
+            {
+                let targets = world.parameters.core.terrain;
+                // Reborrow through the RefMut once so the two EMA buffers
+                // split as disjoint field borrows.
+                let state = &mut *state;
+                crate::calibration::apply_hypsometry_transfer(
+                    world,
+                    &targets,
+                    &mut state.calibration_rank_ema,
+                    &mut state.calibration_residual_ema,
+                    0.0,
+                );
+            }
+
             state.formation_complete = true;
             self.last_tick_year.set(world.current_year);
             return Vec::new();
@@ -257,6 +274,20 @@ impl SimulationLayer for TectonicsLayer {
                 );
             });
 
+            // Crust balance counter-flow, supply side (Doc 06 §5.11):
+            // collisions consume continental area; continentalization of the
+            // highest-standing oceanic crust replaces it, holding coverage at
+            // the land target plus shelf allowance.
+            timed_tick_step("crust_supply", tick_year, || {
+                let s = &mut *state;
+                crate::accretion::maintain_crust_supply(
+                    world,
+                    &mut s.registry,
+                    &s.projection,
+                    tick_year.value(),
+                );
+            });
+
             timed_tick_step("erosion", tick_year, || {
                 apply_erosion_tick(world, &mut state, rng, tick_year, interval_years);
             });
@@ -321,6 +352,14 @@ impl SimulationLayer for TectonicsLayer {
                 rebuild_world_from_plate_surfaces_cached(world, &state.registry, &state.projection);
             });
 
+            // These passes clean the raw *structure* the calibration then maps:
+            // coast de-speckle removes coastal spray, continental heal + closed-
+            // depression infill fill the multi-hex accreted-oceanic interior pits
+            // that calibration's smoothed ranking does NOT dissolve on its own
+            // (it lifts isolated 1-hex lows, not whole basins). Empirically,
+            // dropping them under calibration doubled the dry sub-sea perforation
+            // (129 -> 269 @ subdiv 7, 1B), so they earn their place as structure
+            // conditioning — Doc 06-CAL §9's "delete" is retracted for these.
             timed_tick_step("coast_cleanup", tick_year, || {
                 let s = &mut *state;
                 cleanup_coast_artifacts(
@@ -339,10 +378,46 @@ impl SimulationLayer for TectonicsLayer {
                 );
                 rebuild_world_from_plate_surfaces_cached(world, &s.registry, &s.projection);
             });
+
+            // Closed-depression sediment infill: oceanic/accreted interior
+            // pits heal skipped. Recompute the open-ocean mask after heal
+            // raised continental crust (tick-start mask at label_water is stale).
+            timed_tick_step("basin_infill", tick_year, || {
+                let s = &mut *state;
+                let water = crate::accretion::label_water_components(world);
+                let open_ocean = water.open_ocean_mask();
+                crate::basin_infill::fill_closed_depressions(
+                    world,
+                    &mut s.registry,
+                    &s.projection,
+                    &open_ocean,
+                    tick_year.value(),
+                    interval_years,
+                );
+                rebuild_world_from_plate_surfaces_cached(world, &s.registry, &s.projection);
+            });
             state.boundaries = boundaries;
 
             timed_tick_step("clamp", tick_year, || {
                 clamp_terrain(world);
+            });
+
+            // Solve-to-target calibration (Doc 06-CAL): map the structure field onto
+            // the target hypsometric curve and pin the datum to 0. Final word on
+            // absolute height; the raw structure is rebuilt from plate surfaces
+            // next tick, so this never feeds back into the sim.
+            timed_tick_step("calibration", tick_year, || {
+                let targets = world.parameters.core.terrain;
+                // Reborrow through the RefMut once so the two EMA buffers
+                // split as disjoint field borrows.
+                let state = &mut *state;
+                crate::calibration::apply_hypsometry_transfer(
+                    world,
+                    &targets,
+                    &mut state.calibration_rank_ema,
+                    &mut state.calibration_residual_ema,
+                    interval_years,
+                );
             });
 
             let (min_elev, max_elev) = elevation_min_max(world);

@@ -8,7 +8,7 @@ mod validation;
 pub use core::{
     BiologyParameters, CivilizationParameters, ClimateInitialParameters, ClimateParameters,
     CoreParameters, GeologyParameters, GridParameters, HydrologyParameters, ModEntry, ModManifest,
-    PlanetParameters, TimeParameters, WorldSeed,
+    PlanetParameters, TerrainTargets, TimeParameters, WorldSeed,
 };
 pub use extensions::{ParameterExtensions, ParameterValue, ParameterValueData};
 pub use validation::ParameterValidationError;
@@ -60,6 +60,7 @@ impl Default for WorldParameters {
                 },
                 geology: GeologyParameters {
                     initial_continental_fraction: 0.30,
+                    continent_cluster_count: 0, // 0 = seed decides (1..=3)
                     plate_velocity_scale: 1.0,
                     volcanism_scale: 1.0,
                     geology_activity_scale: 1.0,
@@ -68,12 +69,15 @@ impl Default for WorldParameters {
                     event_granularity: Significance::Notable,
                     tick_interval_overrides_years: None,
                     base_erosion_rate_per_year: 5e-8,
-                    max_ephemeral_island_hexes: 10,
-                    max_ephemeral_island_height_m: 100.0,
-                    max_ephemeral_island_relief_m: 250.0,
-                    max_artifact_lake_hexes: 20,
+                    max_ephemeral_island_hexes: 80,
+                    // Must clear CONTINENTAL_FREEBOARD_M (~800): otherwise healed
+                    // freeboard speckles permanently refuse submergence.
+                    max_ephemeral_island_height_m: 1200.0,
+                    max_ephemeral_island_relief_m: 800.0,
+                    max_artifact_lake_hexes: 80,
                     min_geologic_lake_depth_m: 400.0,
                 },
+                terrain: TerrainTargets::default(),
                 climate_initial: ClimateInitialParameters {
                     initial_mean_temperature_c: 15.0,
                     initial_sea_level_m: 0.0,
@@ -86,6 +90,12 @@ impl Default for WorldParameters {
                     life_emergence_year: WorldYear(500_000_000),
                     mutation_rate_scale: 1.0,
                     extinction_scale: 1.0,
+                    biogenesis_rate_scale: 1.0,
+                    multiple_origins: false,
+                    novelty_temperature: 1.0,
+                    complexity_pressure: 1.0,
+                    sapience_enabled: true,
+                    humanoid_sapients: false,
                 },
                 civilization: CivilizationParameters {
                     sapience_emergence_year: None,

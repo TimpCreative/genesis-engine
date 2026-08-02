@@ -19,6 +19,15 @@ const PLATE_SEEDS_STREAM: &str = "tectonics.plate_seeds";
 const PLATE_AXES_STREAM: &str = "tectonics.plate_axes";
 /// Doc 06 §4.4 — log-normal motion rate sampling.
 const PLATE_RATES_STREAM: &str = "tectonics.plate_rates";
+/// Continental-crust assignment: how many continents this world gets and where
+/// their cores sit. Its own stream so plate geometry/motion are unaffected.
+const PLATE_CONTINENTS_STREAM: &str = "tectonics.continents";
+
+/// Most continental clusters the seed may roll. A future
+/// `geology.continent_cluster_count` parameter (0 = "seed decides") can replace
+/// the seeded `gen_range` below without touching the growth logic (Doc 06-CAL,
+/// tunability #3).
+const MAX_CONTINENT_CLUSTERS: usize = 3;
 
 /// Performs initial plate generation. Mutates `data.plate_id` for every hex and returns
 /// the `PlateRegistry`. Should be called exactly once per world, at year 0.
@@ -120,7 +129,7 @@ pub fn generate_initial_plates_data(data: &mut WorldData, rng: &WorldRng) -> Pla
 
     debug_assert!(plate_id_for_hex.iter().all(|p| p.is_some()));
 
-    assign_plate_types(data, &mut registry, &plate_id_for_hex);
+    assign_plate_types(data, rng, &mut registry, &plate_id_for_hex);
     assign_plate_motion(data, rng, &mut registry, &plate_id_for_hex);
 
     for (i, plate_opt) in plate_id_for_hex.iter().enumerate() {
@@ -489,20 +498,21 @@ fn pick_next_plate_to_grow(
 
 fn assign_plate_types(
     data: &WorldData,
+    rng: &WorldRng,
     registry: &mut PlateRegistry,
     plate_id_for_hex: &[Option<PlateId>],
 ) {
+    use std::cmp::Ordering::Equal;
+
     let continental_fraction = data.parameters.core.geology.initial_continental_fraction;
     let total_hexes = plate_id_for_hex
         .iter()
         .filter(|p| p.is_some())
         .count()
         .max(1);
+    let target_hexes = ((total_hexes as f32) * continental_fraction).round() as usize;
 
-    // Continental plates are chosen as a spatially CONNECTED cluster (a
-    // supercontinent start with one world ocean, like the early Earth), not by
-    // id order — scattered continental plates can ring the planet and split
-    // the world ocean into disconnected basins.
+    // Area-weighted centroid direction + hex count per plate.
     let mut centroids: BTreeMap<PlateId, (glam::DVec3, u32)> = BTreeMap::new();
     for (i, pid_opt) in plate_id_for_hex.iter().enumerate() {
         let Some(pid) = pid_opt else {
@@ -513,58 +523,127 @@ fn assign_plate_types(
         entry.0 += glam::DVec3::new(dir[0], dir[1], dir[2]);
         entry.1 += 1;
     }
+    let centroid_dir = |id: PlateId| {
+        centroids
+            .get(&id)
+            .map(|(v, _)| v.normalize_or_zero())
+            .unwrap_or(glam::DVec3::Z)
+    };
 
-    // Anchor on the lowest-id major plate, then greedily grow the cluster by
-    // nearest plate centroid (majors preferred at equal distance via id order).
-    let anchor = registry
+    // Continent cores are major plates (compact and large). Deterministic order.
+    let mut cores: Vec<PlateId> = registry
         .iter()
         .filter(|p| p.plate_class == PlateClass::Major)
         .map(|p| p.id)
-        .min_by_key(|id| id.0)
-        .unwrap_or(PlateId(0));
+        .collect();
+    cores.sort_by_key(|id| id.0);
 
-    // Grow the cluster until continental crust covers the requested fraction
-    // of the SPHERE (the parameter is an area fraction, not a plate count).
-    let mut chosen: Vec<PlateId> = vec![anchor];
-    let mut covered_hexes = centroids.get(&anchor).map(|(_, n)| *n).unwrap_or(0) as usize;
-    let target_hexes = ((total_hexes as f32) * continental_fraction).round() as usize;
-    let mut cluster_sum = centroids
-        .get(&anchor)
-        .map(|(v, _)| *v)
-        .unwrap_or(glam::DVec3::Z);
-    while covered_hexes < target_hexes {
-        let cluster_dir = cluster_sum.normalize_or_zero();
-        let next = centroids
-            .iter()
-            .filter(|(id, _)| !chosen.contains(id))
-            .max_by(|(a_id, (a_v, a_n)), (b_id, (b_v, b_n))| {
-                let a_dot = a_v.normalize_or_zero().dot(cluster_dir);
-                let b_dot = b_v.normalize_or_zero().dot(cluster_dir);
-                a_dot
-                    .partial_cmp(&b_dot)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-                    .then_with(|| a_n.cmp(b_n))
-                    .then_with(|| b_id.0.cmp(&a_id.0))
-            })
-            .map(|(id, _)| *id);
-        let Some(next) = next else {
+    // How many continents this world gets. `continent_cluster_count == 0` means
+    // the SEED decides (1..=MAX): one big supercontinent (like the early Earth)
+    // or several dispersed landmasses, per world. A non-zero parameter forces
+    // exactly that many. Either way it's clamped to the cores available. Each
+    // cluster stays a connected blob, so a few dispersed continents still leave
+    // one connected world ocean (the failure mode is scattered single plates,
+    // which this does NOT produce).
+    let mut cont_rng = rng.stream(PLATE_CONTINENTS_STREAM);
+    let requested = data.parameters.core.geology.continent_cluster_count as usize;
+    let cluster_count = if cores.is_empty() {
+        1
+    } else if requested >= 1 {
+        requested.min(cores.len())
+    } else {
+        cont_rng.gen_range(1..=cores.len().min(MAX_CONTINENT_CLUSTERS))
+    };
+
+    // Disperse the anchors: the first is the lowest-id major plate (its location
+    // is already seed-placed, and this makes a single-cluster world identical to
+    // the pre-change behavior); each next is the core farthest (smallest
+    // max-alignment) from all chosen anchors — farthest-point sampling.
+    let mut anchors: Vec<PlateId> = Vec::with_capacity(cluster_count);
+    if !cores.is_empty() {
+        anchors.push(cores[0]);
+        while anchors.len() < cluster_count {
+            let next = cores
+                .iter()
+                .copied()
+                .filter(|id| !anchors.contains(id))
+                .min_by(|&a, &b| {
+                    let near = |x: PlateId| {
+                        anchors
+                            .iter()
+                            .map(|&an| centroid_dir(x).dot(centroid_dir(an)))
+                            .fold(f64::MIN, f64::max)
+                    };
+                    near(a)
+                        .partial_cmp(&near(b))
+                        .unwrap_or(Equal)
+                        .then_with(|| a.0.cmp(&b.0))
+                });
+            match next {
+                Some(id) => anchors.push(id),
+                None => break,
+            }
+        }
+    } else if let Some(id) = centroids.keys().next().copied() {
+        anchors.push(id); // degenerate fallback: no major plates
+    }
+
+    // Grow the clusters in parallel (round-robin): each round every cluster
+    // claims its nearest unclaimed plate, until continental crust covers the
+    // target sphere area. Round-robin keeps the continents comparable in size.
+    let mut cluster_sum: Vec<glam::DVec3> = anchors
+        .iter()
+        .map(|a| centroids.get(a).map(|(v, _)| *v).unwrap_or(glam::DVec3::Z))
+        .collect();
+    let mut claimed: BTreeSet<PlateId> = anchors.iter().copied().collect();
+    let mut covered: usize = anchors
+        .iter()
+        .map(|a| centroids.get(a).map(|(_, n)| *n as usize).unwrap_or(0))
+        .sum();
+
+    'grow: while covered < target_hexes {
+        let mut progressed = false;
+        for c in 0..anchors.len() {
+            if covered >= target_hexes {
+                break 'grow;
+            }
+            let cluster_dir = cluster_sum[c].normalize_or_zero();
+            let next = centroids
+                .iter()
+                .filter(|(id, _)| !claimed.contains(id))
+                .max_by(|(a_id, (a_v, a_n)), (b_id, (b_v, b_n))| {
+                    let a_dot = a_v.normalize_or_zero().dot(cluster_dir);
+                    let b_dot = b_v.normalize_or_zero().dot(cluster_dir);
+                    a_dot
+                        .partial_cmp(&b_dot)
+                        .unwrap_or(Equal)
+                        .then_with(|| a_n.cmp(b_n))
+                        .then_with(|| b_id.0.cmp(&a_id.0))
+                })
+                .map(|(id, _)| *id);
+            if let Some(next) = next {
+                claimed.insert(next);
+                cluster_sum[c] += centroids.get(&next).map(|(v, _)| *v).unwrap_or_default();
+                covered += centroids.get(&next).map(|(_, n)| *n as usize).unwrap_or(0);
+                progressed = true;
+            }
+        }
+        if !progressed {
             break;
-        };
-        cluster_sum += centroids.get(&next).map(|(v, _)| *v).unwrap_or_default();
-        covered_hexes += centroids.get(&next).map(|(_, n)| *n).unwrap_or(0) as usize;
-        chosen.push(next);
+        }
     }
 
-    let mut updates = Vec::new();
-    for plate in registry.iter() {
-        let plate_type = if chosen.contains(&plate.id) {
-            PlateType::Continental
-        } else {
-            PlateType::Oceanic
-        };
-        updates.push((plate.id, plate_type));
-    }
-
+    let updates: Vec<(PlateId, PlateType)> = registry
+        .iter()
+        .map(|p| {
+            let t = if claimed.contains(&p.id) {
+                PlateType::Continental
+            } else {
+                PlateType::Oceanic
+            };
+            (p.id, t)
+        })
+        .collect();
     for (id, plate_type) in updates {
         if let Some(plate) = registry.plates_mut().get_mut(&id) {
             plate.plate_type = plate_type;

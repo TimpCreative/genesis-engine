@@ -17,6 +17,12 @@ pub trait SimulationLayer {
     fn advance(&mut self, world: &mut WorldData, rng: &WorldRng) -> Vec<()>;
 }
 
+/// How often a layer reporting `tick_interval == 0` (dormant) is re-polled to
+/// see whether world state has since given it work — e.g. biology waking when
+/// oceans first form. Coarse, so idle re-polls are cheap; the layer still does no
+/// `advance` work until it reports a positive interval.
+const DORMANT_REPOLL_YEARS: i64 = 1_000_000;
+
 struct LayerState {
     layer: Box<dyn SimulationLayer>,
     next_tick_year: WorldYear,
@@ -25,6 +31,11 @@ struct LayerState {
 /// Coordinates multiple [`SimulationLayer`] instances until a target year.
 pub struct TickCoordinator {
     layers: Vec<LayerState>,
+    /// Whether the per-layer tick schedule has been anchored (by the resumable
+    /// path). The one-shot [`Self::advance_to`] re-anchors every call and
+    /// ignores this; [`Self::advance_resumable`] anchors once and then carries
+    /// the schedule forward.
+    schedule_anchored: bool,
 }
 
 impl Default for TickCoordinator {
@@ -35,7 +46,10 @@ impl Default for TickCoordinator {
 
 impl TickCoordinator {
     pub fn new() -> Self {
-        Self { layers: Vec::new() }
+        Self {
+            layers: Vec::new(),
+            schedule_anchored: false,
+        }
     }
 
     pub fn add_layer(&mut self, layer: Box<dyn SimulationLayer>) {
@@ -71,8 +85,60 @@ impl TickCoordinator {
         params: &WorldParameters,
         on_tick: &mut dyn FnMut(&WorldData),
     ) {
+        // One-shot: re-anchor the schedule to the current year every call. This
+        // is correct for a single run-to-target (the generation path and the
+        // validation gates), but re-firing a zero-interval seam tick and
+        // realigning the grid make it wrong for incremental stepping — use
+        // [`Self::advance_resumable_with`] for that.
         self.init_next_ticks(world.current_year, params);
+        self.schedule_anchored = true;
+        self.run_ticks(target_year, world, rng, params, on_tick);
+    }
 
+    /// Incremental sibling of [`Self::advance_to`]: anchors the tick schedule
+    /// exactly once (on the first call) and carries it forward across calls, so
+    /// advancing in steps (`t0 → t1 → … → tn`) produces **the same trajectory**
+    /// as a single `advance_to(tn)`. Keep one coordinator alive across the whole
+    /// session and drive it with this for interactive, tick-by-tick stepping;
+    /// the layers' internal timestep bookkeeping (`last_tick_year`) stays valid
+    /// because the coordinator and its layers are never rebuilt.
+    pub fn advance_resumable(
+        &mut self,
+        target_year: WorldYear,
+        world: &mut WorldData,
+        rng: &WorldRng,
+        params: &WorldParameters,
+    ) {
+        self.advance_resumable_with(target_year, world, rng, params, &mut |_| {});
+    }
+
+    /// [`Self::advance_resumable`] with a per-tick observer (progress / capture).
+    pub fn advance_resumable_with(
+        &mut self,
+        target_year: WorldYear,
+        world: &mut WorldData,
+        rng: &WorldRng,
+        params: &WorldParameters,
+        on_tick: &mut dyn FnMut(&WorldData),
+    ) {
+        if !self.schedule_anchored {
+            self.init_next_ticks(world.current_year, params);
+            self.schedule_anchored = true;
+        }
+        self.run_ticks(target_year, world, rng, params, on_tick);
+    }
+
+    /// The shared stepping loop: fire every layer due at or before `target_year`
+    /// in registration order, advancing `world.current_year` to the earliest
+    /// pending tick each step. Callers anchor the schedule first.
+    fn run_ticks(
+        &mut self,
+        target_year: WorldYear,
+        world: &mut WorldData,
+        rng: &WorldRng,
+        params: &WorldParameters,
+        on_tick: &mut dyn FnMut(&WorldData),
+    ) {
         while world.current_year < target_year {
             let Some(next_year) = self.earliest_next_tick(target_year) else {
                 break;
@@ -90,9 +156,10 @@ impl TickCoordinator {
                         let _ = state.layer.advance(world, rng);
                         state.next_tick_year = world.current_year + interval;
                     } else {
-                        // Layer is dormant at this year; skip it past the target to
-                        // prevent the coordinator stalling on a layer with no work.
-                        state.next_tick_year = WorldYear(i64::MAX);
+                        // Dormant at this year — do no work, but re-poll later
+                        // rather than park forever, so a layer can wake once world
+                        // state gives it work (Doc 09 §3; limitation 3).
+                        state.next_tick_year = world.current_year + DORMANT_REPOLL_YEARS;
                     }
                 }
             }
@@ -108,10 +175,12 @@ impl TickCoordinator {
     fn init_next_ticks(&mut self, start: WorldYear, params: &WorldParameters) {
         for state in &mut self.layers {
             let interval = state.layer.tick_interval(start, params);
+            // Active layers tick immediately at `start`; dormant ones are re-polled
+            // on the coarse cadence rather than parked forever (limitation 3).
             state.next_tick_year = if interval > 0 {
                 start
             } else {
-                WorldYear(i64::MAX)
+                start + DORMANT_REPOLL_YEARS
             };
         }
     }
@@ -179,6 +248,35 @@ impl SimulationLayer for DormantLayer {
 
     fn advance(&mut self, _world: &mut WorldData, _rng: &WorldRng) -> Vec<()> {
         panic!("dormant layer must not advance");
+    }
+}
+
+/// Dormant until `wake_year`, then ticks — models biology (no work before oceans
+/// exist, active afterward) to prove the coordinator re-polls dormant layers.
+#[cfg(test)]
+struct WakingLayer {
+    wake_year: i64,
+    interval: i64,
+    tick_years: Arc<Mutex<Vec<WorldYear>>>,
+}
+
+#[cfg(test)]
+impl SimulationLayer for WakingLayer {
+    fn name(&self) -> &str {
+        "waking"
+    }
+
+    fn tick_interval(&self, current_time: WorldYear, _params: &WorldParameters) -> i64 {
+        if current_time.value() >= self.wake_year {
+            self.interval
+        } else {
+            0
+        }
+    }
+
+    fn advance(&mut self, world: &mut WorldData, _rng: &WorldRng) -> Vec<()> {
+        self.tick_years.lock().unwrap().push(world.current_year);
+        Vec::new()
     }
 }
 
@@ -278,6 +376,70 @@ mod tests {
     }
 
     #[test]
+    fn resumable_stepping_equals_a_single_run() {
+        // The core guarantee for interactive stepping: advancing in small
+        // increments must fire exactly the same tick years, in the same order,
+        // as one advance to the final target.
+        let single = RecordingLayer::new("single", 100);
+        let single_log = Arc::clone(&single.tick_years);
+        let mut coord_single = TickCoordinator::new();
+        coord_single.add_layer(Box::new(single));
+        let mut world = world_at(WorldYear::FORMATION);
+        let rng = WorldRng::from_effective_seed(1);
+        let params = WorldParameters::default();
+        coord_single.advance_to(WorldYear(1000), &mut world, &rng, &params);
+
+        let stepped = RecordingLayer::new("stepped", 100);
+        let stepped_log = Arc::clone(&stepped.tick_years);
+        let mut coord_stepped = TickCoordinator::new();
+        coord_stepped.add_layer(Box::new(stepped));
+        let mut world2 = world_at(WorldYear::FORMATION);
+        for target in (100..=1000).step_by(100) {
+            coord_stepped.advance_resumable(WorldYear(target), &mut world2, &rng, &params);
+        }
+
+        assert_eq!(
+            *single_log.lock().unwrap(),
+            *stepped_log.lock().unwrap(),
+            "resumable increments must reproduce the single-run tick trajectory"
+        );
+        assert_eq!(world.current_year, world2.current_year);
+    }
+
+    #[test]
+    fn resumable_stepping_off_boundaries_still_matches() {
+        // Stepping by amounts that do NOT land on the tick grid (e.g. 70-year
+        // clicks over a 100-year layer) must still, once the targets sweep past
+        // each boundary, fire every boundary tick exactly once and never twice.
+        let single = RecordingLayer::new("single", 100);
+        let single_log = Arc::clone(&single.tick_years);
+        let mut coord_single = TickCoordinator::new();
+        coord_single.add_layer(Box::new(single));
+        let mut world = world_at(WorldYear::FORMATION);
+        let rng = WorldRng::from_effective_seed(1);
+        let params = WorldParameters::default();
+        coord_single.advance_to(WorldYear(1000), &mut world, &rng, &params);
+
+        let stepped = RecordingLayer::new("stepped", 100);
+        let stepped_log = Arc::clone(&stepped.tick_years);
+        let mut coord_stepped = TickCoordinator::new();
+        coord_stepped.add_layer(Box::new(stepped));
+        let mut world2 = world_at(WorldYear::FORMATION);
+        let mut target = 70;
+        while target <= 1000 {
+            coord_stepped.advance_resumable(WorldYear(target), &mut world2, &rng, &params);
+            target += 70;
+        }
+        coord_stepped.advance_resumable(WorldYear(1000), &mut world2, &rng, &params);
+
+        assert_eq!(
+            *single_log.lock().unwrap(),
+            *stepped_log.lock().unwrap(),
+            "off-grid stepping must still fire each boundary tick exactly once"
+        );
+    }
+
+    #[test]
     fn coordinator_does_not_stall_on_dormant_layer() {
         let mut coord = TickCoordinator::new();
         coord.add_layer(Box::new(DormantLayer));
@@ -290,5 +452,36 @@ mod tests {
         coord.advance_to(target, &mut world, &rng, &params);
 
         assert_eq!(world.current_year, target);
+    }
+
+    #[test]
+    fn dormant_at_start_layer_wakes_when_it_gets_work() {
+        // A layer that reports 0 at world start (dormant) must still be re-polled
+        // and tick once world state gives it work — not parked at i64::MAX forever
+        // (limitation 3).
+        let waker = WakingLayer {
+            wake_year: 3_000_000,
+            interval: 500_000,
+            tick_years: Arc::new(std::sync::Mutex::new(Vec::new())),
+        };
+        let log = Arc::clone(&waker.tick_years);
+
+        let mut coord = TickCoordinator::new();
+        coord.add_layer(Box::new(waker));
+
+        let mut world = world_at(WorldYear::FORMATION);
+        let rng = WorldRng::from_effective_seed(1);
+        let params = WorldParameters::default();
+        coord.advance_to(WorldYear(5_000_000), &mut world, &rng, &params);
+
+        let years = log.lock().unwrap();
+        assert!(
+            !years.is_empty(),
+            "a dormant-at-start layer must wake and tick once it has work"
+        );
+        assert!(
+            years.iter().all(|y| y.value() >= 3_000_000),
+            "no ticks before the wake year: {years:?}"
+        );
     }
 }

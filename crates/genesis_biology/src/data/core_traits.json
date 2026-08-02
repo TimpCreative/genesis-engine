@@ -1,0 +1,1547 @@
+{
+  "traits": [
+    {
+      "name": "core:chemosynthesis",
+      "display": "chemosynthesis",
+      "description": "Building food from raw chemical energy, no sunlight required. Like the deep-sea vent microbes that oxidize sulfur or methane — the most ancient way to make a living, thriving where light never reaches.",
+      "axis": "Metabolism",
+      "tier": 0,
+      "prerequisites": [],
+      "exclusions": [],
+      "proximity": [
+        [
+          "core:anoxygenic_phototrophy",
+          0.6
+        ],
+        [
+          "core:heterotrophy",
+          0.5
+        ],
+        [
+          "core:unicellular",
+          0.9
+        ]
+      ],
+      "reversal_cost": 3.0,
+      "base_energy_cost": 1.0,
+      "tags": [
+        "Autotroph"
+      ]
+    },
+    {
+      "name": "core:anoxygenic_phototrophy",
+      "display": "anoxygenic phototrophy",
+      "description": "Harvesting light for energy without splitting water or releasing oxygen, as purple and green sulfur bacteria do. An early rung on the ladder from pure chemistry to sunlight-powered life.",
+      "axis": "Metabolism",
+      "tier": 0,
+      "prerequisites": [
+        "core:chemosynthesis"
+      ],
+      "exclusions": [],
+      "proximity": [
+        [
+          "core:oxygenic_photosynthesis",
+          0.7
+        ]
+      ],
+      "reversal_cost": 2.5,
+      "base_energy_cost": 1.0,
+      "tags": [
+        "Autotroph"
+      ]
+    },
+    {
+      "name": "core:oxygenic_photosynthesis",
+      "display": "oxygenic photosynthesis",
+      "description": "Splitting water with sunlight to make food, breathing out oxygen as waste. The cyanobacterial breakthrough that painted the sky blue and came to feed nearly every food web since.",
+      "axis": "Metabolism",
+      "tier": 0,
+      "prerequisites": [
+        "core:anoxygenic_phototrophy"
+      ],
+      "exclusions": [],
+      "proximity": [
+        [
+          "core:cellulose_wall",
+          0.6
+        ],
+        [
+          "core:multicellular",
+          0.4
+        ],
+        [
+          "core:colonial",
+          0.4
+        ]
+      ],
+      "reversal_cost": 3.0,
+      "base_energy_cost": 1.2,
+      "tags": [
+        "Autotroph",
+        "KeyInnovation",
+        "ProducerBasin"
+      ]
+    },
+    {
+      "name": "core:heterotrophy",
+      "display": "heterotrophy",
+      "description": "Making a living by eating others instead of making your own food. The founding strategy of the animal kingdom — consume, don't produce.",
+      "axis": "Metabolism",
+      "tier": 0,
+      "prerequisites": [],
+      "exclusions": [
+        "core:oxygenic_photosynthesis"
+      ],
+      "proximity": [
+        [
+          "core:ciliary",
+          0.6
+        ],
+        [
+          "core:chitin",
+          0.4
+        ],
+        [
+          "core:diet_generalist",
+          0.6
+        ]
+      ],
+      "reversal_cost": 2.5,
+      "base_energy_cost": 1.0,
+      "tags": [
+        "Heterotroph",
+        "AnimalBasin"
+      ]
+    },
+    {
+      "name": "core:absorptive_decomposition",
+      "display": "absorptive decomposition",
+      "description": "Feeding by dissolving dead matter with external enzymes and soaking up the nutrients. The fungal way of life — nature's great recycler, unlocking carbon the rest of the web cannot reach.",
+      "axis": "Metabolism",
+      "tier": 0,
+      "prerequisites": [],
+      "exclusions": [
+        "core:oxygenic_photosynthesis"
+      ],
+      "proximity": [
+        [
+          "core:chitin",
+          0.6
+        ],
+        [
+          "core:spores",
+          0.6
+        ],
+        [
+          "core:detritivore",
+          0.5
+        ]
+      ],
+      "reversal_cost": 2.5,
+      "base_energy_cost": 0.9,
+      "tags": [
+        "Decomposer",
+        "FungusBasin"
+      ]
+    },
+    {
+      "name": "core:mixotrophy",
+      "display": "mixotrophy",
+      "description": "Hedging bets by both making food and eating it, like the algae and protists that photosynthesize when light is good and hunt when it isn't. Flexible fuel for an uncertain world.",
+      "axis": "Metabolism",
+      "tier": 0,
+      "prerequisites": [
+        "core:chemosynthesis"
+      ],
+      "exclusions": [],
+      "proximity": [
+        [
+          "core:heterotrophy",
+          0.4
+        ]
+      ],
+      "reversal_cost": 1.5,
+      "base_energy_cost": 1.1,
+      "tags": [
+        "Autotroph",
+        "Heterotroph"
+      ]
+    },
+    {
+      "name": "core:unicellular",
+      "display": "unicellular",
+      "description": "Life as a single self-contained cell. The original body plan — everything one microbe needs to feed, move, and divide packed inside a single membrane.",
+      "axis": "Organization",
+      "tier": 0,
+      "prerequisites": [],
+      "exclusions": [],
+      "proximity": [
+        [
+          "core:eukaryote",
+          0.8
+        ],
+        [
+          "core:binary_fission",
+          0.7
+        ],
+        [
+          "core:silica_frustule",
+          0.4
+        ]
+      ],
+      "reversal_cost": 2.0,
+      "base_energy_cost": 0.5,
+      "tags": []
+    },
+    {
+      "name": "core:eukaryote",
+      "display": "eukaryote",
+      "description": "The complex cell with a nucleus and internal organelles, born of an ancient merger between microbes. The gateway through which all large, intricate life would eventually pass.",
+      "axis": "Organization",
+      "tier": 0,
+      "prerequisites": [
+        "core:unicellular"
+      ],
+      "exclusions": [],
+      "proximity": [
+        [
+          "core:colonial",
+          0.8
+        ]
+      ],
+      "reversal_cost": 2.5,
+      "base_energy_cost": 0.8,
+      "tags": [
+        "KeyInnovation"
+      ]
+    },
+    {
+      "name": "core:colonial",
+      "display": "colonial organization",
+      "description": "Many cells living together as a loose cooperative, yet each still able to survive alone. A halfway house on the road from single cells to a true unified body.",
+      "axis": "Organization",
+      "tier": 0,
+      "prerequisites": [
+        "core:eukaryote"
+      ],
+      "exclusions": [],
+      "proximity": [
+        [
+          "core:multicellular",
+          0.8
+        ]
+      ],
+      "reversal_cost": 1.5,
+      "base_energy_cost": 0.6,
+      "tags": []
+    },
+    {
+      "name": "core:multicellular",
+      "display": "multicellular",
+      "description": "A single body built from many committed, cooperating cells that can no longer live apart. The leap that made trees, animals, and mushrooms possible.",
+      "axis": "Organization",
+      "tier": 0,
+      "prerequisites": [
+        "core:colonial"
+      ],
+      "exclusions": [],
+      "proximity": [
+        [
+          "core:differentiated_tissue",
+          0.8
+        ],
+        [
+          "core:cellulose_wall",
+          0.5
+        ],
+        [
+          "core:chitin",
+          0.5
+        ],
+        [
+          "core:hydrostatic",
+          0.5
+        ],
+        [
+          "core:radial",
+          0.5
+        ],
+        [
+          "core:bilateral",
+          0.5
+        ],
+        [
+          "core:spores",
+          0.4
+        ]
+      ],
+      "reversal_cost": 3.0,
+      "base_energy_cost": 1.0,
+      "tags": [
+        "KeyInnovation"
+      ]
+    },
+    {
+      "name": "core:differentiated_tissue",
+      "display": "differentiated tissue",
+      "description": "Cells specializing into distinct tissues — muscle, skin, gut, and more. Division of labor within one body, the foundation on which every complex organ is built.",
+      "axis": "Organization",
+      "tier": 0,
+      "prerequisites": [
+        "core:multicellular"
+      ],
+      "exclusions": [],
+      "proximity": [
+        [
+          "core:nerve_net",
+          0.7
+        ],
+        [
+          "core:mineral_endoskeleton",
+          0.5
+        ],
+        [
+          "core:poikilotherm",
+          0.5
+        ],
+        [
+          "core:external_eggs",
+          0.4
+        ],
+        [
+          "core:size_large",
+          0.4
+        ]
+      ],
+      "reversal_cost": 2.5,
+      "base_energy_cost": 1.1,
+      "tags": [
+        "KeyInnovation"
+      ]
+    },
+    {
+      "name": "core:cellulose_wall",
+      "display": "cellulose cell wall",
+      "description": "Rigid walls of cellulose that let a body stand tall against gravity. The structural scaffolding of plants — stems, leaves, and towering forests all rest on it.",
+      "axis": "Structure",
+      "tier": 1,
+      "prerequisites": [
+        "core:multicellular"
+      ],
+      "exclusions": [
+        "core:chitin",
+        "core:mineral_endoskeleton",
+        "core:mineral_exoskeleton",
+        "core:heterotrophy"
+      ],
+      "proximity": [
+        [
+          "core:bark",
+          0.6
+        ],
+        [
+          "core:seed_analog",
+          0.6
+        ],
+        [
+          "core:sessile",
+          0.7
+        ]
+      ],
+      "reversal_cost": 2.5,
+      "base_energy_cost": 0.8,
+      "tags": [
+        "ProducerBasin"
+      ]
+    },
+    {
+      "name": "core:chitin",
+      "display": "chitin",
+      "description": "A tough yet flexible polymer used for walls and armor. It weaves the threads of fungi and the crunchy exoskeletons of insects and crustaceans alike.",
+      "axis": "Structure",
+      "tier": 1,
+      "prerequisites": [
+        "core:multicellular"
+      ],
+      "exclusions": [
+        "core:cellulose_wall"
+      ],
+      "proximity": [
+        [
+          "core:mineral_exoskeleton",
+          0.6
+        ],
+        [
+          "core:cuticle",
+          0.6
+        ],
+        [
+          "core:segmented",
+          0.4
+        ]
+      ],
+      "reversal_cost": 2.0,
+      "base_energy_cost": 0.8,
+      "tags": []
+    },
+    {
+      "name": "core:mineral_endoskeleton",
+      "display": "mineral endoskeleton",
+      "description": "An internal frame of mineralized bone or cartilage that grows with the body and anchors muscle. The inner scaffold that lets vertebrates reach great size and power.",
+      "axis": "Structure",
+      "tier": 1,
+      "prerequisites": [
+        "core:heterotrophy",
+        "core:differentiated_tissue"
+      ],
+      "exclusions": [
+        "core:mineral_exoskeleton",
+        "core:cellulose_wall"
+      ],
+      "proximity": [
+        [
+          "core:limbed_walk",
+          0.5
+        ],
+        [
+          "core:scale",
+          0.5
+        ],
+        [
+          "core:size_mega",
+          0.4
+        ]
+      ],
+      "reversal_cost": 2.5,
+      "base_energy_cost": 1.0,
+      "tags": [
+        "AnimalBasin"
+      ]
+    },
+    {
+      "name": "core:mineral_exoskeleton",
+      "display": "mineral exoskeleton",
+      "description": "A hard mineral shell worn on the outside for armor and support. The arthropod and mollusc solution — strong protection, but it must be shed and regrown to allow growth.",
+      "axis": "Structure",
+      "tier": 1,
+      "prerequisites": [
+        "core:chitin"
+      ],
+      "exclusions": [
+        "core:mineral_endoskeleton",
+        "core:cellulose_wall"
+      ],
+      "proximity": [
+        [
+          "core:shell",
+          0.6
+        ],
+        [
+          "core:scale",
+          0.4
+        ]
+      ],
+      "reversal_cost": 2.0,
+      "base_energy_cost": 1.0,
+      "tags": []
+    },
+    {
+      "name": "core:hydrostatic",
+      "display": "hydrostatic skeleton",
+      "description": "A skeleton made of pressurized fluid held in shape by surrounding muscle. How worms and jellyfish keep their form and move — soft-bodied, yet surprisingly strong.",
+      "axis": "Structure",
+      "tier": 1,
+      "prerequisites": [
+        "core:multicellular"
+      ],
+      "exclusions": [],
+      "proximity": [
+        [
+          "core:muscular_crawl",
+          0.5
+        ]
+      ],
+      "reversal_cost": 1.0,
+      "base_energy_cost": 0.6,
+      "tags": []
+    },
+    {
+      "name": "core:silica_frustule",
+      "display": "silica frustule",
+      "description": "An intricate glass shell of silica encasing a single cell. The exquisite, geometric armor of diatoms drifting through the sunlit plankton.",
+      "axis": "Structure",
+      "tier": 1,
+      "prerequisites": [
+        "core:unicellular"
+      ],
+      "exclusions": [],
+      "proximity": [],
+      "reversal_cost": 1.5,
+      "base_energy_cost": 0.7,
+      "tags": []
+    },
+    {
+      "name": "core:radial",
+      "display": "radial symmetry",
+      "description": "A body arranged around a central axis with no left or right, like a jellyfish or sea anemone. Efficient for sessile or drifting life that meets the world from every side at once.",
+      "axis": "Symmetry",
+      "tier": 1,
+      "prerequisites": [
+        "core:multicellular"
+      ],
+      "exclusions": [
+        "core:bilateral"
+      ],
+      "proximity": [
+        [
+          "core:sessile",
+          0.5
+        ],
+        [
+          "core:filter_feeder",
+          0.5
+        ]
+      ],
+      "reversal_cost": 1.5,
+      "base_energy_cost": 0.5,
+      "tags": []
+    },
+    {
+      "name": "core:bilateral",
+      "display": "bilateral symmetry",
+      "description": "A body with mirror-image left and right sides, a front and a back. By concentrating senses at the head, it primes an animal for directed, purposeful forward movement.",
+      "axis": "Symmetry",
+      "tier": 1,
+      "prerequisites": [
+        "core:multicellular"
+      ],
+      "exclusions": [
+        "core:radial"
+      ],
+      "proximity": [
+        [
+          "core:muscular_crawl",
+          0.6
+        ],
+        [
+          "core:ganglia",
+          0.5
+        ],
+        [
+          "core:segmented",
+          0.5
+        ]
+      ],
+      "reversal_cost": 2.0,
+      "base_energy_cost": 0.5,
+      "tags": [
+        "AnimalBasin"
+      ]
+    },
+    {
+      "name": "core:asymmetric",
+      "display": "asymmetry",
+      "description": "A body with no plane of symmetry at all, like a sponge. Order is optional when you simply filter the water and never need to travel anywhere in particular.",
+      "axis": "Symmetry",
+      "tier": 1,
+      "prerequisites": [
+        "core:multicellular"
+      ],
+      "exclusions": [],
+      "proximity": [],
+      "reversal_cost": 0.5,
+      "base_energy_cost": 0.4,
+      "tags": []
+    },
+    {
+      "name": "core:segmented",
+      "display": "segmented body",
+      "description": "A body built from repeated modular units, like a worm or a centipede. Repetition lets segments specialize and enables flexible, finely coordinated movement.",
+      "axis": "Symmetry",
+      "tier": 1,
+      "prerequisites": [
+        "core:bilateral"
+      ],
+      "exclusions": [],
+      "proximity": [
+        [
+          "core:limbed_walk",
+          0.4
+        ]
+      ],
+      "reversal_cost": 1.5,
+      "base_energy_cost": 0.6,
+      "tags": []
+    },
+    {
+      "name": "core:sessile",
+      "display": "sessile",
+      "description": "Rooted in one place for life, letting food and mates come to you. The unhurried strategy of corals, barnacles, and trees — stay put and reach out.",
+      "axis": "Motility",
+      "tier": 2,
+      "prerequisites": [
+        "core:multicellular"
+      ],
+      "exclusions": [
+        "core:muscular_crawl",
+        "core:limbed_walk",
+        "core:swim",
+        "core:jet",
+        "core:powered_flight"
+      ],
+      "proximity": [
+        [
+          "core:filter_feeder",
+          0.5
+        ],
+        [
+          "core:bark",
+          0.4
+        ]
+      ],
+      "reversal_cost": 1.5,
+      "base_energy_cost": 0.4,
+      "tags": []
+    },
+    {
+      "name": "core:ciliary",
+      "display": "ciliary locomotion",
+      "description": "Swimming or feeding by beating rows of tiny hair-like cilia. How single cells and larvae glide through water, one coordinated stroke at a time.",
+      "axis": "Motility",
+      "tier": 2,
+      "prerequisites": [
+        "core:unicellular"
+      ],
+      "exclusions": [],
+      "proximity": [],
+      "reversal_cost": 1.0,
+      "base_energy_cost": 0.5,
+      "tags": [
+        "Motile"
+      ]
+    },
+    {
+      "name": "core:muscular_crawl",
+      "display": "muscular crawling",
+      "description": "Moving by rhythmic waves of muscle pressing against the ground. The slow but certain locomotion of worms, slugs, and snails.",
+      "axis": "Motility",
+      "tier": 2,
+      "prerequisites": [
+        "core:nerve_net"
+      ],
+      "exclusions": [],
+      "proximity": [
+        [
+          "core:limbed_walk",
+          0.6
+        ],
+        [
+          "core:swim",
+          0.6
+        ],
+        [
+          "core:jet",
+          0.4
+        ]
+      ],
+      "reversal_cost": 1.5,
+      "base_energy_cost": 0.9,
+      "tags": [
+        "Motile"
+      ]
+    },
+    {
+      "name": "core:limbed_walk",
+      "display": "limbed walking",
+      "description": "Getting about on jointed limbs that lift the body clear of the ground. The breakthrough that let animals stride, climb, and run across the land.",
+      "axis": "Motility",
+      "tier": 2,
+      "prerequisites": [
+        "core:muscular_crawl",
+        "core:bilateral"
+      ],
+      "exclusions": [],
+      "proximity": [
+        [
+          "core:powered_flight",
+          0.4
+        ],
+        [
+          "core:homeotherm",
+          0.3
+        ]
+      ],
+      "reversal_cost": 1.5,
+      "base_energy_cost": 1.0,
+      "tags": [
+        "Motile"
+      ]
+    },
+    {
+      "name": "core:swim",
+      "display": "swimming",
+      "description": "Actively driving the body through water with fins, tails, or undulations. The fast, fluid mastery of open water, from minnow to marlin.",
+      "axis": "Motility",
+      "tier": 2,
+      "prerequisites": [
+        "core:muscular_crawl"
+      ],
+      "exclusions": [],
+      "proximity": [],
+      "reversal_cost": 1.0,
+      "base_energy_cost": 0.9,
+      "tags": [
+        "Motile"
+      ]
+    },
+    {
+      "name": "core:jet",
+      "display": "jet propulsion",
+      "description": "Rocketing along by forcefully squeezing out a jet of water. The squid-and-jellyfish trick — a sudden burst of speed from a single contraction.",
+      "axis": "Motility",
+      "tier": 2,
+      "prerequisites": [
+        "core:muscular_crawl"
+      ],
+      "exclusions": [],
+      "proximity": [],
+      "reversal_cost": 1.0,
+      "base_energy_cost": 1.0,
+      "tags": [
+        "Motile"
+      ]
+    },
+    {
+      "name": "core:powered_flight",
+      "display": "powered flight",
+      "description": "True flapping flight under a body's own power. Conquered again and again by insects, pterosaurs, birds, and bats — the moment the open sky became home.",
+      "axis": "Motility",
+      "tier": 2,
+      "prerequisites": [
+        "core:limbed_walk"
+      ],
+      "exclusions": [
+        "core:size_mega"
+      ],
+      "proximity": [
+        [
+          "core:feather",
+          0.4
+        ]
+      ],
+      "reversal_cost": 2.0,
+      "base_energy_cost": 1.4,
+      "tags": [
+        "Motile",
+        "KeyInnovation"
+      ]
+    },
+    {
+      "name": "core:poikilotherm",
+      "display": "cold-blooded metabolism",
+      "description": "Body temperature drifts with the surroundings rather than being held steady. Cheap to run but reliant on outside warmth, like a reptile basking to start its day.",
+      "axis": "Thermoregulation",
+      "tier": 2,
+      "prerequisites": [
+        "core:differentiated_tissue"
+      ],
+      "exclusions": [
+        "core:homeotherm"
+      ],
+      "proximity": [],
+      "reversal_cost": 1.0,
+      "base_energy_cost": 0.5,
+      "tags": []
+    },
+    {
+      "name": "core:homeotherm",
+      "display": "warm-blooded metabolism",
+      "description": "Burning fuel to hold a constant inner warmth. Costly but liberating — it lets a body stay active through cold nights, harsh winters, and polar extremes.",
+      "axis": "Thermoregulation",
+      "tier": 2,
+      "prerequisites": [
+        "core:differentiated_tissue"
+      ],
+      "exclusions": [
+        "core:poikilotherm"
+      ],
+      "proximity": [
+        [
+          "core:fur",
+          0.5
+        ],
+        [
+          "core:feather",
+          0.5
+        ],
+        [
+          "core:internal_gestation",
+          0.4
+        ]
+      ],
+      "reversal_cost": 2.5,
+      "base_energy_cost": 1.3,
+      "tags": [
+        "KeyInnovation"
+      ]
+    },
+    {
+      "name": "core:nerve_net",
+      "display": "nerve net",
+      "description": "A diffuse mesh of nerve cells with no central brain, as in a jellyfish. The very first nervous system — able to sense and react everywhere at once.",
+      "axis": "Nervous",
+      "tier": 2,
+      "prerequisites": [
+        "core:heterotrophy",
+        "core:multicellular"
+      ],
+      "exclusions": [],
+      "proximity": [
+        [
+          "core:ganglia",
+          0.7
+        ],
+        [
+          "core:muscular_crawl",
+          0.5
+        ],
+        [
+          "core:chemoreception",
+          0.5
+        ]
+      ],
+      "reversal_cost": 2.5,
+      "base_energy_cost": 0.9,
+      "tags": [
+        "AnimalBasin"
+      ]
+    },
+    {
+      "name": "core:ganglia",
+      "display": "ganglia",
+      "description": "Clusters of nerve cells forming local processing hubs. A first step toward centralization, and the origin of coordinated, patterned behavior.",
+      "axis": "Nervous",
+      "tier": 2,
+      "prerequisites": [
+        "core:nerve_net"
+      ],
+      "exclusions": [],
+      "proximity": [
+        [
+          "core:centralized_brain",
+          0.7
+        ],
+        [
+          "core:photoreception",
+          0.5
+        ],
+        [
+          "core:eusocial",
+          0.4
+        ]
+      ],
+      "reversal_cost": 2.5,
+      "base_energy_cost": 1.0,
+      "tags": []
+    },
+    {
+      "name": "core:centralized_brain",
+      "display": "centralized brain",
+      "description": "Nervous tissue gathered into a true brain that commands the whole body. The seat of memory, decision, and steadily more elaborate behavior.",
+      "axis": "Nervous",
+      "tier": 2,
+      "prerequisites": [
+        "core:ganglia"
+      ],
+      "exclusions": [],
+      "proximity": [
+        [
+          "core:complex_cognition",
+          0.6
+        ],
+        [
+          "core:image_eye",
+          0.5
+        ],
+        [
+          "core:herd",
+          0.4
+        ],
+        [
+          "core:pair_bond",
+          0.4
+        ]
+      ],
+      "reversal_cost": 3.0,
+      "base_energy_cost": 1.3,
+      "tags": [
+        "KeyInnovation"
+      ]
+    },
+    {
+      "name": "core:complex_cognition",
+      "display": "complex cognition",
+      "description": "Flexible problem-solving, learning, and even foresight. The rich inner life of crows, octopuses, and apes — behavior that reaches well beyond raw instinct.",
+      "axis": "Nervous",
+      "tier": 5,
+      "prerequisites": [
+        "core:centralized_brain"
+      ],
+      "exclusions": [],
+      "proximity": [
+        [
+          "core:sapience",
+          0.4
+        ],
+        [
+          "core:eusocial",
+          0.3
+        ]
+      ],
+      "reversal_cost": 3.0,
+      "base_energy_cost": 1.6,
+      "tags": []
+    },
+    {
+      "name": "core:sapience",
+      "display": "sapience",
+      "description": "Self-aware, abstract intelligence that wields language and tools. The rare summit of the nervous line — a mind able to ponder its own place in the world.",
+      "axis": "Nervous",
+      "tier": 5,
+      "prerequisites": [
+        "core:complex_cognition"
+      ],
+      "exclusions": [],
+      "proximity": [],
+      "reversal_cost": 4.0,
+      "base_energy_cost": 2.0,
+      "tags": [
+        "KeyInnovation"
+      ]
+    },
+    {
+      "name": "core:chemoreception",
+      "display": "chemoreception",
+      "description": "Sensing the chemistry of the world — the roots of taste and smell. The oldest of the senses, guiding life toward food and away from danger by molecules alone.",
+      "axis": "Sensory",
+      "tier": 3,
+      "prerequisites": [
+        "core:nerve_net"
+      ],
+      "exclusions": [],
+      "proximity": [
+        [
+          "core:photoreception",
+          0.5
+        ]
+      ],
+      "reversal_cost": 1.0,
+      "base_energy_cost": 0.5,
+      "tags": []
+    },
+    {
+      "name": "core:photoreception",
+      "display": "photoreception",
+      "description": "Detecting light and dark, even without a true eye. Telling day from night and shadow from sun — the raw beginning of vision.",
+      "axis": "Sensory",
+      "tier": 3,
+      "prerequisites": [
+        "core:nerve_net"
+      ],
+      "exclusions": [],
+      "proximity": [
+        [
+          "core:image_eye",
+          0.6
+        ]
+      ],
+      "reversal_cost": 1.5,
+      "base_energy_cost": 0.6,
+      "tags": []
+    },
+    {
+      "name": "core:image_eye",
+      "display": "image-forming eye",
+      "description": "A true focusing eye that forms sharp images of the world. From trilobites to eagles, the sense that has driven predator, prey, and courtship alike.",
+      "axis": "Sensory",
+      "tier": 3,
+      "prerequisites": [
+        "core:photoreception",
+        "core:ganglia"
+      ],
+      "exclusions": [],
+      "proximity": [
+        [
+          "core:display_coloration",
+          0.4
+        ]
+      ],
+      "reversal_cost": 2.0,
+      "base_energy_cost": 0.8,
+      "tags": [
+        "KeyInnovation"
+      ]
+    },
+    {
+      "name": "core:electroreception",
+      "display": "electroreception",
+      "description": "Feeling the faint electric fields cast by other living bodies. How sharks and platypuses hunt in murky water and mud where eyes are useless.",
+      "axis": "Sensory",
+      "tier": 3,
+      "prerequisites": [
+        "core:ganglia"
+      ],
+      "exclusions": [],
+      "proximity": [],
+      "reversal_cost": 1.0,
+      "base_energy_cost": 0.6,
+      "tags": []
+    },
+    {
+      "name": "core:echolocation",
+      "display": "echolocation",
+      "description": "Building a picture of the surroundings from the echoes of one's own calls. The biological sonar of bats and dolphins, seeing clearly with sound in total darkness.",
+      "axis": "Sensory",
+      "tier": 3,
+      "prerequisites": [
+        "core:centralized_brain"
+      ],
+      "exclusions": [],
+      "proximity": [],
+      "reversal_cost": 1.5,
+      "base_energy_cost": 0.8,
+      "tags": []
+    },
+    {
+      "name": "core:magnetoreception",
+      "display": "magnetoreception",
+      "description": "Sensing Earth's magnetic field as an inner compass. How migrating birds and sea turtles navigate across thousands of miles without ever losing their way.",
+      "axis": "Sensory",
+      "tier": 3,
+      "prerequisites": [
+        "core:ganglia"
+      ],
+      "exclusions": [],
+      "proximity": [],
+      "reversal_cost": 1.0,
+      "base_energy_cost": 0.5,
+      "tags": []
+    },
+    {
+      "name": "core:binary_fission",
+      "display": "binary fission",
+      "description": "Reproducing by simply splitting in two. The swift, clone-making multiplication of microbes — no partner and no courtship required.",
+      "axis": "Reproduction",
+      "tier": 3,
+      "prerequisites": [
+        "core:unicellular"
+      ],
+      "exclusions": [],
+      "proximity": [],
+      "reversal_cost": 0.5,
+      "base_energy_cost": 0.3,
+      "tags": []
+    },
+    {
+      "name": "core:spores",
+      "display": "spores",
+      "description": "Casting out tough, tiny spores that scatter far on wind or water and wait out hard times. The far-flung dispersal strategy of fungi, ferns, and mosses.",
+      "axis": "Reproduction",
+      "tier": 3,
+      "prerequisites": [
+        "core:multicellular"
+      ],
+      "exclusions": [],
+      "proximity": [],
+      "reversal_cost": 1.0,
+      "base_energy_cost": 0.4,
+      "tags": []
+    },
+    {
+      "name": "core:seed_analog",
+      "display": "seeds",
+      "description": "Packaging an embryo together with a food store inside a protective coat. The seed is a plant's bet on the future — dormant until conditions are finally right to sprout.",
+      "axis": "Reproduction",
+      "tier": 3,
+      "prerequisites": [
+        "core:cellulose_wall"
+      ],
+      "exclusions": [],
+      "proximity": [],
+      "reversal_cost": 1.5,
+      "base_energy_cost": 0.6,
+      "tags": [
+        "ProducerBasin"
+      ]
+    },
+    {
+      "name": "core:external_eggs",
+      "display": "external eggs",
+      "description": "Laying eggs to develop outside the body. Many, cheap, and left to face the world on their own — the ancient bargain of fish, frogs, and reptiles.",
+      "axis": "Reproduction",
+      "tier": 3,
+      "prerequisites": [
+        "core:differentiated_tissue"
+      ],
+      "exclusions": [],
+      "proximity": [
+        [
+          "core:internal_gestation",
+          0.4
+        ]
+      ],
+      "reversal_cost": 1.0,
+      "base_energy_cost": 0.5,
+      "tags": []
+    },
+    {
+      "name": "core:internal_gestation",
+      "display": "internal gestation",
+      "description": "Carrying developing young inside the body until they are ready to be born. Fewer offspring, but each far better sheltered and nourished — the mammalian wager.",
+      "axis": "Reproduction",
+      "tier": 3,
+      "prerequisites": [
+        "core:differentiated_tissue"
+      ],
+      "exclusions": [],
+      "proximity": [
+        [
+          "core:pair_bond",
+          0.3
+        ]
+      ],
+      "reversal_cost": 2.0,
+      "base_energy_cost": 0.9,
+      "tags": []
+    },
+    {
+      "name": "core:naked",
+      "display": "bare skin",
+      "description": "A bare, unadorned body surface with no special covering. Simple and cheap, trading protection for breathability, agility, or heat loss.",
+      "axis": "Integument",
+      "tier": 4,
+      "prerequisites": [
+        "core:multicellular"
+      ],
+      "exclusions": [],
+      "proximity": [],
+      "reversal_cost": 0.5,
+      "base_energy_cost": 0.3,
+      "tags": []
+    },
+    {
+      "name": "core:cuticle",
+      "display": "cuticle",
+      "description": "A waxy outer layer that seals moisture inside. The insect's and plant's shield against drying out — a key that helped unlock life on dry land.",
+      "axis": "Integument",
+      "tier": 4,
+      "prerequisites": [
+        "core:chitin"
+      ],
+      "exclusions": [],
+      "proximity": [],
+      "reversal_cost": 1.0,
+      "base_energy_cost": 0.4,
+      "tags": []
+    },
+    {
+      "name": "core:scale",
+      "display": "scales",
+      "description": "Overlapping plates of tough tissue shielding the skin. The flexible armor of fish and reptiles, guarding against abrasion, teeth, and the elements.",
+      "axis": "Integument",
+      "tier": 4,
+      "prerequisites": [
+        "core:mineral_endoskeleton"
+      ],
+      "exclusions": [],
+      "proximity": [
+        [
+          "core:feather",
+          0.4
+        ]
+      ],
+      "reversal_cost": 1.0,
+      "base_energy_cost": 0.5,
+      "tags": []
+    },
+    {
+      "name": "core:feather",
+      "display": "feathers",
+      "description": "Lightweight branching structures serving insulation, display, and flight. The evolutionary marvel that ultimately carried dinosaurs up into the sky.",
+      "axis": "Integument",
+      "tier": 4,
+      "prerequisites": [
+        "core:homeotherm",
+        "core:scale"
+      ],
+      "exclusions": [],
+      "proximity": [],
+      "reversal_cost": 1.5,
+      "base_energy_cost": 0.6,
+      "tags": []
+    },
+    {
+      "name": "core:fur",
+      "display": "fur",
+      "description": "A dense coat of hair that traps warmth against the skin. The mammalian blanket that made survival through cold nights and frozen winters possible.",
+      "axis": "Integument",
+      "tier": 4,
+      "prerequisites": [
+        "core:homeotherm"
+      ],
+      "exclusions": [],
+      "proximity": [],
+      "reversal_cost": 1.5,
+      "base_energy_cost": 0.6,
+      "tags": []
+    },
+    {
+      "name": "core:bark",
+      "display": "bark",
+      "description": "A protective outer rind of dead tissue wrapping a woody body. Armor against fire, drought, insects, and time for the longest-lived of plants.",
+      "axis": "Integument",
+      "tier": 4,
+      "prerequisites": [
+        "core:cellulose_wall"
+      ],
+      "exclusions": [],
+      "proximity": [
+        [
+          "core:size_large",
+          0.3
+        ]
+      ],
+      "reversal_cost": 1.5,
+      "base_energy_cost": 0.7,
+      "tags": [
+        "ProducerBasin"
+      ]
+    },
+    {
+      "name": "core:shell",
+      "display": "shell",
+      "description": "A hard mineral case enclosing the whole body. The retreat of snails, clams, and turtles — a portable fortress carried everywhere it goes.",
+      "axis": "Integument",
+      "tier": 4,
+      "prerequisites": [
+        "core:mineral_exoskeleton"
+      ],
+      "exclusions": [],
+      "proximity": [],
+      "reversal_cost": 1.5,
+      "base_energy_cost": 0.8,
+      "tags": []
+    },
+    {
+      "name": "core:diet_generalist",
+      "display": "generalist diet",
+      "description": "Eating a broad menu of whatever happens to be available. The opportunist's edge when the world turns unpredictable, like a raccoon or a rat.",
+      "axis": "Diet",
+      "tier": 4,
+      "prerequisites": [
+        "core:heterotrophy"
+      ],
+      "exclusions": [],
+      "proximity": [
+        [
+          "core:folivore",
+          0.4
+        ],
+        [
+          "core:hypercarnivore",
+          0.4
+        ]
+      ],
+      "reversal_cost": 0.5,
+      "base_energy_cost": 0.4,
+      "tags": [
+        "Heterotroph"
+      ]
+    },
+    {
+      "name": "core:folivore",
+      "display": "folivore",
+      "description": "Living on leaves — tough and abundant, but poor in energy. It demands a long gut and endless patience, like a sloth or a colobus monkey.",
+      "axis": "Diet",
+      "tier": 4,
+      "prerequisites": [
+        "core:heterotrophy"
+      ],
+      "exclusions": [],
+      "proximity": [],
+      "reversal_cost": 1.0,
+      "base_energy_cost": 0.5,
+      "tags": [
+        "Heterotroph"
+      ]
+    },
+    {
+      "name": "core:granivore",
+      "display": "granivore",
+      "description": "Specializing in energy-rich seeds and grains. The finch's and rodent's harvest — concentrated fuel well worth cracking a hard husk to reach.",
+      "axis": "Diet",
+      "tier": 4,
+      "prerequisites": [
+        "core:heterotrophy"
+      ],
+      "exclusions": [],
+      "proximity": [],
+      "reversal_cost": 1.0,
+      "base_energy_cost": 0.5,
+      "tags": [
+        "Heterotroph"
+      ]
+    },
+    {
+      "name": "core:hypercarnivore",
+      "display": "hypercarnivore",
+      "description": "A diet of almost pure meat, demanding speed, stealth, and weapons. The apex hunter's calling, like a big cat or a wolf.",
+      "axis": "Diet",
+      "tier": 4,
+      "prerequisites": [
+        "core:heterotrophy",
+        "core:muscular_crawl"
+      ],
+      "exclusions": [],
+      "proximity": [],
+      "reversal_cost": 1.5,
+      "base_energy_cost": 0.8,
+      "tags": [
+        "Heterotroph"
+      ]
+    },
+    {
+      "name": "core:filter_feeder",
+      "display": "filter feeder",
+      "description": "Straining countless small morsels from the surrounding water. From clams to blue whales, gathering a full meal one tiny particle at a time.",
+      "axis": "Diet",
+      "tier": 4,
+      "prerequisites": [
+        "core:heterotrophy"
+      ],
+      "exclusions": [],
+      "proximity": [],
+      "reversal_cost": 1.0,
+      "base_energy_cost": 0.5,
+      "tags": [
+        "Heterotroph"
+      ]
+    },
+    {
+      "name": "core:detritivore",
+      "display": "detritivore",
+      "description": "Eating dead and decaying matter, tidying the world's leftovers. The essential work of earthworms and woodlice, returning nutrients to the soil.",
+      "axis": "Diet",
+      "tier": 4,
+      "prerequisites": [
+        "core:heterotrophy"
+      ],
+      "exclusions": [],
+      "proximity": [],
+      "reversal_cost": 0.8,
+      "base_energy_cost": 0.4,
+      "tags": [
+        "Heterotroph"
+      ]
+    },
+    {
+      "name": "core:parasite",
+      "display": "parasite",
+      "description": "Living on or inside a host, taking sustenance without killing it outright. A stealthy, low-cost living — from tapeworms to ticks — always at another's expense.",
+      "axis": "Diet",
+      "tier": 4,
+      "prerequisites": [
+        "core:heterotrophy"
+      ],
+      "exclusions": [],
+      "proximity": [],
+      "reversal_cost": 1.2,
+      "base_energy_cost": 0.4,
+      "tags": [
+        "Heterotroph"
+      ]
+    },
+    {
+      "name": "core:solitary",
+      "display": "solitary",
+      "description": "Living and hunting alone, seeking others only to mate. Independence chosen over cooperation, like a leopard or an octopus.",
+      "axis": "Social",
+      "tier": 5,
+      "prerequisites": [
+        "core:nerve_net"
+      ],
+      "exclusions": [],
+      "proximity": [],
+      "reversal_cost": 0.5,
+      "base_energy_cost": 0.3,
+      "tags": []
+    },
+    {
+      "name": "core:herd",
+      "display": "herding",
+      "description": "Gathering into large groups for safety in numbers. Many eyes and shared vigilance, like wildebeest on the plain or starlings wheeling as one.",
+      "axis": "Social",
+      "tier": 5,
+      "prerequisites": [
+        "core:centralized_brain"
+      ],
+      "exclusions": [],
+      "proximity": [],
+      "reversal_cost": 1.0,
+      "base_energy_cost": 0.5,
+      "tags": []
+    },
+    {
+      "name": "core:eusocial",
+      "display": "eusociality",
+      "description": "A deeply cooperative society where sterile workers serve a single reproductive queen. The colony-as-one-organism of ants, bees, and termites.",
+      "axis": "Social",
+      "tier": 5,
+      "prerequisites": [
+        "core:ganglia"
+      ],
+      "exclusions": [],
+      "proximity": [],
+      "reversal_cost": 2.0,
+      "base_energy_cost": 0.7,
+      "tags": []
+    },
+    {
+      "name": "core:pair_bond",
+      "display": "pair bonding",
+      "description": "Forming a lasting bond between mates to raise young together. Shared parenting, as in many birds and some mammals — two invested in the next generation.",
+      "axis": "Social",
+      "tier": 5,
+      "prerequisites": [
+        "core:centralized_brain"
+      ],
+      "exclusions": [],
+      "proximity": [],
+      "reversal_cost": 1.0,
+      "base_energy_cost": 0.5,
+      "tags": []
+    },
+    {
+      "name": "core:size_micro",
+      "display": "microscopic size",
+      "description": "A microscopic body, life at its very smallest. Quick to reproduce and found everywhere, but forever at the mercy of surface tension and diffusion.",
+      "axis": "Size",
+      "tier": 5,
+      "prerequisites": [
+        "core:unicellular"
+      ],
+      "exclusions": [
+        "core:size_small",
+        "core:size_medium",
+        "core:size_large",
+        "core:size_mega"
+      ],
+      "proximity": [],
+      "reversal_cost": 0.5,
+      "base_energy_cost": 0.2,
+      "tags": []
+    },
+    {
+      "name": "core:size_small",
+      "display": "small size",
+      "description": "A small body on the scale of an insect or a mouse. Nimble, easily hidden, and cheap to build — though never far from being someone's meal.",
+      "axis": "Size",
+      "tier": 5,
+      "prerequisites": [
+        "core:multicellular"
+      ],
+      "exclusions": [
+        "core:size_medium",
+        "core:size_large",
+        "core:size_mega"
+      ],
+      "proximity": [],
+      "reversal_cost": 0.5,
+      "base_energy_cost": 0.4,
+      "tags": []
+    },
+    {
+      "name": "core:size_medium",
+      "display": "medium size",
+      "description": "A mid-sized body from dog to deer scale. The versatile middle ground, balancing reach, speed, and appetite against one another.",
+      "axis": "Size",
+      "tier": 5,
+      "prerequisites": [
+        "core:multicellular"
+      ],
+      "exclusions": [
+        "core:size_large",
+        "core:size_mega"
+      ],
+      "proximity": [],
+      "reversal_cost": 0.5,
+      "base_energy_cost": 0.6,
+      "tags": []
+    },
+    {
+      "name": "core:size_large",
+      "display": "large size",
+      "description": "A large body that deters predators and dominates rivals. Powerful, but hungry — it needs plentiful food and room to roam, like a bear or an ox.",
+      "axis": "Size",
+      "tier": 5,
+      "prerequisites": [
+        "core:differentiated_tissue"
+      ],
+      "exclusions": [
+        "core:size_mega"
+      ],
+      "proximity": [],
+      "reversal_cost": 0.8,
+      "base_energy_cost": 0.9,
+      "tags": []
+    },
+    {
+      "name": "core:size_mega",
+      "display": "gigantic size",
+      "description": "A colossal body on the grandest scale life allows. Nearly untouchable, but ravenous and slow to breed — the realm of elephants and sauropods.",
+      "axis": "Size",
+      "tier": 5,
+      "prerequisites": [
+        "core:differentiated_tissue",
+        "core:mineral_endoskeleton"
+      ],
+      "exclusions": [
+        "core:powered_flight"
+      ],
+      "proximity": [],
+      "reversal_cost": 1.2,
+      "base_energy_cost": 1.4,
+      "tags": []
+    },
+    {
+      "name": "core:cryptic_coloration",
+      "display": "cryptic coloration",
+      "description": "Colors and patterns that melt into the background. Camouflage that serves the hunted and the hunter alike, from a moth on bark to a leopard in dappled shade.",
+      "axis": "Coloration",
+      "tier": 6,
+      "prerequisites": [
+        "core:multicellular"
+      ],
+      "exclusions": [],
+      "proximity": [],
+      "reversal_cost": 0.3,
+      "base_energy_cost": 0.2,
+      "tags": []
+    },
+    {
+      "name": "core:display_coloration",
+      "display": "display coloration",
+      "description": "Bold, conspicuous colors that shout rather than hide. Made for courtship or warning — the peacock's fanned tail and the poison frog's vivid flare.",
+      "axis": "Coloration",
+      "tier": 6,
+      "prerequisites": [
+        "core:image_eye"
+      ],
+      "exclusions": [],
+      "proximity": [],
+      "reversal_cost": 0.3,
+      "base_energy_cost": 0.3,
+      "tags": []
+    }
+  ]
+}

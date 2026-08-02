@@ -2,10 +2,40 @@
 
 use bevy::prelude::*;
 use genesis_core::World;
+use genesis_core::biology_view::BiologyView;
+
+use crate::projection::MapProjection;
+
+/// The active map projection (flat equirectangular vs. rotatable globe). Cycled
+/// with the `P` key; a change rebuilds the hex mesh topology (the visible hex set
+/// differs between projections).
+#[derive(Resource, Default)]
+pub struct CurrentProjection(pub MapProjection);
 
 /// Wraps the simulation [`World`] as a Bevy resource (read-only for rendering).
 #[derive(Resource)]
 pub struct WorldResource(pub World);
+
+/// The active biology read-view (Prep-09 §2). Holds a `StubBiologyView` now; a
+/// `genesis_biology` adapter at Doc 09. Lives here (not `genesis_ui`) so the
+/// recolor systems can read it; inserted by `genesis_ui` at world load.
+///
+/// **Doc 09 integration checklist** (Prep-09 §13 — the entire shell goes live by
+/// doing only this, no screen/overlay/inspector rework):
+/// 1. Implement `BiologyView` in a `genesis_biology` adapter over the real
+///    ledger + `WorldData` biology arrays.
+/// 2. Register it here instead of `StubBiologyView` (the single
+///    `ActiveBiologyView(Box::new(StubBiologyView::new(seed)))` line in
+///    `genesis_ui::ui` on `GenEvent::InitialWorld`).
+/// 3. Fill `HistoryFrame::{biome,biomass,biotic_richness}` from real data so the
+///    Biome/Biomass/Diversity layers become scrub-accurate.
+/// 4. Emit real biology `EventKind`s so the timeline pips switch from stub
+///    `life_events` to real.
+/// 5. Map `TraitSet` → the Doc 09 creature renderer's inputs and drop an
+///    `ImageNode` into the existing text species cards / tree nodes.
+/// 6. Delete the stub and its `// STUB` markers.
+#[derive(Resource)]
+pub struct ActiveBiologyView(pub Box<dyn BiologyView>);
 
 /// When true, hex mesh entities are rebuilt from [`WorldResource`].
 #[derive(Resource)]
@@ -22,6 +52,18 @@ impl Default for WorldDirty {
 /// changes within a run, so recoloring is all a year change needs.
 #[derive(Resource, Default)]
 pub struct ColorsDirty(pub bool);
+
+/// True while a full-screen UI overlay (Bestiary / Tree of Life / species detail)
+/// has captured the pointer, so map pan/zoom must not also react to the wheel or
+/// drag underneath it. Set by the UI layer each frame from its overlay state.
+#[derive(Resource, Default)]
+pub struct PointerCapturedByUi(pub bool);
+
+/// The lineage (species or clade) whose distribution is painted on the map, or
+/// `None`. Set by the UI when a species/clade is selected; consumed by the color
+/// pipeline to tint each hex by `clade_concentration`.
+#[derive(Resource, Default)]
+pub struct SelectedClade(pub Option<genesis_core::biology_view::LineageSelector>);
 
 /// Pan/zoom state for the 2D equirectangular view.
 #[derive(Resource)]
@@ -54,6 +96,11 @@ pub struct HexChunk {
     /// `(hex, first_vertex, vertex_count)` — the hex's fan vertices within
     /// this chunk's buffers (7 for hexagons, 6 for pentagons).
     pub slots: Vec<(genesis_core::HexId, u32, u8)>,
+    /// Unit-sphere direction of every vertex, parallel to the mesh's position
+    /// buffer. Lets the globe reproject positions in place each frame as it
+    /// rotates, without rebuilding the mesh. A slot's center direction is
+    /// `vertex_dirs[first_vertex]` (the fan's center vertex is pushed first).
+    pub vertex_dirs: Vec<Vec3>,
 }
 
 /// Chunk lookup for in-place recoloring. Hexes are merged into a few large

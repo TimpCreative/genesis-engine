@@ -10,6 +10,7 @@ members = [
     "crates/genesis_hydrology",
     "crates/genesis_mods",
     "crates/genesis_render",
+    "crates/genesis_rules",
     "crates/genesis_tech",
     "crates/genesis_tectonics",
     "crates/genesis_ui",

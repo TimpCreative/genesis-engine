@@ -8,13 +8,15 @@ use bevy::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use genesis_core::HexId;
+use glam::DVec3;
 
 use crate::color::hex_color_for_mode;
-use crate::polygon::{direction_to_lat_lon, hex_polygon_vertices, unwrap_lon_relative};
-use crate::projection::{project, should_skip_for_equirectangular};
+use crate::polygon::hex_polygon_vertices;
+use crate::projection::{MapProjection, ViewCenter, project};
 use crate::render_mode::CurrentRenderMode;
 use crate::resources::{
-    CameraState, ColorsDirty, HexChunk, HexEntityCache, HexMeshIndex, WorldDirty, WorldResource,
+    ActiveBiologyView, CameraState, ColorsDirty, CurrentProjection, HexChunk, HexEntityCache,
+    HexMeshIndex, WorldDirty, WorldResource,
 };
 
 const MIN_ZOOM: f32 = 0.1;
@@ -26,6 +28,15 @@ const WORLD_WIDTH: f32 = (2.0 * PI) as f32;
 const WORLD_HEIGHT: f32 = PI as f32;
 const WORLD_ASPECT: f32 = WORLD_WIDTH / WORLD_HEIGHT;
 
+/// Vertical/horizontal extent (world units) that frames the globe's unit disc
+/// (diameter 2) with a small margin at `zoom = 1.0`.
+const GLOBE_VIEW_EXTENT: f32 = 2.2;
+
+/// Radians of rotation per world unit of drag on the globe. The disc radius (1
+/// world unit) spans 90° from the view center, so this makes a full-radius drag
+/// rotate roughly a quarter turn — a natural grab-and-spin feel.
+const GLOBE_ROTATE_GAIN: f64 = std::f64::consts::FRAC_PI_2;
+
 /// 2D camera sits above meshes at z = 0 (Bevy looks down -Z).
 const CAMERA_Z: f32 = 999.0;
 
@@ -33,13 +44,38 @@ const CAMERA_Z: f32 = 999.0;
 pub(crate) struct MainCamera;
 
 /// Visible world size in radians for the current window aspect and zoom.
-fn viewport_world_size(window_aspect: f32, zoom: f32) -> (f32, f32) {
+///
+/// At `zoom = 1.0` the **whole** map is visible (contain, not fill): the
+/// limiting axis fits exactly and the other gets margin, so the map's edges are
+/// always on screen regardless of window aspect. Zoom > 1 crops in.
+pub(crate) fn viewport_world_size(window_aspect: f32, zoom: f32) -> (f32, f32) {
     if window_aspect > WORLD_ASPECT {
-        let width = WORLD_WIDTH / zoom;
-        (width, width / window_aspect)
-    } else {
+        // Window wider than the map: height is the limiting axis.
         let height = WORLD_HEIGHT / zoom;
         (height * window_aspect, height)
+    } else {
+        // Window narrower than the map: width is the limiting axis.
+        let width = WORLD_WIDTH / zoom;
+        (width, width / window_aspect)
+    }
+}
+
+/// Visible world size for the globe (orthographic). The disc is square, so the
+/// shorter window axis is the limiting one — the whole globe stays on screen.
+pub(crate) fn globe_viewport_world_size(window_aspect: f32, zoom: f32) -> (f32, f32) {
+    let extent = GLOBE_VIEW_EXTENT / zoom;
+    if window_aspect > 1.0 {
+        (extent * window_aspect, extent) // fit height
+    } else {
+        (extent, extent / window_aspect) // fit width
+    }
+}
+
+/// The globe's sub-viewer point (the spot facing the camera) from pan state.
+pub(crate) fn view_center(camera: &CameraState) -> ViewCenter {
+    ViewCenter {
+        lat_rad: camera.center_lat_rad,
+        lon_rad: camera.center_lon_rad,
     }
 }
 
@@ -60,6 +96,7 @@ pub fn setup_camera(mut commands: Commands) {
 
 pub fn sync_camera(
     camera_state: Res<CameraState>,
+    projection_mode: Res<CurrentProjection>,
     mut camera_query: Query<(&mut Transform, &mut Projection), With<MainCamera>>,
     window_query: Query<&Window, With<PrimaryWindow>>,
 ) {
@@ -67,51 +104,129 @@ pub fn sync_camera(
         return;
     };
 
-    let (cx, cy) = project(camera_state.center_lat_rad, camera_state.center_lon_rad);
-    transform.translation = Vec3::new(cx, cy, CAMERA_Z);
-
     let aspect = window_query
         .single()
         .map(|w| w.width() / w.height().max(1.0))
         .unwrap_or(16.0 / 9.0);
 
-    let (viewport_width, viewport_height) = viewport_world_size(aspect, camera_state.zoom);
-
-    if let Projection::Orthographic(ref mut ortho) = *projection {
-        ortho.scale = 1.0;
-        ortho.scaling_mode = if aspect > WORLD_ASPECT {
-            ScalingMode::FixedHorizontal { viewport_width }
-        } else {
-            ScalingMode::FixedVertical { viewport_height }
-        };
+    match projection_mode.0 {
+        MapProjection::Equirectangular => {
+            // Flat map is world-fixed: the camera translates over it.
+            let (cx, cy) = project(camera_state.center_lat_rad, camera_state.center_lon_rad);
+            transform.translation = Vec3::new(cx, cy, CAMERA_Z);
+            let (viewport_width, viewport_height) = viewport_world_size(aspect, camera_state.zoom);
+            if let Projection::Orthographic(ref mut ortho) = *projection {
+                ortho.scale = 1.0;
+                ortho.scaling_mode = if aspect > WORLD_ASPECT {
+                    ScalingMode::FixedHorizontal { viewport_width }
+                } else {
+                    ScalingMode::FixedVertical { viewport_height }
+                };
+            }
+        }
+        MapProjection::Orthographic => {
+            // Globe is view-centered: the projection bakes in the rotation, so
+            // the camera stays fixed over the disc at the origin.
+            transform.translation = Vec3::new(0.0, 0.0, CAMERA_Z);
+            let (viewport_width, viewport_height) =
+                globe_viewport_world_size(aspect, camera_state.zoom);
+            if let Projection::Orthographic(ref mut ortho) = *projection {
+                ortho.scale = 1.0;
+                ortho.scaling_mode = if aspect > 1.0 {
+                    ScalingMode::FixedVertical { viewport_height }
+                } else {
+                    ScalingMode::FixedHorizontal { viewport_width }
+                };
+            }
+        }
     }
 }
 
+/// Pixel distance before an LMB press becomes a pan (below = click).
+pub const MAP_DRAG_THRESHOLD_PX: f32 = 5.0;
+
+/// Tracks LMB press so short clicks select hexes and longer drags pan.
+#[derive(Resource, Default)]
+pub struct CameraDragState {
+    press_cursor: Option<Vec2>,
+    dragging: bool,
+    /// Set for one frame when LMB releases without exceeding the drag threshold.
+    pub just_clicked_map: bool,
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn handle_camera_input(
     mouse_buttons: Res<ButtonInput<MouseButton>>,
     mouse_motion: Res<AccumulatedMouseMotion>,
     mut mouse_wheel: MessageReader<MouseWheel>,
+    projection_mode: Res<CurrentProjection>,
     mut camera_state: ResMut<CameraState>,
+    mut drag: ResMut<CameraDragState>,
+    ui_capture: Res<crate::resources::PointerCapturedByUi>,
     window_query: Query<&Window, With<PrimaryWindow>>,
 ) {
+    drag.just_clicked_map = false;
+    // A full-screen overlay owns the pointer — don't pan/zoom the map underneath
+    // it (the wheel scrolls the overlay instead). Still drain the wheel so it does
+    // not accumulate and jump when the overlay closes.
+    if ui_capture.0 {
+        mouse_wheel.clear();
+        return;
+    }
+    let Ok(window) = window_query.single() else {
+        return;
+    };
+    let cursor = window.cursor_position();
+
+    if mouse_buttons.just_pressed(MouseButton::Left) {
+        drag.press_cursor = cursor;
+        drag.dragging = false;
+    }
+
     if mouse_buttons.pressed(MouseButton::Left) {
-        let delta = mouse_motion.delta;
-        if delta != Vec2::ZERO {
-            let Some(window) = window_query.single().ok() else {
-                return;
-            };
-            let aspect = window.width() / window.height().max(1.0);
-            let (viewport_width, viewport_height) = viewport_world_size(aspect, camera_state.zoom);
-
-            let lon_per_pixel = f64::from(viewport_width) / f64::from(window.width());
-            let lat_per_pixel = f64::from(viewport_height) / f64::from(window.height());
-
-            camera_state.center_lon_rad -= f64::from(delta.x) * lon_per_pixel;
-            camera_state.center_lat_rad += f64::from(delta.y) * lat_per_pixel;
-            camera_state.center_lat_rad = camera_state
-                .center_lat_rad
-                .clamp(-PI / 2.0 + 0.01, PI / 2.0 - 0.01);
+        if let (Some(origin), Some(pos)) = (drag.press_cursor, cursor)
+            && !drag.dragging
+            && origin.distance(pos) > MAP_DRAG_THRESHOLD_PX
+        {
+            drag.dragging = true;
         }
+        if drag.dragging {
+            let delta = mouse_motion.delta;
+            if delta != Vec2::ZERO {
+                let aspect = window.width() / window.height().max(1.0);
+                let (lon_per_pixel, lat_per_pixel) = match projection_mode.0 {
+                    MapProjection::Equirectangular => {
+                        let (vw, vh) = viewport_world_size(aspect, camera_state.zoom);
+                        (
+                            f64::from(vw) / f64::from(window.width()),
+                            f64::from(vh) / f64::from(window.height()),
+                        )
+                    }
+                    MapProjection::Orthographic => {
+                        // Drag rotates the globe: convert pixels → world units on
+                        // the disc, then world units → radians of rotation.
+                        let (vw, vh) = globe_viewport_world_size(aspect, camera_state.zoom);
+                        let x = f64::from(vw) / f64::from(window.width()) * GLOBE_ROTATE_GAIN;
+                        let y = f64::from(vh) / f64::from(window.height()) * GLOBE_ROTATE_GAIN;
+                        (x, y)
+                    }
+                };
+
+                camera_state.center_lon_rad -= f64::from(delta.x) * lon_per_pixel;
+                camera_state.center_lat_rad += f64::from(delta.y) * lat_per_pixel;
+                camera_state.center_lat_rad = camera_state
+                    .center_lat_rad
+                    .clamp(-PI / 2.0 + 0.01, PI / 2.0 - 0.01);
+            }
+        }
+    }
+
+    if mouse_buttons.just_released(MouseButton::Left) {
+        if drag.press_cursor.is_some() && !drag.dragging {
+            drag.just_clicked_map = true;
+        }
+        drag.press_cursor = None;
+        drag.dragging = false;
     }
 
     for event in mouse_wheel.read() {
@@ -134,29 +249,57 @@ pub fn cycle_render_mode_on_keypress(
     }
 }
 
+/// `P` cycles the map projection (flat ⇄ globe). The visible hex set differs, so
+/// mark the world dirty to rebuild the mesh topology; also refresh the river
+/// overlay (it clears itself on the globe until Slice 3 ports it).
+pub fn cycle_projection_on_keypress(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut projection_mode: ResMut<CurrentProjection>,
+    mut world_dirty: ResMut<WorldDirty>,
+    mut rivers_dirty: ResMut<crate::resources::RiversDirty>,
+) {
+    if keys.just_pressed(KeyCode::KeyP) {
+        projection_mode.0 = projection_mode.0.cycle_next();
+        world_dirty.0 = true;
+        rivers_dirty.dirty = true;
+        eprintln!("[render] projection: {}", projection_mode.0.label());
+    }
+}
+
 pub fn update_window_title(
     render_mode: Res<CurrentRenderMode>,
+    projection_mode: Res<CurrentProjection>,
     mut windows: Query<&mut Window, With<PrimaryWindow>>,
 ) {
-    if !render_mode.is_changed() {
+    if !render_mode.is_changed() && !projection_mode.is_changed() {
         return;
     }
     if let Ok(mut window) = windows.single_mut() {
         window.title = format!(
-            "Genesis Engine — {} (press M to cycle)",
-            render_mode.0.label()
+            "Genesis Engine — {} · {} (M mode · P projection)",
+            render_mode.0.label(),
+            projection_mode.0.label(),
         );
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn update_hex_colors(
     world_res: Option<Res<WorldResource>>,
     render_mode: Res<CurrentRenderMode>,
+    biology: Option<Res<ActiveBiologyView>>,
+    selected_clade: Res<crate::resources::SelectedClade>,
     mut colors_dirty: ResMut<ColorsDirty>,
     index: Res<HexMeshIndex>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
-    if !render_mode.is_changed() && !colors_dirty.0 {
+    // Re-tint when the mode changes, the colors are flagged dirty, the biology
+    // view was (re)registered, or the painted clade changed.
+    if !render_mode.is_changed()
+        && !colors_dirty.0
+        && !biology.as_ref().is_some_and(|b| b.is_changed())
+        && !selected_clade.is_changed()
+    {
         return;
     }
     let Some(world_res) = world_res else {
@@ -172,6 +315,8 @@ pub fn update_hex_colors(
     let data = &world_res.0.data;
     let grid = &data.grid;
     let n = data.cell_count() as usize;
+    let bio = biology.as_ref().map(|b| b.0.as_ref());
+    let clade = selected_clade.0;
 
     for chunk in &index.chunks {
         let Some(mesh) = meshes.get_mut(&chunk.mesh) else {
@@ -187,9 +332,11 @@ pub fn update_hex_colors(
             if idx >= n {
                 continue;
             }
-            let color = hex_color_for_mode(data, idx, render_mode.0, grid.is_pentagon(hex))
-                .to_linear()
-                .to_f32_array();
+            let mut c = hex_color_for_mode(data, idx, render_mode.0, grid.is_pentagon(hex), bio);
+            if let (Some(sel), Some(b)) = (clade, bio) {
+                c = crate::color::clade_tint(c, b.clade_concentration(data, hex, sel));
+            }
+            let color = c.to_linear().to_f32_array();
             let start = base as usize;
             for v in &mut colors[start..start + count as usize] {
                 *v = color;
@@ -207,6 +354,10 @@ pub fn render_world_if_dirty(
     mut commands: Commands,
     world_res: Option<Res<WorldResource>>,
     render_mode: Res<CurrentRenderMode>,
+    projection_mode: Res<CurrentProjection>,
+    camera_state: Res<CameraState>,
+    biology: Option<Res<ActiveBiologyView>>,
+    selected_clade: Res<crate::resources::SelectedClade>,
     mut world_dirty: ResMut<WorldDirty>,
     mut cache: ResMut<HexEntityCache>,
     mut index: ResMut<HexMeshIndex>,
@@ -227,12 +378,16 @@ pub fn render_world_if_dirty(
 
     let data = &world_res.0.data;
     let grid = &data.grid;
+    let bio = biology.as_ref().map(|b| b.0.as_ref());
+    let projection = projection_mode.0;
+    let view = view_center(&camera_state);
     // White base material shared by every chunk: the shader multiplies it by
     // per-vertex colors, so the vertex color IS the hex color.
     let shared_material = materials.add(ColorMaterial::default());
 
     let mut positions: Vec<[f32; 3]> = Vec::new();
     let mut colors: Vec<[f32; 4]> = Vec::new();
+    let mut vertex_dirs: Vec<Vec3> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
     let mut slots: Vec<(HexId, u32, u8)> = Vec::new();
     let mut spawned = 0u32;
@@ -244,6 +399,7 @@ pub fn render_world_if_dirty(
                  index: &mut HexMeshIndex,
                  positions: &mut Vec<[f32; 3]>,
                  colors: &mut Vec<[f32; 4]>,
+                 vertex_dirs: &mut Vec<Vec3>,
                  indices: &mut Vec<u32>,
                  slots: &mut Vec<(HexId, u32, u8)>| {
         if slots.is_empty() {
@@ -268,47 +424,52 @@ pub fn render_world_if_dirty(
         index.chunks.push(HexChunk {
             mesh: handle,
             slots: std::mem::take(slots),
+            vertex_dirs: std::mem::take(vertex_dirs),
         });
     };
 
     for hex in grid.iter() {
-        let (center_lat, center_lon) = grid.center_lat_lon(hex);
+        let center_dir = DVec3::from(grid.cell_center_direction(hex));
 
-        if should_skip_for_equirectangular(center_lat) {
+        // Flat map drops the self-crossing polar caps entirely; the globe keeps
+        // every hex (far-side ones are collapsed to a degenerate point below).
+        if !projection.hex_visible(center_dir, view) && projection == MapProjection::Equirectangular
+        {
             skipped += 1;
             continue;
         }
 
         let vertices = hex_polygon_vertices(grid, hex);
-        let center_2d = project(center_lat, center_lon);
-        let ring: Vec<(f32, f32)> = vertices
-            .iter()
-            .map(|v| {
-                let (lat, lon) = direction_to_lat_lon(*v);
-                // Unwrap vertex longitude to be contiguous with center longitude.
-                // This fixes the antimeridian seam: a hex straddling the ±π discontinuity
-                // gets vertex longitudes unwrapped to its center's reference frame, so
-                // the polygon draws as a contiguous shape that may extend slightly past
-                // ±π on one side but is no longer torn in half.
-                let unwrapped_lon = unwrap_lon_relative(lon, center_lon);
-                project(lat, unwrapped_lon)
-            })
-            .collect();
+        let visible = projection.hex_visible(center_dir, view);
+        let project_dir = |dir: DVec3| -> [f32; 3] {
+            if visible {
+                let (x, y) = projection.project(dir, center_dir, view);
+                [x, y, 0.0]
+            } else {
+                // Collapse the whole hex to one point → zero-area (invisible)
+                // triangles. Used for the globe's far hemisphere.
+                [0.0, 0.0, 0.0]
+            }
+        };
 
         let idx = hex.0 as usize;
-        let color = hex_color_for_mode(data, idx, render_mode.0, grid.is_pentagon(hex))
-            .to_linear()
-            .to_f32_array();
+        let mut c = hex_color_for_mode(data, idx, render_mode.0, grid.is_pentagon(hex), bio);
+        if let (Some(sel), Some(b)) = (selected_clade.0, bio) {
+            c = crate::color::clade_tint(c, b.clade_concentration(data, hex, sel));
+        }
+        let color = c.to_linear().to_f32_array();
 
         // Triangle fan: center vertex + ring, offset into the chunk buffers.
         let base = positions.len() as u32;
-        positions.push([center_2d.0, center_2d.1, 0.0]);
+        positions.push(project_dir(center_dir));
         colors.push(color);
-        for &(x, y) in &ring {
-            positions.push([x, y, 0.0]);
+        vertex_dirs.push(center_dir.as_vec3());
+        for &v in &vertices {
+            positions.push(project_dir(v));
             colors.push(color);
+            vertex_dirs.push(v.as_vec3());
         }
-        let ring_len = ring.len() as u32;
+        let ring_len = vertices.len() as u32;
         for i in 0..ring_len {
             indices.extend_from_slice(&[base, base + 1 + i, base + 1 + (i + 1) % ring_len]);
         }
@@ -323,6 +484,7 @@ pub fn render_world_if_dirty(
                 &mut index,
                 &mut positions,
                 &mut colors,
+                &mut vertex_dirs,
                 &mut indices,
                 &mut slots,
             );
@@ -335,13 +497,66 @@ pub fn render_world_if_dirty(
         &mut index,
         &mut positions,
         &mut colors,
+        &mut vertex_dirs,
         &mut indices,
         &mut slots,
     );
 
     info!(
-        "Rendered {spawned} hexes in {} chunks ({skipped} skipped near poles)",
-        index.chunks.len()
+        "Rendered {spawned} hexes in {} chunks ({skipped} skipped) [{}]",
+        index.chunks.len(),
+        projection.label(),
     );
     world_dirty.0 = false;
+}
+
+/// Reprojects hex vertex positions in place as the globe rotates — no mesh
+/// rebuild, no entity churn (mirrors [`update_hex_colors`] but for positions).
+///
+/// Only the globe needs this: the flat map is world-fixed, so its vertex
+/// positions never change with pan (the camera moves instead). Far-hemisphere
+/// hexes collapse to the origin (degenerate, invisible).
+pub fn refresh_projected_positions(
+    projection_mode: Res<CurrentProjection>,
+    camera_state: Res<CameraState>,
+    world_dirty: Res<WorldDirty>,
+    index: Res<HexMeshIndex>,
+    mut meshes: ResMut<Assets<Mesh>>,
+) {
+    if projection_mode.0 != MapProjection::Orthographic {
+        return;
+    }
+    // A fresh build this frame already projected for the current view.
+    if world_dirty.0 || !camera_state.is_changed() || index.chunks.is_empty() {
+        return;
+    }
+    let view = view_center(&camera_state);
+    for chunk in &index.chunks {
+        let Some(mesh) = meshes.get_mut(&chunk.mesh) else {
+            continue;
+        };
+        let Some(VertexAttributeValues::Float32x3(positions)) =
+            mesh.attribute_mut(Mesh::ATTRIBUTE_POSITION)
+        else {
+            continue;
+        };
+        for &(_, base, count) in &chunk.slots {
+            let b = base as usize;
+            let center_dir = chunk.vertex_dirs[b].as_dvec3();
+            let visible = MapProjection::Orthographic.hex_visible(center_dir, view);
+            for k in 0..count as usize {
+                let vi = b + k;
+                positions[vi] = if visible {
+                    let (x, y) = MapProjection::Orthographic.project(
+                        chunk.vertex_dirs[vi].as_dvec3(),
+                        center_dir,
+                        view,
+                    );
+                    [x, y, 0.0]
+                } else {
+                    [0.0, 0.0, 0.0]
+                };
+            }
+        }
+    }
 }

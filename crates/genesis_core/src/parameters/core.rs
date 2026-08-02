@@ -133,6 +133,13 @@ pub struct GeologyParameters {
     pub volcanism_scale: f32,
     /// Plate reorganization and general geological activity scale. Default 1.0 (Doc 06 §4.5).
     pub geology_activity_scale: f32,
+    /// Number of separate continental clusters (landmasses) to seed at world
+    /// formation. `0` = the seed decides (rolls 1..=3) — one supercontinent or
+    /// several dispersed continents, per world. `N` >= 1 forces exactly `N`
+    /// (clamped to the available major plates). Default 0. Dispersed continents
+    /// sample latitude more evenly than a single blob, which otherwise engulfs a
+    /// pole by pure geometry (a 30%-area cap has ~66° radius).
+    pub continent_cluster_count: u8,
     /// Number of major (large) plates at world formation. Default 7. Valid range 6-9.
     pub initial_major_plate_count: u8,
     /// Number of minor (smaller) plates at world formation. Default 8. Valid range 6-10.
@@ -207,10 +214,76 @@ pub struct HydrologyParameters {
 impl Default for HydrologyParameters {
     fn default() -> Self {
         Self {
-            water_inventory_gel_m: 2700.0,
+            water_inventory_gel_m: 2400.0,
             runoff_coefficient_base: 0.4,
             open_water_evap_factor: 1.2,
             groundwater_capacity_m: 30.0,
+        }
+    }
+}
+
+/// Terrain calibration targets (Doc 06-CAL — the solve-to-target layer).
+///
+/// The calibration layer maps the tectonic **structure** field onto these
+/// targets each tick, so headline terrain properties are settings we *solve
+/// for*, not chaotic emergent outputs. Every field is a menu knob; because
+/// targets are solved (not emergent), moving one knob moves only its own axis.
+///
+/// `Copy` so the tick loop can lift a snapshot out of `world.parameters` before
+/// mutating `world` (avoids an aliasing borrow).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TerrainTargets {
+    /// Master switch. `true` runs the calibrated (Doc 06-CAL) terrain; `false`
+    /// falls back to the legacy emergent bathtub path.
+    pub enabled: bool,
+    /// Fraction of the sphere above sea level (the pinned datum, 0 m). The land
+    /// coverage dial. Default 0.29 (Earth ≈ 0.29). Band 0.05–0.95.
+    pub land_fraction: f32,
+    /// Allowed ± per-year excursion of land fraction around the setpoint
+    /// (Doc 06-CAL §7 temporal controller). Default 0.08. Band 0.0–0.20.
+    pub land_fraction_wander: f32,
+    /// Modal land elevation above sea (m). Default 300. Band 0–1500.
+    pub continental_modal_height_m: f32,
+    /// Fatness/height of the mountain (upper) tail → mountain count & height.
+    /// Default 1.0. Band 0–3.
+    pub orogeny_intensity: f32,
+    /// Ocean modal depth (m, negative). Default −4000. Band −6000…−2000.
+    pub abyssal_depth_m: f32,
+    /// Deep-ocean tail floor / trench depth (m, negative). Default −9000.
+    pub trench_depth_m: f32,
+    /// Share of area in the shallow continental-shelf band (fixes "abyss at the
+    /// beach"). Default 0.06. Band 0–0.20.
+    pub shelf_fraction: f32,
+    /// Shelf-break depth (m, negative). Default −140. Band −500…0.
+    pub shelf_depth_m: f32,
+    /// Continental-slope band width as a fraction of area. Default 0.03.
+    pub slope_width_frac: f32,
+    /// Sharpness of the land/ocean split. Default 1.0. Band 0.3–2.0.
+    pub hypsometric_bimodality: f32,
+    /// Oceanic high-spot (island/arc) seeding rate (Doc 06-CAL §8, Phase 1).
+    /// Default 1.0. Band 0–3.
+    pub island_density: f32,
+    /// Number of major fertile river valleys, as a discharge-percentile cut
+    /// (Doc 06-CAL §8, Phase 1). Default 1.0. Band 0–3.
+    pub river_density: f32,
+}
+
+impl Default for TerrainTargets {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            land_fraction: 0.29,
+            land_fraction_wander: 0.08,
+            continental_modal_height_m: 300.0,
+            orogeny_intensity: 1.0,
+            abyssal_depth_m: -4000.0,
+            trench_depth_m: -9000.0,
+            shelf_fraction: 0.06,
+            shelf_depth_m: -140.0,
+            slope_width_frac: 0.03,
+            hypsometric_bimodality: 1.0,
+            island_density: 1.0,
+            river_density: 1.0,
         }
     }
 }
@@ -231,12 +304,28 @@ pub struct ClimateInitialParameters {
 /// Biology system activation and rates.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BiologyParameters {
-    /// Year when biology activates. Default 500_000_000. Immutable.
+    /// Ramp **target / expected value** for biogenesis, not a hard switch: the
+    /// realized emergence year is an *output* of the biogenesis ramp (Doc 09
+    /// §3.1). Default 500_000_000.
     pub life_emergence_year: WorldYear,
     /// Mutation rate scale. Immutable.
     pub mutation_rate_scale: f32,
     /// Extinction event probability scale. Immutable.
     pub extinction_scale: f32,
+    /// Biogenesis tempo dial; 1.0 = Earth-like (Doc 09 §3.1).
+    pub biogenesis_rate_scale: f32,
+    /// Chaos: allow independent, unrelated trees of life. Default false (Doc 09 §3.1).
+    pub multiple_origins: bool,
+    /// Exploration "temperature" of the trait walk: 0 = Earth-like clustering,
+    /// 1.0 = alien (default), ~2.0 = weird (Doc 09 §2.6).
+    pub novelty_temperature: f32,
+    /// Thumb on the scale for the walk toward complexity; 1.0 = unbiased (Doc 09 §3.3).
+    pub complexity_pressure: f32,
+    /// Whether sapience can emerge at all. Default true (Doc 09 §10.3).
+    pub sapience_enabled: bool,
+    /// Constrain sapient morphology to upright/bilateral/four-limbed. Default
+    /// false (the Star-Trek dial, Doc 09 §10.3).
+    pub humanoid_sapients: bool,
 }
 
 /// Civilization emergence and rates.
@@ -261,6 +350,7 @@ pub struct CoreParameters {
     pub grid: GridParameters,
     pub time: TimeParameters,
     pub geology: GeologyParameters,
+    pub terrain: TerrainTargets,
     pub climate_initial: ClimateInitialParameters,
     pub climate: ClimateParameters,
     pub hydrology: HydrologyParameters,

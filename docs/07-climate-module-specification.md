@@ -1,12 +1,13 @@
 # 07 — Climate Module Specification
 
 **Document Type:** Tier 2 — System Specification
-**Status:** Draft v0.3
-**Last Updated:** May 2026
+**Status:** Draft v0.4
+**Last Updated:** July 2026
 **Owner:** Brax Johnson
 **Implementing Phase:** 2 (Climate & Hydrology)
 
 **Changelog:**
+- v0.4 (July 2026): **Ocean formation owned by Doc 08 §3.3.** §3.5 retires the linear Formation `sea_level_m` stage table; condensed inventory is a temperature-gated smoothstep on the §3.3 cooling curve (hydrology). Calendar sub-phases (§3.2) unchanged. Ocean events fire on first wet cells / full condensation, not phase edges. Deferred Formation realism knobs live in Doc 08 §16 items 9–11.
 - v0.3 (July 2026): **Water visuals deferred to Doc 8 (Doc 06 v0.11 companion).** Rivers are removed and water is no longer rendered as a surface feature until Doc 8 lands: the renderer uses a dry hypsometric palette (ocean floor renders as deep relief, never blue) and the Rivers render mode is gone. Regime classification now assigns a regime to *every* hex — below-sea hexes classify like any other instead of staying `Unset` (supersedes the v0.2 note) — so the regime map stays a complete climate view while water is hidden. The internal ocean model is unchanged: `sea_level_m`, the distance-to-ocean BFS, basin/current simulation, and moisture sourcing still treat below-sea hexes as ocean because the climate system depends on them. Ocean behavior in this doc stays normative; it just isn't drawn until Doc 8.
 - v0.2 (July 2026): **Phase 2 complete (P2-10–P2-12).** Milankovitch-like orbital cycles implemented with STRETCHED periods (short 2.3M years, long 4x): real ~100k-year cycles are sub-tick at the 500k-year Geological cadence and sample as anti-correlated noise, so the model uses periods the tick rate can resolve (deviation from §12.1 noted). Glaciation state machine with asymmetric thresholds — deep-cold onset (-2.2°C), soft continuation (-0.8°C), shallow exit (+0.3°C) — so glacials are episodic excursions rather than half of history; emits Pivotal GlaciationBegan/GlaciationEnded events. Orbital modifier feeds the temperature field globally. Köppen-like regime classification (§10.2 decision tree) writes WorldData.climate_regime each tick (ocean hexes stay Unset); new Climate Regime render mode and screenshot step. Erosion climate feedback (§13 / Doc 06 §8.2) active: precipitation/800mm modifier with frozen damping. Validation §17 #5 (≥7 regimes) and #9 (≥1 glaciation cycle per 1B years) covered by tests.
 - v0.1 (May 2026): Initial draft. Defines planetary formation sequence, temperature, atmospheric circulation, precipitation, ocean circulation, climate-tectonics feedback, climate variability/ice ages, and event schema.
@@ -245,22 +246,17 @@ Oxygen stays at 0 throughout Formation because oxygen is biological. Phase 4 (Bi
 
 ### 3.5 Ocean Formation
 
-Sea level is governed by `WorldData.sea_level_m`. During Formation:
+**Normative condensation curve: Doc 08 §3.3.** Hydrology owns the condensed fraction of the water inventory and derives `sea_level_m` by flooding the hypsometry (Doc 08 §3.4). Climate’s Formation sub-phases (§3.2) still govern atmosphere composition and tectonics dormancy; they do **not** set sea level.
 
-- **Molten** (years 0 – 50M): all water is in atmosphere as vapor. `sea_level_m = -3000m` (the entire ocean basin is dry, only the basin bottoms are below the "if oceans existed" baseline).
-- **Cooling** (50M – 200M): condensation begins. `sea_level_m` rises linearly toward `-1500m`.
-- **Condensation** (200M – 350M): heavy rains. `sea_level_m` rises toward `-300m`.
-- **Stabilization** (350M – 500M): ocean basins approach modern levels. `sea_level_m` reaches `0m` by year 500M.
+The condensed fraction is a smoothstep on this doc’s cooling curve `T(t)` (§3.3): zero while `T ≥ 150 °C`, full when `T ≤ 25 °C`, ramping smoothly between. That restores the worldbuilding scrub story: year ~100M is still dry basins; oceans rise through late Cooling / Condensation / Stabilization; year ~500M has established seas. Deferred early-hypsometry and related knobs: Doc 08 §16 items 9–11.
 
-This produces a worldbuilding-friendly visualization: scrub to year 100M and see "the oceans are still filling" (most of the planet is dry land with deep basins); scrub to year 500M and see "established oceans, ready for life."
-
-After Formation, sea level is driven by tectonic dynamics (Doc 06 §4.6) plus glaciation effects (§12 below).
+After Formation, sea level continues as hydrology’s derived output (ice, thermosteric, bathymetry — Doc 08 §3.5), not a climate-written heuristic.
 
 ### 3.6 Events Emitted During Formation
 
 - `EventKind::PlanetaryCoolingMilestone { surface_temp_c }` — Notable, fired every time `global_mean_temperature_c` crosses a 100°C threshold downward
-- `EventKind::OceansBeginForming { sea_level_m }` — Major, fired when condensation sub-phase starts
-- `EventKind::OceansStabilized { sea_level_m }` — Major, fired when condensation ends and Stabilization begins
+- `EventKind::OceansBeginForming { sea_level_m }` — Major, owned by hydrology; fired on first standing-water cells (not on the Condensation calendar edge)
+- `EventKind::OceansStabilized { sea_level_m }` — Major, owned by hydrology; fired when condensed fraction reaches 1.0
 - `EventKind::FormationComplete { final_temperature_c, final_co2_ppm }` — Pivotal, fired at end of Formation era
 
 ### 3.7 Open Question: Formation Era Override

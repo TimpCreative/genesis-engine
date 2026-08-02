@@ -1,0 +1,16 @@
+=== perf_full_history_subdiv8_milestones ===
+os=macos
+arch=aarch64
+available_parallelism=16
+RAYON_NUM_THREADS=unset(default)
+subdivision_level=8
+seed=42
+milestone target_year=1000000000 elapsed_secs=89.197 hex_count=65612 plate_count=12
+milestone target_year=2500000000 elapsed_secs=227.325 hex_count=65612 plate_count=11
+milestone target_year=4500000000 elapsed_secs=415.968 hex_count=65612 plate_count=10
+=== end perf_full_history_subdiv8_milestones ===
+
+Note: After stack includes hydrology Slice 2+ (routing, lakes, etc.) that baseline
+(Slice 1 only, commit 7ef37c7) did not. Still faster overall.
+
+Date: 2026-07-19

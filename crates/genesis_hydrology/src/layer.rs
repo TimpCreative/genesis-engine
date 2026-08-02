@@ -19,12 +19,17 @@ use crate::events::{
 };
 use crate::groundwater::{recharge_and_baseflow, total_groundwater_storage_m3, water_tables};
 use crate::ice::update_ice;
-use crate::lakes::{adjudicate_lakes, apply_returned_surplus, registry_lake_volume_m3};
+use crate::lakes::{
+    adjudicate_lakes, apply_returned_surplus, export_salt, registry_lake_volume_m3,
+};
 use crate::partition::partition_land;
 use crate::regime::classify_regimes;
 use crate::routing::{FlowAccumulation, RoutingSurface, hex_area_m2};
 use crate::soil::update_soil;
-use crate::solve::{global_mean_temperature_c, solve_flooding, thermosteric_effective_volume_m3};
+use crate::solve::{
+    global_mean_temperature_c, sea_level_for_land_fraction, solve_flooding,
+    thermosteric_effective_volume_m3, volume_to_fill_to_level_m3,
+};
 use crate::state::HydrologyState;
 
 /// Default Geological-era hydrology tick interval (Doc 08 §2.1 — matches climate).
@@ -134,7 +139,37 @@ impl SimulationLayer for HydrologyLayer {
 
         // §2.2 step 2 — flooding solve (§3.4): sea level, the ocean mask,
         // and the candidate-sea list (written by §5.2, not here).
-        let outcome = solve_flooding(world, budget.ocean_volume_m3);
+        //
+        // Doc 06-CAL datum pin: when the calibration layer is active the land/ocean
+        // line is the calibrated terrain's sea level = 0, not the GEL budget, so
+        // flood to the volume that fills everything below 0. GEL still drives the
+        // budget partition (ice / groundwater / atmosphere) above.
+        let ocean_volume_m3 = if world.parameters.core.terrain.enabled {
+            // Datum pin (Doc 06-CAL): solve sea level as the (1 − land_fraction)
+            // elevation quantile, so the land fraction is exactly the target,
+            // independent of the GEL budget, thermosteric drift, or which era
+            // last calibrated the terrain. During condensation the level rises
+            // from the deepest cell up to that quantile, so oceans form on a
+            // timeline. Fed to the bathtub solve as the equivalent volume, with
+            // thermosteric expansion divided out so the solved level is exact
+            // (GEL still drives the ice/groundwater/atmosphere partition;
+            // deliberate bounded eustasy returns in Phase 2).
+            let land = f64::from(world.parameters.core.terrain.land_fraction);
+            let target_level = sea_level_for_land_fraction(world, land);
+            let deepest = world
+                .elevation_mean
+                .iter()
+                .copied()
+                .fold(f32::INFINITY, f32::min);
+            let level =
+                f64::from(deepest) + (target_level - f64::from(deepest)) * condensed_fraction;
+            let vol = volume_to_fill_to_level_m3(world, level);
+            let thermo = thermosteric_effective_volume_m3(1.0, global_mean_temperature_c(world));
+            if thermo > 0.0 { vol / thermo } else { vol }
+        } else {
+            budget.ocean_volume_m3
+        };
+        let outcome = solve_flooding(world, ocean_volume_m3);
 
         debug_assert!(
             budget.is_conserved(),
@@ -239,6 +274,7 @@ impl SimulationLayer for HydrologyLayer {
             interval_years,
         );
         apply_returned_surplus(world, lake_outcome.returned_to_ocean_m3);
+        export_salt(world);
 
         // Standing-water partition check: the solve's effective ocean volume
         // is exactly the ocean component plus the candidate bathtub volumes
@@ -246,8 +282,12 @@ impl SimulationLayer for HydrologyLayer {
         // and the candidates hold what they kept.
         debug_assert!(
             {
+                // Check against the volume we actually flooded with: under the
+                // Doc 06-CAL datum pin this is the volume-below-0, not the GEL budget
+                // term; the invariant (accounted standing water == flooded
+                // volume) holds either way.
                 let effective = thermosteric_effective_volume_m3(
-                    budget.ocean_volume_m3,
+                    ocean_volume_m3,
                     global_mean_temperature_c(world),
                 );
                 let accounted = world
@@ -433,9 +473,11 @@ mod tests {
         drop(layer);
         let hydrology = HydrologyLayer::detach_state(shared);
 
-        // Condensation stage: 90% of the 1000 GEL inventory stands in the
-        // basin minus groundwater recharge; basin cells wet, plateau dry.
+        // Mid-ramp at 300 My: partial inventory stands in the basin minus
+        // groundwater recharge; basin cells wet, plateau dry.
         assert!(world.data.sea_level_m > -2000.0 && world.data.sea_level_m < 1000.0);
+        let frac = condensed_fraction_at_year(300_000_000, false);
+        assert!(frac > 0.0 && frac < 1.0);
         assert_eq!(
             world.data.water_bodies.len(),
             1,
@@ -456,6 +498,52 @@ mod tests {
         assert_eq!(hydrology.aquifer_storage_m.len(), n);
         assert!(hydrology.oceans_begin_emitted);
         assert!(!hydrology.oceans_stabilized_emitted);
+    }
+
+    /// Doc 08 §3.3: dry at ~100 My; oceans present mid-ramp; full by Formation end.
+    #[test]
+    fn condensation_timeline_matches_temperature_gate() {
+        assert_eq!(condensed_fraction_at_year(100_000_000, false), 0.0);
+
+        let mut params = WorldParameters::default();
+        params.core.hydrology.water_inventory_gel_m = 1000.0;
+        params.core.grid.subdivision_level = 4;
+        let grid = HexGrid::new(4, EARTH_RADIUS_KM).expect("grid");
+        let mut data = WorldData::new(grid, params);
+        let n = data.cell_count() as usize;
+        let basin = connected_basin(&data, n / 2);
+        for (i, &in_basin) in basin.iter().enumerate() {
+            data.elevation_mean[i] = if in_basin { -2000.0 } else { 1000.0 };
+        }
+        data.precipitation.fill(1200.0);
+        data.temperature_mean.fill(10.0);
+        let rng = genesis_core::rng::WorldRng::from_effective_seed(1);
+
+        data.current_year = WorldYear(100_000_000);
+        let mut hydrology = HydrologyState::new();
+        let (mut layer, shared) = HydrologyLayer::attach(&mut hydrology);
+        layer.advance(&mut data, &rng);
+        assert!(
+            data.water_bodies.is_empty(),
+            "no standing water at 100 My while T is above onset"
+        );
+
+        data.current_year = WorldYear(300_000_000);
+        layer.advance(&mut data, &rng);
+        let mid = condensed_fraction_at_year(300_000_000, false);
+        assert!(mid > 0.0 && mid < 1.0);
+        assert!(
+            !data.water_bodies.is_empty(),
+            "oceans present mid Condensation-era ramp"
+        );
+
+        data.current_year = WorldYear(FORMATION_END_YEAR);
+        layer.advance(&mut data, &rng);
+        drop(layer);
+        let hydrology = HydrologyLayer::detach_state(shared);
+        assert_eq!(condensed_fraction_at_year(FORMATION_END_YEAR, false), 1.0);
+        assert!(hydrology.oceans_begin_emitted);
+        assert!(hydrology.oceans_stabilized_emitted);
     }
 
     #[test]
@@ -505,6 +593,10 @@ mod tests {
     fn skip_formation_suppresses_ocean_events() {
         let mut params = WorldParameters::default();
         params.core.climate.skip_planetary_formation = true;
+        // Legacy GEL-flood test on a uniform synthetic field: a flat −100 m
+        // world has no land-fraction quantile to solve, so exercise the legacy
+        // budget flood rather than the Doc 06-CAL datum solve.
+        params.core.terrain.enabled = false;
         params.core.grid.subdivision_level = 4;
         let grid = HexGrid::new(4, EARTH_RADIUS_KM).expect("grid");
         let mut data = WorldData::new(grid, params);
@@ -541,7 +633,7 @@ mod tests {
         }
         data.precipitation.fill(2000.0);
         data.temperature_mean.fill(15.0);
-        data.current_year = WorldYear(10_000_000); // Molten: fraction 0.
+        data.current_year = WorldYear(10_000_000); // Hot Formation: fraction 0.
         let rng = genesis_core::rng::WorldRng::from_effective_seed(1);
 
         let mut hydrology = HydrologyState::new();

@@ -18,7 +18,8 @@ pub use hydrology::{
     SoilClass, WATER_NONE, WaterBody, WaterBodyKind, river_class,
 };
 pub use ids::{
-    BasinId, BiomeId, HotSpotId, NationId, PlateId, SettlementId, SpeciesId, WaterBodyId,
+    BasinId, BiomeId, GuildId, HotSpotId, LineageId, NationId, PlateId, ProvinceId, SettlementId,
+    SpeciesId, TraitId, WaterBodyId,
 };
 
 use std::collections::BTreeMap;
@@ -87,7 +88,8 @@ pub struct WorldData {
     pub discharge_seasonality: Vec<f32>,
     /// Depth to the saturated zone, meters. 0 = water table at surface.
     pub water_table_depth_m: Vec<f32>,
-    /// Accumulated salt (monotonic, arbitrary units). Nonzero + dry = salt flat.
+    /// Accumulated salt (endorheic bank; exported when ocean-connected).
+    /// Elevation tint uses SaltFlat bodies; SoilClass::Saline uses a threshold.
     pub salt_accumulated: Vec<f32>,
     /// Land-ice mask (sheets + alpine glaciers thick enough to budget).
     pub ice_mask: Vec<bool>,
@@ -107,6 +109,10 @@ pub struct WorldData {
     /// Ice-load depression target for GIA, meters (Doc 08 §9.1). Written by
     /// hydrology; consumed by tectonics isostasy.
     pub ice_load_m: Vec<f32>,
+    /// Cumulative upward GIA rebound applied by tectonics isostasy (m).
+    /// Diagnostic / §15 #20 — monotonic per hex; not a physical state needed
+    /// for replay (derived from the ice-load path).
+    pub gia_rebound_applied_m: Vec<f32>,
     /// Standing-water body registry, rebuilt each hydrology tick (§2.4).
     pub water_bodies: BTreeMap<WaterBodyId, WaterBody>,
 
@@ -118,12 +124,35 @@ pub struct WorldData {
     /// Continuous glaciation intensity 0..=1 (Doc 08 §9.1 / §17.2). Written by
     /// climate each tick; consumed by hydrology ice-volume budgeting.
     pub glaciation_intensity: f32,
+    /// Atmospheric free-oxygen fraction 0..=~0.21 (Doc 09 §11.1 / Doc 07 §11).
+    /// **Real shared world state** — biology accumulates it as oxygenic
+    /// photosynthesis spreads and reads it back for the eukaryogenesis /
+    /// multicellularity gates (no longer a biology-private proxy); climate's
+    /// atmospheric coupling (temperature/CO₂ feedback) is the remaining §11 work.
+    pub atmospheric_oxygen_fraction: f32,
+    /// Atmospheric CO₂ in ppm (Doc 09B A1). Mirror of climate's authoritative
+    /// `ClimateState.atmospheric_composition.co2_ppm`, surfaced here each tick so
+    /// biology can read it (CO₂-fertilization productivity term) and the ocean
+    /// carbonate chemistry can be forced by it. Default 280 (pre-industrial).
+    /// **Class-B feedback field:** biology's drawdown must be written into the
+    /// climate carbon state, never this mirror (it is re-derived every tick).
+    pub co2_ppm: f32,
 
     // ---- Biological Layer (Layer 1) ----
     /// Biome assignment per hex.
     pub biome: Vec<BiomeId>,
     /// Total biomass in tons per hex.
     pub biomass: Vec<f32>,
+    /// Biotic richness scalar R ∈ [0,1] driving generated species count
+    /// (Doc 09 §4.4). Derived from productivity/stability/area per province.
+    pub biotic_richness: Vec<f32>,
+    /// Energy base (climate + soil + water + CO₂) for the trophic pyramid
+    /// (Doc 09 §5.2, §8.6).
+    pub primary_productivity: Vec<f32>,
+    /// Biogeographic province membership per hex (Doc 09 §5.1).
+    pub province_id: Vec<ProvinceId>,
+    /// Headline lineage per hex for quick rendering/labels (Doc 09 §8.6).
+    pub dominant_lineage: Vec<LineageId>,
     /// Bio-deposit accumulator from shallow tropical seas. Monotonic; never decreases.
     /// Phase 1 tectonics increments this for hexes in shallow tropical conditions.
     /// Phase 4 biology will refine accumulation rate and drive bedrock transitions.
@@ -177,12 +206,19 @@ impl WorldData {
             hydro_elevation_delta_m: vec![0.0; n],
             continental_crust: vec![false; n],
             ice_load_m: vec![0.0; n],
+            gia_rebound_applied_m: vec![0.0; n],
             water_bodies: BTreeMap::new(),
             sea_level_m: 0.0,
             global_temperature_c: 15.0,
             glaciation_intensity: 0.0,
+            atmospheric_oxygen_fraction: 0.0,
+            co2_ppm: 280.0,
             biome: vec![BiomeId::NONE; n],
             biomass: vec![0.0; n],
+            biotic_richness: vec![0.0; n],
+            primary_productivity: vec![0.0; n],
+            province_id: vec![ProvinceId::NONE; n],
+            dominant_lineage: vec![LineageId::NONE; n],
             fertility: vec![0.0; n],
             population: vec![0; n],
             settlement_id: vec![None; n],
@@ -271,8 +307,13 @@ mod tests {
         assert_eq!(world.hydro_elevation_delta_m.len(), n);
         assert_eq!(world.continental_crust.len(), n);
         assert_eq!(world.ice_load_m.len(), n);
+        assert_eq!(world.gia_rebound_applied_m.len(), n);
         assert_eq!(world.biome.len(), n);
         assert_eq!(world.biomass.len(), n);
+        assert_eq!(world.biotic_richness.len(), n);
+        assert_eq!(world.primary_productivity.len(), n);
+        assert_eq!(world.province_id.len(), n);
+        assert_eq!(world.dominant_lineage.len(), n);
         assert_eq!(world.fertility.len(), n);
         assert_eq!(world.population.len(), n);
         assert_eq!(world.settlement_id.len(), n);

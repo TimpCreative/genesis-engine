@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::data::{HotSpotId, PlateId, WaterBodyId};
 use crate::grid::HexId;
+use crate::time::WorldYear;
 
 /// Serializable boundary classification for events (Doc 06 §6.1).
 ///
@@ -116,4 +117,24 @@ pub enum EventKind {
     OasisFormed { hex: HexId },
     /// A karst spring exceeds the discharge threshold (Doc 08 §13).
     GreatSpringEmerges { hex: HexId },
+
+    // ---- Biology (Doc 09 §13) ----
+    /// First biogenesis — life originates at a marine vent hex (Doc 09 §3.1).
+    LifeEmerged { hex: HexId, year: WorldYear },
+    /// A key evolutionary innovation threshold fires (Doc 09 §3.3).
+    EvolutionaryInnovation { innovation: InnovationKind },
+    /// Oxygenation crosses the aerobic threshold (Doc 09 §11.1), usually paired
+    /// with the eukaryogenesis/multicellularity gates.
+    GreatOxygenation { o2_fraction: f32 },
+}
+
+/// A key innovation surfaced by [`EventKind::EvolutionaryInnovation`] (Doc 09 §3.3).
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Serialize, Deserialize)]
+pub enum InnovationKind {
+    OxygenicPhotosynthesis,
+    Eukaryogenesis,
+    Multicellularity,
+    LandColonization,
+    Flight,
+    Endothermy,
 }

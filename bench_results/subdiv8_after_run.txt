@@ -1,0 +1,30 @@
+   Compiling genesis_core v0.1.0 (/Users/braxjohnson/TimpCreative/genesis-engine/crates/genesis_core)
+   Compiling genesis_hydrology v0.1.0 (/Users/braxjohnson/TimpCreative/genesis-engine/crates/genesis_hydrology)
+   Compiling genesis_tectonics v0.1.0 (/Users/braxjohnson/TimpCreative/genesis-engine/crates/genesis_tectonics)
+   Compiling genesis_render v0.1.0 (/Users/braxjohnson/TimpCreative/genesis-engine/crates/genesis_render)
+   Compiling genesis_climate v0.1.0 (/Users/braxjohnson/TimpCreative/genesis-engine/crates/genesis_climate)
+   Compiling genesis_ui v0.1.0 (/Users/braxjohnson/TimpCreative/genesis-engine/crates/genesis_ui)
+   Compiling genesis_app v0.1.0 (/Users/braxjohnson/TimpCreative/genesis-engine/crates/genesis_app)
+    Finished `release` profile [optimized] target(s) in 1m 54s
+     Running unittests src/main.rs (target/release/deps/genesis_app-38c50e719f07028c)
+
+running 1 test
+=== perf_full_history_subdiv8_milestones ===
+os=macos
+arch=aarch64
+available_parallelism=16
+RAYON_NUM_THREADS=unset(default)
+subdivision_level=8
+seed=42
+[climate] circulation: 3 cells per hemisphere (24h rotation), gradient ~49.13781°C
+test tests::perf_full_history_subdiv8_milestones has been running for over 60 seconds
+milestone target_year=1000000000 elapsed_secs=89.197 hex_count=65612 plate_count=12
+[climate] circulation: 3 cells per hemisphere (24h rotation), gradient ~49.13781°C
+milestone target_year=2500000000 elapsed_secs=227.325 hex_count=65612 plate_count=11
+[climate] circulation: 3 cells per hemisphere (24h rotation), gradient ~49.13781°C
+milestone target_year=4500000000 elapsed_secs=415.968 hex_count=65612 plate_count=10
+=== end perf_full_history_subdiv8_milestones ===
+test tests::perf_full_history_subdiv8_milestones ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 732.99s
+

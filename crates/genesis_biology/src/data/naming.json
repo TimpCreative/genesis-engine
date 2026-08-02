@@ -1,0 +1,1538 @@
+{
+  "_comment": "Moddable scientific-name morphemes (Doc 09 §9). A binomial is built from an organism's own traits: the most-specific trait picks a genus root, the next picks a species epithet root, then a grammatical suffix is chosen deterministically from the lineage seed. Add schemes (e.g. an alien one) or edit roots freely; `trait_roots` override the per-axis `axis_roots` fallback.",
+  "schemes": {
+    "latin": {
+      "axis_roots": {
+        "Metabolism": [
+          "troph",
+          "chemo",
+          "phago",
+          "auto",
+          "photo",
+          "litho",
+          "metha",
+          "aero",
+          "anaero",
+          "oxid",
+          "ferment",
+          "hetero",
+          "sapro",
+          "osmo",
+          "electro",
+          "vor"
+        ],
+        "Organization": [
+          "cyto",
+          "soma",
+          "plasto",
+          "cellul",
+          "colon",
+          "modul",
+          "syncy",
+          "plasmo",
+          "unic",
+          "multi",
+          "aggreg",
+          "thall",
+          "organ",
+          "coeno",
+          "meta"
+        ],
+        "Structure": [
+          "sceleto",
+          "osteo",
+          "cortico",
+          "cephalo",
+          "somato",
+          "vertebr",
+          "chitin",
+          "silic",
+          "calc",
+          "cartil",
+          "exo",
+          "endo",
+          "hydro",
+          "carapa",
+          "spicul",
+          "derm",
+          "scler",
+          "test"
+        ],
+        "Symmetry": [
+          "morpho",
+          "radi",
+          "latero",
+          "bilat",
+          "penta",
+          "sphaer",
+          "asymm",
+          "hexa",
+          "tetra",
+          "octo",
+          "helic",
+          "spiral",
+          "amorph",
+          "trimer",
+          "dextr",
+          "sinistr"
+        ],
+        "Motility": [
+          "gressor",
+          "cursor",
+          "mobili",
+          "natans",
+          "volans",
+          "reptans",
+          "fossor",
+          "saltat",
+          "rotans",
+          "glissa",
+          "sessil",
+          "planct",
+          "ambul",
+          "scand",
+          "jact",
+          "serp",
+          "grada",
+          "pedi"
+        ],
+        "Thermoregulation": [
+          "thermo",
+          "caloro",
+          "ecto",
+          "endo",
+          "homeo",
+          "poikilo",
+          "cryo",
+          "pyro",
+          "gigatherm",
+          "mesotherm",
+          "regul",
+          "calor",
+          "frig",
+          "hibern",
+          "torpid"
+        ],
+        "Nervous": [
+          "neuro",
+          "cephalo",
+          "cerebro",
+          "ganglio",
+          "encephal",
+          "cortico",
+          "synap",
+          "gnos",
+          "sap",
+          "cogit",
+          "mnem",
+          "psych",
+          "noeti",
+          "reflex",
+          "axon"
+        ],
+        "Sensory": [
+          "senso",
+          "aistho",
+          "percepto",
+          "opti",
+          "ophthalm",
+          "ocul",
+          "audi",
+          "echo",
+          "chemos",
+          "olfa",
+          "tacti",
+          "magne",
+          "electr",
+          "thermos",
+          "photo",
+          "vibr",
+          "baro",
+          "polari",
+          "sens"
+        ],
+        "Reproduction": [
+          "genito",
+          "ovi",
+          "sporo",
+          "gono",
+          "oo",
+          "vivi",
+          "parth",
+          "gamet",
+          "gemma",
+          "fissi",
+          "herma",
+          "sexu",
+          "clon",
+          "budd",
+          "zygo",
+          "spawn",
+          "brood"
+        ],
+        "Integument": [
+          "dermo",
+          "tego",
+          "squamo",
+          "pili",
+          "pluma",
+          "cuti",
+          "cortic",
+          "mucos",
+          "carno",
+          "lorica",
+          "tegu",
+          "epider",
+          "chondro",
+          "vellu",
+          "setos"
+        ],
+        "Diet": [
+          "voro",
+          "phago",
+          "edaco",
+          "carni",
+          "herbi",
+          "omni",
+          "detriti",
+          "sangui",
+          "folio",
+          "granivor",
+          "necto",
+          "filtr",
+          "corallo",
+          "litho",
+          "myco",
+          "insecti",
+          "picci",
+          "frugi",
+          "nectar"
+        ],
+        "Social": [
+          "grega",
+          "socio",
+          "colono",
+          "greg",
+          "soli",
+          "euso",
+          "colon",
+          "commun",
+          "famil",
+          "aggreg",
+          "symbi",
+          "muto",
+          "domin",
+          "coop",
+          "pack",
+          "swarm",
+          "terri"
+        ],
+        "Size": [
+          "medio",
+          "magno",
+          "parvo",
+          "giga",
+          "macro",
+          "grandi",
+          "micro",
+          "minu",
+          "nano",
+          "pumil",
+          "colos",
+          "titan",
+          "parvi",
+          "brevi",
+          "longi"
+        ],
+        "Coloration": [
+          "chromo",
+          "picto",
+          "coloro",
+          "irid",
+          "melano",
+          "leuco",
+          "erythro",
+          "cyano",
+          "chloro",
+          "xantho",
+          "crypto",
+          "diapho",
+          "lumin",
+          "pallid",
+          "vari",
+          "poikilo",
+          "argent",
+          "aureo"
+        ]
+      },
+      "trait_roots": {
+        "core:swim": [
+          "nata",
+          "nekto",
+          "thalasso",
+          "natans"
+        ],
+        "core:jet": [
+          "sipho",
+          "propello",
+          "propul",
+          "jacto"
+        ],
+        "core:powered_flight": [
+          "ala",
+          "volo",
+          "aero"
+        ],
+        "core:limbed_walk": [
+          "gressor",
+          "pedo",
+          "ambulo"
+        ],
+        "core:muscular_crawl": [
+          "repto",
+          "serpo"
+        ],
+        "core:hypercarnivore": [
+          "raptor",
+          "predo",
+          "carno",
+          "hypercarn"
+        ],
+        "core:folivore": [
+          "phyllo",
+          "folio"
+        ],
+        "core:granivore": [
+          "grano",
+          "semeno"
+        ],
+        "core:filter_feeder": [
+          "colo",
+          "liquo",
+          "filtr",
+          "colato"
+        ],
+        "core:detritivore": [
+          "sapro",
+          "detrito"
+        ],
+        "core:parasite": [
+          "parasito",
+          "xeno"
+        ],
+        "core:image_eye": [
+          "oculo",
+          "opto",
+          "ophthalm",
+          "ocul"
+        ],
+        "core:echolocation": [
+          "sono",
+          "echo",
+          "sonor"
+        ],
+        "core:electroreception": [
+          "electro",
+          "voltao",
+          "electr",
+          "galvo"
+        ],
+        "core:magnetoreception": [
+          "magneto",
+          "polaro",
+          "magne",
+          "ferro"
+        ],
+        "core:sapience": [
+          "sapiens",
+          "cogito",
+          "mento",
+          "sap",
+          "noeti"
+        ],
+        "core:complex_cognition": [
+          "cerebro",
+          "noeto"
+        ],
+        "core:eusocial": [
+          "formica",
+          "apio",
+          "colono",
+          "euso",
+          "casto"
+        ],
+        "core:oxygenic_photosynthesis": [
+          "phyto",
+          "chloro",
+          "herba"
+        ],
+        "core:absorptive_decomposition": [
+          "myco",
+          "fungo",
+          "sapro"
+        ],
+        "core:chemosynthesis": [
+          "chemo",
+          "sulfuro",
+          "vento",
+          "syntho"
+        ],
+        "core:homeotherm": [
+          "calido",
+          "endo"
+        ],
+        "core:poikilotherm": [
+          "frigo",
+          "ecto"
+        ],
+        "core:feather": [
+          "pluma",
+          "penno"
+        ],
+        "core:fur": [
+          "pilo",
+          "villo"
+        ],
+        "core:scale": [
+          "squamo",
+          "lepido"
+        ],
+        "core:shell": [
+          "concho",
+          "testo"
+        ],
+        "core:radial": [
+          "radi",
+          "astero",
+          "actino"
+        ],
+        "core:bilateral": [
+          "latero",
+          "plagio",
+          "bilat",
+          "duplo"
+        ],
+        "core:segmented": [
+          "annulo",
+          "metamero",
+          "metam"
+        ],
+        "core:size_mega": [
+          "gigo",
+          "titano",
+          "megalo"
+        ],
+        "core:size_large": [
+          "magno",
+          "grando"
+        ],
+        "core:size_micro": [
+          "nano",
+          "minuto"
+        ],
+        "core:size_small": [
+          "parvo",
+          "micro"
+        ],
+        "core:radiotrophy": [
+          "radio",
+          "actino"
+        ],
+        "core:methanogen": [
+          "metha",
+          "gaso"
+        ],
+        "core:lithotroph": [
+          "litho",
+          "petro"
+        ],
+        "core:photosynthesis": [
+          "photo",
+          "chloro"
+        ],
+        "core:flight": [
+          "volans",
+          "ptero"
+        ],
+        "core:roll": [
+          "rotans",
+          "cyclo"
+        ],
+        "core:glide": [
+          "glissa",
+          "plano"
+        ],
+        "core:burrow": [
+          "fossor",
+          "geo"
+        ],
+        "core:polarization_vision": [
+          "polari",
+          "axio"
+        ],
+        "core:thermoreception": [
+          "thermos",
+          "caloro"
+        ],
+        "core:tool_use": [
+          "fabri",
+          "techno"
+        ],
+        "core:hive_mind": [
+          "cohort",
+          "gestalt"
+        ],
+        "core:pentaradial": [
+          "penta",
+          "quinqu"
+        ],
+        "core:silica_skeleton": [
+          "silic",
+          "vitro"
+        ],
+        "core:iron_armor": [
+          "ferro",
+          "sidero"
+        ],
+        "core:venom": [
+          "veno",
+          "toxo"
+        ],
+        "core:mimicry": [
+          "mimo",
+          "simulo"
+        ],
+        "core:bioluminescence": [
+          "lumin",
+          "photop"
+        ],
+        "core:regeneration": [
+          "regen",
+          "restau"
+        ],
+        "core:electric_organ": [
+          "electro",
+          "volto"
+        ],
+        "core:sanguivore": [
+          "sangui",
+          "haemo"
+        ],
+        "core:lithophage": [
+          "lithoph",
+          "petrov"
+        ],
+        "core:corallivore": [
+          "corallo",
+          "polypo"
+        ],
+        "core:photosymbiosis": [
+          "photosym",
+          "zooxo"
+        ],
+        "core:chemosymbiosis": [
+          "chemosym",
+          "thioty"
+        ],
+        "core:endosymbiosis": [
+          "endosym",
+          "intero"
+        ],
+        "core:parthenogenesis": [
+          "parth",
+          "virgo"
+        ],
+        "core:hermaphrodite": [
+          "herma",
+          "androgy"
+        ],
+        "core:viviparity": [
+          "vivi",
+          "gesto"
+        ],
+        "core:iridescence": [
+          "irid",
+          "nacro"
+        ],
+        "core:camouflage": [
+          "crypto",
+          "camo"
+        ],
+        "core:transparency": [
+          "diapho",
+          "hyalo"
+        ],
+        "core:mega": [
+          "giga",
+          "titan"
+        ],
+        "core:micro": [
+          "micro",
+          "nano"
+        ],
+        "core:gas_bag": [
+          "aeros",
+          "pneumo"
+        ],
+        "core:crystalline": [
+          "crystallo",
+          "geo"
+        ],
+        "core:plasma_field": [
+          "plasmo",
+          "ioni"
+        ]
+      },
+      "genus_suffixes": [
+        "us",
+        "a",
+        "on",
+        "ops",
+        "odon",
+        "ura",
+        "ella",
+        "ix",
+        "aster",
+        "pus",
+        "um",
+        "es",
+        "is",
+        "saurus",
+        "phyta",
+        "pod",
+        "cephalus",
+        "therium",
+        "oma",
+        "ion"
+      ],
+      "epithet_suffixes": [
+        "us",
+        "a",
+        "inus",
+        "ensis",
+        "atus",
+        "alis",
+        "osus",
+        "ilis",
+        "icus",
+        "oides",
+        "ifer",
+        "iger",
+        "escens",
+        "aris"
+      ]
+    },
+    "alien": {
+      "axis_roots": {
+        "Metabolism": [
+          "xkr",
+          "vozh",
+          "k'tan",
+          "qeth",
+          "zdru",
+          "thrak",
+          "vhx",
+          "kzol",
+          "grxa",
+          "zeth",
+          "khud",
+          "vrak",
+          "xthu",
+          "kvor"
+        ],
+        "Organization": [
+          "zkul",
+          "vrag",
+          "kh'ot",
+          "thzu",
+          "grozh",
+          "xvel",
+          "qtar",
+          "zdak",
+          "vukh",
+          "kror",
+          "thval",
+          "zgim",
+          "vhor",
+          "kzeth"
+        ],
+        "Structure": [
+          "skorn",
+          "vrakh",
+          "kthul",
+          "zdur",
+          "grath",
+          "xkoz",
+          "thrun",
+          "kvazh",
+          "zorn",
+          "vhak",
+          "qroth",
+          "kzur",
+          "grux",
+          "thvok"
+        ],
+        "Symmetry": [
+          "zir",
+          "vkath",
+          "kh'un",
+          "thrix",
+          "qzol",
+          "zradh",
+          "voth",
+          "kxen",
+          "grim",
+          "thzar",
+          "vukh",
+          "zdol",
+          "krav",
+          "xoth"
+        ],
+        "Motility": [
+          "skra",
+          "vroth",
+          "k'zim",
+          "thgar",
+          "quzk",
+          "zdrav",
+          "vhun",
+          "korth",
+          "graz",
+          "thkul",
+          "vzor",
+          "krix",
+          "zguth",
+          "xvra"
+        ],
+        "Thermoregulation": [
+          "thraz",
+          "vkol",
+          "kh'ur",
+          "zdim",
+          "grox",
+          "xthar",
+          "quth",
+          "kzim",
+          "vrun",
+          "zoth",
+          "thvak",
+          "grux",
+          "vzel",
+          "krath"
+        ],
+        "Nervous": [
+          "zneth",
+          "vkru",
+          "kh'az",
+          "thron",
+          "qzel",
+          "zdrix",
+          "vhog",
+          "korn",
+          "grath",
+          "thvun",
+          "vzak",
+          "kril",
+          "zguv",
+          "xnoth"
+        ],
+        "Sensory": [
+          "skith",
+          "vrox",
+          "k'nal",
+          "thzir",
+          "quzh",
+          "zdral",
+          "vhen",
+          "korx",
+          "grav",
+          "thkir",
+          "vzol",
+          "krith",
+          "zguth",
+          "xvel"
+        ],
+        "Reproduction": [
+          "zolg",
+          "vrath",
+          "kh'im",
+          "thgru",
+          "quth",
+          "zdrog",
+          "vhal",
+          "korth",
+          "grim",
+          "thvog",
+          "vzur",
+          "kraz",
+          "zgul",
+          "xrath"
+        ],
+        "Integument": [
+          "skarn",
+          "vrokh",
+          "k'tul",
+          "thzun",
+          "grax",
+          "xkoth",
+          "quzk",
+          "kzarn",
+          "vorn",
+          "thvak",
+          "vzoth",
+          "krul",
+          "zgir",
+          "xthun"
+        ],
+        "Diet": [
+          "zrak",
+          "vokh",
+          "kh'ath",
+          "thrix",
+          "quzol",
+          "zdruk",
+          "vhag",
+          "korth",
+          "grav",
+          "thkul",
+          "vzik",
+          "krax",
+          "zguth",
+          "xroth"
+        ],
+        "Social": [
+          "skorth",
+          "vrun",
+          "k'zol",
+          "thgan",
+          "quth",
+          "zdravh",
+          "vhek",
+          "korn",
+          "grim",
+          "thvun",
+          "vzar",
+          "kril",
+          "zgok",
+          "xvath"
+        ],
+        "Size": [
+          "zgrund",
+          "vaxth",
+          "kh'or",
+          "thruk",
+          "qzim",
+          "zdroth",
+          "vhun",
+          "korx",
+          "grazm",
+          "thvix",
+          "vzul",
+          "krath",
+          "zgim",
+          "xnub"
+        ],
+        "Coloration": [
+          "skrix",
+          "vozh",
+          "k'lath",
+          "thzor",
+          "quzh",
+          "zdrel",
+          "vhin",
+          "korth",
+          "grav",
+          "thkal",
+          "vzoth",
+          "kril",
+          "zguth",
+          "xveth"
+        ]
+      },
+      "trait_roots": {
+        "core:chemosynthesis": [
+          "xkrath",
+          "vozhk"
+        ],
+        "core:radiotrophy": [
+          "zdruk",
+          "khvax"
+        ],
+        "core:methanogen": [
+          "grthok",
+          "vzul"
+        ],
+        "core:lithotroph": [
+          "skorn",
+          "kthaz"
+        ],
+        "core:photosynthesis": [
+          "thvel",
+          "qzoth"
+        ],
+        "core:swim": [
+          "vroth",
+          "zdrak"
+        ],
+        "core:jet": [
+          "kh'ux",
+          "thpra"
+        ],
+        "core:flight": [
+          "vhogr",
+          "xkoth"
+        ],
+        "core:roll": [
+          "zgorn",
+          "krivh"
+        ],
+        "core:glide": [
+          "thzal",
+          "vzoth"
+        ],
+        "core:burrow": [
+          "skruzh",
+          "grath"
+        ],
+        "core:image_eye": [
+          "zneth",
+          "vkolx"
+        ],
+        "core:echolocation": [
+          "thkru",
+          "qzith"
+        ],
+        "core:electroreception": [
+          "vzarn",
+          "kh'oz"
+        ],
+        "core:magnetoreception": [
+          "zdroth",
+          "xvath"
+        ],
+        "core:polarization_vision": [
+          "krivh",
+          "thzol"
+        ],
+        "core:thermoreception": [
+          "thraz",
+          "vkuth"
+        ],
+        "core:sapience": [
+          "kh'zar",
+          "zneth"
+        ],
+        "core:tool_use": [
+          "vrakth",
+          "skorn"
+        ],
+        "core:hive_mind": [
+          "zgroth",
+          "vhun"
+        ],
+        "core:radial": [
+          "zradh",
+          "kxen"
+        ],
+        "core:bilateral": [
+          "vkath",
+          "thrix"
+        ],
+        "core:pentaradial": [
+          "qzol",
+          "zdrixh"
+        ],
+        "core:segmented": [
+          "thvakh",
+          "krurn"
+        ],
+        "core:silica_skeleton": [
+          "skarn",
+          "vitrozh"
+        ],
+        "core:iron_armor": [
+          "kzurn",
+          "grothk"
+        ],
+        "core:venom": [
+          "zthok",
+          "vrax"
+        ],
+        "core:mimicry": [
+          "kh'lun",
+          "thzimm"
+        ],
+        "core:bioluminescence": [
+          "zgluth",
+          "vhinx"
+        ],
+        "core:regeneration": [
+          "vrothk",
+          "zdral"
+        ],
+        "core:electric_organ": [
+          "vzoltk",
+          "kh'raz"
+        ],
+        "core:hypercarnivore": [
+          "zrakth",
+          "grux"
+        ],
+        "core:folivore": [
+          "thvag",
+          "krin"
+        ],
+        "core:sanguivore": [
+          "vozhk",
+          "zdruth"
+        ],
+        "core:lithophage": [
+          "skthur",
+          "kzol"
+        ],
+        "core:corallivore": [
+          "thkoral",
+          "vroth"
+        ],
+        "core:filter_feeder": [
+          "zdrilk",
+          "vhag"
+        ],
+        "core:parthenogenesis": [
+          "zolgth",
+          "vrath"
+        ],
+        "core:hermaphrodite": [
+          "kh'imzol",
+          "thvog"
+        ],
+        "core:viviparity": [
+          "vzurn",
+          "zgul"
+        ],
+        "core:eusocial": [
+          "skorth",
+          "zdravh"
+        ],
+        "core:iridescence": [
+          "skrixh",
+          "vozhk"
+        ],
+        "core:camouflage": [
+          "kh'lath",
+          "thzoth"
+        ],
+        "core:transparency": [
+          "zdrelh",
+          "vhinx"
+        ],
+        "core:mega": [
+          "zgrund",
+          "vaxth"
+        ],
+        "core:micro": [
+          "xnub",
+          "krizm"
+        ],
+        "core:gas_bag": [
+          "vhpneu",
+          "zgorth"
+        ],
+        "core:crystalline": [
+          "skvitr",
+          "kzarn"
+        ],
+        "core:plasma_field": [
+          "zplazm",
+          "vhionx"
+        ]
+      },
+      "genus_suffixes": [
+        "ax",
+        "oth",
+        "uzk",
+        "'vhen",
+        "orn",
+        "azk",
+        "uth",
+        "ixth",
+        "ok",
+        "arn",
+        "ezk",
+        "url",
+        "ozh",
+        "akth"
+      ],
+      "epithet_suffixes": [
+        "ax",
+        "oth",
+        "uzk",
+        "'vhen",
+        "izk",
+        "urn",
+        "eth",
+        "okh",
+        "ath",
+        "uld",
+        "irx",
+        "ozk"
+      ]
+    },
+    "flowing": {
+      "axis_roots": {
+        "Metabolism": [
+          "lae",
+          "miru",
+          "olan",
+          "wei",
+          "nuan",
+          "aeli",
+          "loma",
+          "yure",
+          "nael",
+          "iralu",
+          "wemi",
+          "olua",
+          "reni",
+          "malo"
+        ],
+        "Organization": [
+          "mira",
+          "loan",
+          "wyel",
+          "nuli",
+          "aelo",
+          "rewa",
+          "immu",
+          "olae",
+          "yuna",
+          "lomi",
+          "waru",
+          "nira",
+          "omea",
+          "lueli"
+        ],
+        "Structure": [
+          "aran",
+          "lome",
+          "wuli",
+          "nael",
+          "irua",
+          "mera",
+          "olwe",
+          "yani",
+          "luma",
+          "renu",
+          "waeli",
+          "noli",
+          "omai",
+          "leru"
+        ],
+        "Symmetry": [
+          "riel",
+          "mowa",
+          "olan",
+          "wenu",
+          "aeru",
+          "lima",
+          "nowi",
+          "yela",
+          "luan",
+          "meri",
+          "walo",
+          "niru",
+          "omea",
+          "laue"
+        ],
+        "Motility": [
+          "neru",
+          "wila",
+          "olae",
+          "muri",
+          "aewa",
+          "lonu",
+          "yiro",
+          "meli",
+          "luna",
+          "raime",
+          "womi",
+          "niela",
+          "omoa",
+          "leru"
+        ],
+        "Thermoregulation": [
+          "welu",
+          "mira",
+          "olua",
+          "nawe",
+          "aemi",
+          "loru",
+          "yuni",
+          "melo",
+          "luae",
+          "rewi",
+          "wano",
+          "niru",
+          "omea",
+          "lyra"
+        ],
+        "Nervous": [
+          "niel",
+          "waru",
+          "olue",
+          "meru",
+          "aeno",
+          "lima",
+          "yowa",
+          "mela",
+          "luri",
+          "renu",
+          "woli",
+          "naeli",
+          "omua",
+          "lenu"
+        ],
+        "Sensory": [
+          "oela",
+          "wiru",
+          "olan",
+          "miwa",
+          "aeru",
+          "loni",
+          "yela",
+          "meru",
+          "luwa",
+          "riena",
+          "womi",
+          "naeli",
+          "omea",
+          "leru"
+        ],
+        "Reproduction": [
+          "gonu",
+          "wela",
+          "olia",
+          "miru",
+          "aewi",
+          "lona",
+          "yuae",
+          "meli",
+          "luna",
+          "reni",
+          "woma",
+          "niela",
+          "omua",
+          "laeri"
+        ],
+        "Integument": [
+          "muri",
+          "welo",
+          "olan",
+          "niwa",
+          "aeli",
+          "lomu",
+          "yena",
+          "mela",
+          "luri",
+          "renu",
+          "woli",
+          "naimi",
+          "omea",
+          "lyaru"
+        ],
+        "Diet": [
+          "veni",
+          "wolu",
+          "olae",
+          "mira",
+          "aewa",
+          "loni",
+          "yuma",
+          "melo",
+          "luna",
+          "rewi",
+          "woma",
+          "nira",
+          "omua",
+          "leni"
+        ],
+        "Social": [
+          "greli",
+          "woni",
+          "olua",
+          "mira",
+          "aemi",
+          "loni",
+          "yela",
+          "meru",
+          "luwa",
+          "renu",
+          "womi",
+          "niela",
+          "omea",
+          "lyri"
+        ],
+        "Size": [
+          "gima",
+          "waru",
+          "olan",
+          "miru",
+          "aeno",
+          "loma",
+          "yuni",
+          "meli",
+          "luna",
+          "reni",
+          "woli",
+          "nira",
+          "omua",
+          "lenu"
+        ],
+        "Coloration": [
+          "iru",
+          "welu",
+          "olae",
+          "mira",
+          "aewi",
+          "loni",
+          "yuna",
+          "melo",
+          "luwa",
+          "renu",
+          "womi",
+          "nira",
+          "omea",
+          "lyeri"
+        ]
+      },
+      "trait_roots": {
+        "core:chemosynthesis": [
+          "laemi",
+          "oluwa"
+        ],
+        "core:radiotrophy": [
+          "ranue",
+          "iluma"
+        ],
+        "core:methanogen": [
+          "meloa",
+          "wanue"
+        ],
+        "core:lithotroph": [
+          "olira",
+          "namelu"
+        ],
+        "core:photosynthesis": [
+          "welua",
+          "olime"
+        ],
+        "core:swim": [
+          "nerua",
+          "wiloa"
+        ],
+        "core:jet": [
+          "welua",
+          "miroa"
+        ],
+        "core:flight": [
+          "woliae",
+          "aeruna"
+        ],
+        "core:roll": [
+          "olwelu",
+          "nirawa"
+        ],
+        "core:glide": [
+          "waeloa",
+          "olimea"
+        ],
+        "core:burrow": [
+          "nemura",
+          "olowa"
+        ],
+        "core:image_eye": [
+          "oelira",
+          "miwana"
+        ],
+        "core:echolocation": [
+          "welonu",
+          "aemira"
+        ],
+        "core:electroreception": [
+          "wilume",
+          "olaeni"
+        ],
+        "core:magnetoreception": [
+          "nirawe",
+          "olmea"
+        ],
+        "core:polarization_vision": [
+          "oluril",
+          "wemila"
+        ],
+        "core:thermoreception": [
+          "weluna",
+          "olira"
+        ],
+        "core:sapience": [
+          "nielua",
+          "omeari"
+        ],
+        "core:tool_use": [
+          "waemir",
+          "olenua"
+        ],
+        "core:hive_mind": [
+          "oluwen",
+          "miraela"
+        ],
+        "core:radial": [
+          "rielua",
+          "olwena"
+        ],
+        "core:bilateral": [
+          "mowira",
+          "olanue"
+        ],
+        "core:pentaradial": [
+          "wenali",
+          "olimea"
+        ],
+        "core:segmented": [
+          "merona",
+          "olwira"
+        ],
+        "core:silica_skeleton": [
+          "aranue",
+          "welira"
+        ],
+        "core:iron_armor": [
+          "olmera",
+          "niwaru"
+        ],
+        "core:venom": [
+          "venila",
+          "olurwa"
+        ],
+        "core:mimicry": [
+          "milowa",
+          "aemira"
+        ],
+        "core:bioluminescence": [
+          "oluira",
+          "welena"
+        ],
+        "core:regeneration": [
+          "renuwa",
+          "olaeni"
+        ],
+        "core:electric_organ": [
+          "wiluor",
+          "olmena"
+        ],
+        "core:hypercarnivore": [
+          "venira",
+          "olrawa"
+        ],
+        "core:folivore": [
+          "folira",
+          "welnua"
+        ],
+        "core:sanguivore": [
+          "saniwa",
+          "olurae"
+        ],
+        "core:lithophage": [
+          "olira",
+          "nemelu"
+        ],
+        "core:corallivore": [
+          "korila",
+          "welua"
+        ],
+        "core:filter_feeder": [
+          "welira",
+          "olimna"
+        ],
+        "core:parthenogenesis": [
+          "wenlua",
+          "olira"
+        ],
+        "core:hermaphrodite": [
+          "olmera",
+          "aniwae"
+        ],
+        "core:viviparity": [
+          "wilua",
+          "olmena"
+        ],
+        "core:eusocial": [
+          "greliua",
+          "olwena"
+        ],
+        "core:iridescence": [
+          "irunwa",
+          "olmeae"
+        ],
+        "core:camouflage": [
+          "welua",
+          "olnira"
+        ],
+        "core:transparency": [
+          "olyena",
+          "wilmea"
+        ],
+        "core:mega": [
+          "gimaru",
+          "olwana"
+        ],
+        "core:micro": [
+          "minua",
+          "welira"
+        ],
+        "core:gas_bag": [
+          "aeliwa",
+          "olumna"
+        ],
+        "core:crystalline": [
+          "welira",
+          "olyena"
+        ],
+        "core:plasma_field": [
+          "oluira",
+          "wemena"
+        ]
+      },
+      "genus_suffixes": [
+        "a",
+        "elle",
+        "iri",
+        "oa",
+        "una",
+        "ael",
+        "iel",
+        "owa",
+        "eia",
+        "uli",
+        "ora",
+        "nea",
+        "aia",
+        "elu"
+      ],
+      "epithet_suffixes": [
+        "a",
+        "elle",
+        "iri",
+        "oa",
+        "una",
+        "ael",
+        "iela",
+        "owa",
+        "eia",
+        "uli",
+        "ora",
+        "ena"
+      ]
+    }
+  }
+}

@@ -52,6 +52,78 @@ pub fn land_fraction(elevation_mean: &[f32], sea_level_m: f32) -> f32 {
     land as f32 / elevation_mean.len() as f32
 }
 
+/// Fraction of dry continental-crust hexes sitting more than `margin_m` below
+/// freeboard (`elev − sea < CONTINENTAL_FREEBOARD_M − margin_m`). Used to
+/// police charcoal interior pits after the morphology fix. Hexes within two
+/// rings of ocean/sea are excluded (fjord / coastal troughs are allowed).
+pub fn continental_dry_pit_fraction(data: &WorldData, margin_m: f32) -> f32 {
+    use crate::erosion::CONTINENTAL_FREEBOARD_M;
+    let n = data.cell_count() as usize;
+    let sea = data.sea_level_m;
+    let threshold = CONTINENTAL_FREEBOARD_M - margin_m;
+    let mut dry_cont = 0usize;
+    let mut pits = 0usize;
+
+    let mut ocean_side = vec![false; n];
+    #[allow(clippy::needless_range_loop)]
+    for i in 0..n {
+        if data.elevation_mean[i] < sea {
+            ocean_side[i] = true;
+            continue;
+        }
+        let id = data.water_body_id[i];
+        if id != WaterBodyId::NONE
+            && data
+                .water_bodies
+                .get(&id)
+                .is_some_and(|b| matches!(b.kind, WaterBodyKind::Ocean | WaterBodyKind::Sea))
+        {
+            ocean_side[i] = true;
+        }
+    }
+    // Dilate ocean-side by 2 rings so fjord coasts are excluded from the pit rate.
+    let mut near_ocean = ocean_side.clone();
+    for _ in 0..2 {
+        let prev = near_ocean.clone();
+        #[allow(clippy::needless_range_loop)]
+        for i in 0..n {
+            if prev[i] {
+                continue;
+            }
+            for nb in data.grid.neighbors(HexId(i as u32)) {
+                let j = nb.0 as usize;
+                if j < n && prev[j] {
+                    near_ocean[i] = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    #[allow(clippy::needless_range_loop)]
+    for i in 0..n {
+        if !data.continental_crust.get(i).copied().unwrap_or(false) {
+            continue;
+        }
+        if near_ocean[i] {
+            continue;
+        }
+        let elev = data.elevation_mean[i];
+        let water = data.water_level_m.get(i).copied().unwrap_or(WATER_NONE);
+        if water > elev && water.is_finite() {
+            continue;
+        }
+        dry_cont += 1;
+        if elev - sea < threshold {
+            pits += 1;
+        }
+    }
+    if dry_cont == 0 {
+        return 0.0;
+    }
+    pits as f32 / dry_cont as f32
+}
+
 /// Fraction of cells with standing water (`water_level_m != WATER_NONE`) —
 /// the frame-compatible wet mask (frames carry no `water_body_id`).
 pub fn wet_fraction_from_levels(water_level_m: &[f32]) -> f32 {
@@ -771,7 +843,7 @@ mod tests {
         // Covered by lakes unit tests; assert salt field can become Saline soil.
         let params = validation_parameters();
         let mut world = create_world(params).expect("world");
-        world.data.salt_accumulated[1] = 2.0;
+        world.data.salt_accumulated[1] = crate::lakes::SALINE_SOIL_SALT_MIN;
         world.data.elevation_mean[1] = 200.0;
         world.data.precipitation[1] = 100.0;
         world.data.temperature_mean[1] = 20.0;

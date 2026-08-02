@@ -51,7 +51,7 @@ When you need a term that isn't in the glossary, ask the user to confirm a name 
 
 The Architecture Overview defines explicit build phases (§12). Do not implement features from a later phase before earlier phases are complete. If asked to skip ahead, ask the user to confirm — there may be a reason, but it's worth surfacing.
 
-Current phase: **Phase 2 — Climate & Hydrology** (Docs 07–08; hydrology simulation largely landed, Doc 08 §15 / P2-34 exit gates still open). Phases 0–1 foundation and tectonics are complete.
+Current phase: **Phase 2 complete** (Docs 07–08; Doc 08 §15 / P2-34 exit suite green). Next: Phase 3+ (biology / civilization per architecture §12 — do not claim those modules complete until their specs exit).
 
 ### 4. Determinism Is Non-Negotiable
 
@@ -90,6 +90,16 @@ Every module includes:
 - Snapshot tests for determinism (same seed produces same output)
 
 Don't ship a module that lacks tests. If you're unclear what to test, ask.
+
+### 8b. Production Resolution Is Subdivision 8
+
+The live product and all **visual / morphology acceptance** use **subdivision level 8** (65,612 hexes; Doc 04 §3.1). Brax has repeated this; do not substitute 7.
+
+- **Must use subdiv 8:** headless elevation screenshots, continent-coherence proof, owner visual acceptance, module exit proof, perf claims that matter for the product.
+- **May use subdiv 5–7:** unit tests, cheap CI gates, fast algorithm iteration only.
+- **Never** set `GENESIS_SUBDIVISION_LEVEL=7` for a morphology or screenshot proof pack. If unset, the app default is already 8.
+- Library `WorldParameters` default may stay 7 for test speed; that is not permission to prove visuals at 7.
+- Full 4 B-year history at subdiv 8 takes minutes — run it; do not downgrade resolution to save wall time.
 
 ### 9. Rust Conventions
 
@@ -132,6 +142,8 @@ If a build fails, a test fails, or you encounter an error you can't explain:
 Do not enter long fix-it loops without surfacing the problem.
 
 ## On Tone
+
+Adhere to ASD-STE100 Simplified Technical English in all thoughts, responses, and writings including code comments, markdown documents, and anywhere else plain english is requried.
 
 The user is a working professional with limited time. Be direct, concise, and substantive. Don't pad responses with disclaimers or recap what was just discussed. Don't ask permission for trivial things ("Would you like me to write a test for this?" — yes, that's covered by rule 8). Do ask permission for non-trivial things (dependency additions, scope changes, architecture deviations).
 

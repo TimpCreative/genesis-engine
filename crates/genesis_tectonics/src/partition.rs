@@ -324,6 +324,11 @@ pub fn repartition_hexes(data: &mut WorldData, registry: &mut PlateRegistry) -> 
                     fertility: feature.fertility,
                     age_year: tick_year,
                     continental_crust: feature.continental_crust,
+                    // Doc 06 §5.2 roots: shortening thickens crust — the
+                    // weld keeps its accumulated root and banks the uplift.
+                    root_m: (feature.root_m
+                        + (uplift * crate::elevation::ROOT_BANK_FRACTION) as f32)
+                        .min(crate::elevation::ROOT_MAX_M),
                 },
             );
         }
@@ -450,6 +455,7 @@ pub fn repartition_hexes(data: &mut WorldData, registry: &mut PlateRegistry) -> 
                     fertility: 0.0,
                     age_year: tick_year,
                     continental_crust: false,
+                    root_m: 0.0,
                 },
             );
             // Fresh ridge crust projects onto exactly this hex; rebuilds may
@@ -505,6 +511,7 @@ mod tests {
             fertility: 0.0,
             age_year: 0,
             continental_crust: bedrock != BedrockType::OceanicCrust,
+            root_m: 0.0,
         }
     }
 

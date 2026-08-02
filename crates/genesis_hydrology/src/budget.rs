@@ -7,44 +7,64 @@
 
 use genesis_core::parameters::WorldParameters;
 
-/// End of the Molten stage / start of Cooling (Doc 08 §3.3; mirrors the
-/// formation stage boundaries of Doc 07 §3.2).
+/// End of the Molten stage / start of Cooling (Doc 07 §3.2 calendar labels;
+/// water follows temperature, not these year edges — Doc 08 §3.3).
 pub const MOLTEN_END_YEAR: i64 = 50_000_000;
-/// End of Cooling / start of Condensation.
+/// End of Cooling / start of Condensation (calendar).
 pub const COOLING_END_YEAR: i64 = 200_000_000;
-/// End of Condensation / start of Stabilization.
+/// End of Condensation / start of Stabilization (calendar).
 pub const CONDENSATION_END_YEAR: i64 = 350_000_000;
-/// End of Formation; the inventory is fully condensed from here on.
+/// End of Formation.
 pub const FORMATION_END_YEAR: i64 = 500_000_000;
 
-/// Condensed inventory fraction during Cooling (§3.3).
-pub const COOLING_CONDENSED_FRACTION: f64 = 0.35;
-/// Condensed inventory fraction during Condensation (§3.3).
-pub const CONDENSATION_CONDENSED_FRACTION: f64 = 0.90;
+/// Must match `genesis_climate::state::T_INITIAL_MOLTEN_C` (Doc 07 §3.3).
+const T_INITIAL_MOLTEN_C: f64 = 2000.0;
+/// Must match `genesis_climate::state::T_EQUILIBRIUM_C`.
+const T_EQUILIBRIUM_C: f64 = 15.0;
+/// Must match `genesis_climate::state::COOLING_TAU_YEARS`.
+const COOLING_TAU_YEARS: f64 = 80_000_000.0;
+
+/// Surface temperature (°C) at or above which no inventory has condensed
+/// (Doc 08 §3.3).
+pub const CONDENSATION_ONSET_C: f64 = 150.0;
+/// Surface temperature (°C) at or below which the inventory is fully condensed.
+pub const CONDENSATION_COMPLETE_C: f64 = 25.0;
 
 /// Relative tolerance for the per-tick conservation assert (§3.2).
 pub const CONSERVATION_TOLERANCE_REL: f64 = 1e-6;
 
+/// Doc 07 §3.3 cooling curve, duplicated here so hydrology does not depend on
+/// `genesis_climate`. Constants above must stay in lockstep with climate.
+pub fn formation_cooling_temperature_c(year_value: i64) -> f64 {
+    let elapsed = year_value.max(0) as f64;
+    let decay = (-elapsed / COOLING_TAU_YEARS).exp();
+    T_EQUILIBRIUM_C + (T_INITIAL_MOLTEN_C - T_EQUILIBRIUM_C) * decay
+}
+
+fn smoothstep01(u: f64) -> f64 {
+    let u = u.clamp(0.0, 1.0);
+    u * u * (3.0 - 2.0 * u)
+}
+
 /// Condensed fraction of the water inventory at `year_value` (Doc 08 §3.3).
 ///
-/// Piecewise-constant per formation stage — the literal §3.3 curve (Molten →
-/// 0, Cooling → 0.35, Condensation → 0.90, Stabilization → 1.0). The Doc 07
-/// curve interpolated across stage boundaries; §3.3 does not, so neither do
-/// we. With `skip_planetary_formation` the inventory is condensed from the
-/// start.
+/// Temperature-gated smoothstep on the Formation cooling curve: 0 while
+/// `T ≥ CONDENSATION_ONSET_C`, 1 when `T ≤ CONDENSATION_COMPLETE_C`, and
+/// `smoothstep` between. Calendar Formation sub-phases do not drive this.
+/// With `skip_planetary_formation` the inventory is condensed from the start.
 pub fn condensed_fraction_at_year(year_value: i64, skip_planetary_formation: bool) -> f64 {
     if skip_planetary_formation {
         return 1.0;
     }
-    if year_value < MOLTEN_END_YEAR {
-        0.0
-    } else if year_value < COOLING_END_YEAR {
-        COOLING_CONDENSED_FRACTION
-    } else if year_value < CONDENSATION_END_YEAR {
-        CONDENSATION_CONDENSED_FRACTION
-    } else {
-        1.0
+    let t = formation_cooling_temperature_c(year_value);
+    if t >= CONDENSATION_ONSET_C {
+        return 0.0;
     }
+    if t <= CONDENSATION_COMPLETE_C {
+        return 1.0;
+    }
+    let u = (CONDENSATION_ONSET_C - t) / (CONDENSATION_ONSET_C - CONDENSATION_COMPLETE_C);
+    smoothstep01(u)
 }
 
 /// Planet surface area in m².
@@ -127,25 +147,42 @@ mod tests {
     use super::*;
 
     #[test]
-    fn condensed_fraction_matches_stage_boundaries() {
+    fn condensed_fraction_zero_while_hot() {
         assert_eq!(condensed_fraction_at_year(0, false), 0.0);
-        assert_eq!(condensed_fraction_at_year(MOLTEN_END_YEAR - 1, false), 0.0);
-        assert_eq!(condensed_fraction_at_year(MOLTEN_END_YEAR, false), 0.35);
-        assert_eq!(
-            condensed_fraction_at_year(COOLING_END_YEAR - 1, false),
-            0.35
-        );
-        assert_eq!(condensed_fraction_at_year(COOLING_END_YEAR, false), 0.90);
-        assert_eq!(
-            condensed_fraction_at_year(CONDENSATION_END_YEAR - 1, false),
-            0.90
-        );
-        assert_eq!(
-            condensed_fraction_at_year(CONDENSATION_END_YEAR, false),
-            1.0
-        );
+        assert_eq!(condensed_fraction_at_year(100_000_000, false), 0.0);
+        assert_eq!(condensed_fraction_at_year(MOLTEN_END_YEAR, false), 0.0);
+        // Still above onset at late Cooling start.
+        assert_eq!(condensed_fraction_at_year(COOLING_END_YEAR - 1, false), 0.0);
+    }
+
+    #[test]
+    fn condensed_fraction_ramps_monotonically_through_formation() {
+        let mut prev = condensed_fraction_at_year(0, false);
+        assert_eq!(prev, 0.0);
+        // 5 My Formation ticks across the fill window.
+        for year in (200_000_000..=FORMATION_END_YEAR).step_by(5_000_000) {
+            let f = condensed_fraction_at_year(year, false);
+            assert!(
+                f + 1e-12 >= prev,
+                "fraction must be non-decreasing: year {year} f={f} prev={prev}"
+            );
+            prev = f;
+        }
+        assert!((prev - 1.0).abs() < 1e-9, "full by Formation end: {prev}");
+    }
+
+    #[test]
+    fn condensed_fraction_partial_during_condensation_era() {
+        let f = condensed_fraction_at_year(300_000_000, false);
+        assert!(f > 0.0 && f < 1.0, "300 My should be mid-ramp, got {f}");
+    }
+
+    #[test]
+    fn condensed_fraction_full_when_cool_or_post_formation() {
         assert_eq!(condensed_fraction_at_year(FORMATION_END_YEAR, false), 1.0);
         assert_eq!(condensed_fraction_at_year(4_500_000_000, false), 1.0);
+        // T ≤ 25 °C by ~423 My.
+        assert_eq!(condensed_fraction_at_year(430_000_000, false), 1.0);
     }
 
     #[test]
