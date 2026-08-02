@@ -18,7 +18,7 @@ use genesis_core::time::WorldYear;
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
 
-use crate::evolution::{EnvProfile, EnvironmentPayoff, WalkParams, biased_walk_step};
+use crate::evolution::{EnvProfile, EnvironmentPayoff, WalkParams, WalkStep, biased_evolution_step};
 use crate::guild::{GuildRoster, fills_guild, rule_specificity};
 use crate::ledger::{Ledger, LineageRecord};
 use crate::morphospace::{TraitGraph, TraitSet};
@@ -180,25 +180,31 @@ pub fn build_radiation_with(
         for region in 0..BIOGEOGRAPHIC_REGIONS {
             let env = FactContext::new();
             let payoff = EnvironmentPayoff::new(graph, profiles.0[region as usize]);
-            let Some(step) = biased_walk_step(
+            let Some(step) = biased_evolution_step(
                 graph,
                 &kgenome,
                 &env,
                 &WalkParams::default(),
                 &payoff,
+                0.0, // kingdom founders only gain (establishing basin traits)
                 &mut rng,
             ) else {
                 continue;
             };
+            // Kingdom founders always gain — loss makes no sense at founding.
+            let tid = match step {
+                WalkStep::Gain(tid) => tid,
+                WalkStep::Loss(_) => continue,
+            };
             let mut rgenome = kgenome.clone();
-            rgenome.insert(step);
+            rgenome.insert(tid);
             let founder = ledger.push(LineageRecord {
                 id: genesis_core::data::LineageId::NONE,
                 parent: Some(kid),
                 origin_year: WorldYear(base_year.value() + GENERATION_SPAN_YEARS),
                 extinction_year: None,
                 trait_set: rgenome.clone(),
-                trait_delta: Some(step),
+                trait_delta: Some(tid),
                 guild: GuildId::NONE,
                 region: Some(region),
                 name_seed: mix(mix(seed, kid.0), region as u64),
@@ -343,12 +349,27 @@ fn radiate(
         if *remaining == 0 {
             break;
         }
-        let Some(step) = biased_walk_step(graph, genome, &env, &WalkParams::default(), payoff, rng)
+        // Small loss bias — most steps are still gains (descent with modification),
+        // but a lineage can occasionally shed a superseded trait (Doc 09 §2.3).
+        const RADIATION_LOSS_BIAS: f32 = 0.04;
+        let Some(step) = biased_evolution_step(
+            graph, genome, &env, &WalkParams::default(), payoff,
+            RADIATION_LOSS_BIAS, rng,
+        )
         else {
             break;
         };
         let mut child = genome.clone();
-        child.insert(step);
+        let delta = match step {
+            WalkStep::Gain(tid) => {
+                child.insert(tid);
+                tid
+            }
+            WalkStep::Loss(tid) => {
+                child.remove(tid);
+                tid
+            }
+        };
         let guild = if depth >= LEAF_DEPTH {
             leaf_guild(graph, roster, &child)
         } else {
@@ -361,10 +382,10 @@ fn radiate(
             origin_year: origin,
             extinction_year: None,
             trait_set: child.clone(),
-            trait_delta: Some(step),
+            trait_delta: Some(delta),
             guild,
             region: Some(region),
-            name_seed: mix(mix(seed, parent.0), step.0 as u64),
+            name_seed: mix(mix(seed, parent.0), delta.0 as u64),
         });
         *remaining -= 1;
         radiate(
@@ -413,15 +434,34 @@ mod tests {
         assert!(ledger.len() > 20, "should radiate many lineages");
         // Exactly one root (LUCA), everything else has a parent.
         assert_eq!(ledger.iter().filter(|l| l.parent.is_none()).count(), 1);
-        // Descent with modification: a child's genome is a superset of its parent's.
+        // Descent with modification: a walk-generated child differs from its
+        // parent by exactly one trait — either one gain (inherits all parent traits
+        // + 1 new) or one loss (inherits all but one parent trait, Doc 09 §2.3).
+        // Kingdom founders are scaffolded — they add 4 fixed traits at once
+        // (ktid + eukaryote + colonial + multicellular) as direct children of LUCA.
         for l in ledger.iter() {
             if let Some(p) = l.parent {
                 let parent = ledger.get(p).unwrap();
-                assert!(
-                    parent.trait_set.iter().all(|t| l.trait_set.contains(t)),
-                    "child must inherit all parent traits"
-                );
-                assert!(l.trait_set.len() >= parent.trait_set.len());
+                let inherited = parent.trait_set.iter()
+                    .filter(|t| l.trait_set.contains(*t))
+                    .count();
+                let lost = parent.trait_set.len() - inherited;
+                let gained = l.trait_set.len() - inherited;
+                // Scaffolded kingdom founders: child of LUCA (2 traits) with 6 traits
+                // (ktid + 3 scaffold + LUCA).
+                let is_scaffolded =
+                    l.trait_delta.is_some() && parent.trait_set.len() == 2 && l.trait_set.len() >= 6;
+                if !is_scaffolded {
+                    assert!(
+                        lost + gained == 1 && lost <= 1 && gained <= 1,
+                        "walk child must differ by exactly 1 trait: lost={lost} gained={gained} parent_len={} child_len={}",
+                        parent.trait_set.len(),
+                        l.trait_set.len(),
+                    );
+                } else {
+                    // Scaffolded founders must still inherit all LUCA traits.
+                    assert_eq!(lost, 0, "scaffolded founder must inherit all parent traits");
+                }
             }
         }
         // Some leaves specialized into guilds; some went extinct.

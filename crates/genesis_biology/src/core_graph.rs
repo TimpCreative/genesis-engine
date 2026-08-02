@@ -41,7 +41,7 @@ pub(crate) const NODES: &[N] = &[
             ("core:anoxygenic_phototrophy", 0.6),
             ("core:heterotrophy", 0.5),
             ("core:unicellular", 0.9),
-        ],
+            ("core:mixotrophy", 0.4)],
         reversal_cost: 3.0,
         base_energy_cost: 1.0,
         tags: &[Autotroph],
@@ -82,7 +82,7 @@ pub(crate) const NODES: &[N] = &[
             ("core:ciliary", 0.6),
             ("core:chitin", 0.4),
             ("core:diet_generalist", 0.6),
-        ],
+            ("core:parasite", 0.3)],
         reversal_cost: 2.5,
         base_energy_cost: 1.0,
         tags: &[Heterotroph, AnimalBasin],
@@ -130,7 +130,7 @@ pub(crate) const NODES: &[N] = &[
             ("core:eukaryote", 0.8),
             ("core:binary_fission", 0.7),
             ("core:silica_frustule", 0.4),
-        ],
+            ("core:size_micro", 0.7)],
         reversal_cost: 2.0,
         base_energy_cost: 0.5,
         tags: &[],
@@ -174,7 +174,10 @@ pub(crate) const NODES: &[N] = &[
             ("core:radial", 0.5),
             ("core:bilateral", 0.5),
             ("core:spores", 0.4),
-        ],
+            ("core:asymmetric", 0.3),
+            ("core:naked", 0.6),
+            ("core:size_small", 0.5),
+            ("core:size_medium", 0.3)],
         reversal_cost: 3.0,
         base_energy_cost: 1.0,
         tags: &[KeyInnovation],
@@ -455,7 +458,7 @@ pub(crate) const NODES: &[N] = &[
             ("core:ganglia", 0.7),
             ("core:muscular_crawl", 0.5),
             ("core:chemoreception", 0.5),
-        ],
+            ("core:solitary", 0.5)],
         reversal_cost: 2.5,
         base_energy_cost: 0.9,
         tags: &[AnimalBasin],
@@ -470,7 +473,8 @@ pub(crate) const NODES: &[N] = &[
             ("core:centralized_brain", 0.7),
             ("core:photoreception", 0.5),
             ("core:eusocial", 0.4),
-        ],
+            ("core:electroreception", 0.5),
+            ("core:magnetoreception", 0.4)],
         reversal_cost: 2.5,
         base_energy_cost: 1.0,
         tags: &[],
@@ -486,7 +490,7 @@ pub(crate) const NODES: &[N] = &[
             ("core:image_eye", 0.5),
             ("core:herd", 0.4),
             ("core:pair_bond", 0.4),
-        ],
+            ("core:echolocation", 0.5)],
         reversal_cost: 3.0,
         base_energy_cost: 1.3,
         tags: &[KeyInnovation],
@@ -542,7 +546,8 @@ pub(crate) const NODES: &[N] = &[
         tier: 3,
         prerequisites: &["core:photoreception", "core:ganglia"],
         exclusions: &[],
-        proximity: &[("core:display_coloration", 0.4)],
+        proximity: &[("core:display_coloration", 0.4),
+            ("core:cryptic_coloration", 0.5)],
         reversal_cost: 2.0,
         base_energy_cost: 0.8,
         tags: &[KeyInnovation],
@@ -721,7 +726,8 @@ pub(crate) const NODES: &[N] = &[
         tier: 4,
         prerequisites: &["core:heterotrophy"],
         exclusions: &[],
-        proximity: &[("core:folivore", 0.4), ("core:hypercarnivore", 0.4)],
+        proximity: &[("core:folivore", 0.4), ("core:hypercarnivore", 0.4),
+            ("core:granivore", 0.4)],
         reversal_cost: 0.5,
         base_energy_cost: 0.4,
         tags: &[Heterotroph],
@@ -1006,6 +1012,62 @@ mod tests {
         assert!(
             genome.contains(nerve_net),
             "walk should reach a nervous system"
+        );
+    }
+
+    /// Every authored trait must be reachable from at least one seed genome
+    /// (LUCA, basal lineages, or kingdom founders) via the proximity-biased walk.
+    /// A trait with no inbound proximity edge is dead content — the walk can
+    /// never acquire it, and it can only appear if hand-inserted into a seed.
+    #[test]
+    fn all_core_traits_are_reachable() {
+        let g = core_morphospace();
+        // Seed genomes used by the radiation: LUCA, basal cosmopolitan lineages,
+        // and the forced kingdom-foundation scaffolding (speciation.rs).
+        let seeds: &[&[&str]] = &[
+            &["core:chemosynthesis", "core:unicellular"], // LUCA
+            &["core:oxygenic_photosynthesis"],
+            &["core:absorptive_decomposition"],
+            &["core:heterotrophy"],
+            &["core:eukaryote"],
+            &["core:colonial"],
+            &["core:multicellular"],
+        ];
+        let mut reachable: TraitSet = TraitSet::new();
+        for seed in seeds {
+            for name in *seed {
+                reachable.insert(g.id_of(name).unwrap());
+            }
+        }
+
+        // BFS over proximity edges from all seed traits.
+        let mut frontier: Vec<genesis_core::data::TraitId> = reachable.iter().collect();
+        let mut changed = true;
+        while changed {
+            changed = false;
+            let mut next: Vec<genesis_core::data::TraitId> = Vec::new();
+            for &tid in &frontier {
+                for (nid, _w) in g.node(tid).proximity.iter() {
+                    if reachable.insert(*nid) {
+                        next.push(*nid);
+                        changed = true;
+                    }
+                }
+            }
+            frontier = next;
+        }
+
+        let mut missing = Vec::new();
+        for node in g.nodes() {
+            if !reachable.contains(node.id) {
+                missing.push(node.name.as_str());
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "{} unreachable trait(s): {:?}",
+            missing.len(),
+            missing
         );
     }
 }

@@ -124,7 +124,9 @@ fn terrain_signature(world: &WorldData, land_colonized: bool) -> u64 {
         h = mix(h, world.temperature_mean[i].to_bits() as u64);
         h = mix(h, world.temperature_range[i].to_bits() as u64);
         h = mix(h, world.soil_fertility[i].to_bits() as u64);
+        h = mix(h, world.ice_mask.get(i).copied().unwrap_or(false) as u64);
     }
+    h = mix(h, world.co2_ppm.to_bits() as u64);
     h
 }
 
